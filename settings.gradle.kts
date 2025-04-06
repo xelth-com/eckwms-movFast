@@ -16,6 +16,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url = uri("https://pda.repair:8081/nexus/service/local/repositories/releases/content/")
+        }
     }
 }
 

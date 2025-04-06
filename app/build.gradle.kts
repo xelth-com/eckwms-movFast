@@ -49,6 +49,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -56,4 +57,16 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+    implementation("com.xcheng:scanner:1.1.3")
+    implementation("com.google.accompanist:accompanist-permissions:0.31.1-alpha")
+
+    // Jetpack Compose Navigation
+    implementation("androidx.navigation:navigation-compose:2.7.0")
+    // Your existing Compose dependencies
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material:material")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    // Для интеграции LiveData с Compose
+    implementation("androidx.compose.runtime:runtime-livedata:1.5.4")
+
 }
