@@ -317,12 +317,15 @@ object XCScannerWrapper {
         Log.d(TAG, "Scan region size set to $regionSize")
     }
 
+
+
     /**
-     * Get the last decoded image
-     * @return XCImage object or null if no image available
+     * Получает последнее отсканированное изображение
+     * @return XCImage или null, если изображение недоступно
      */
-    fun getLastDecodeImage(): XCImage? {
-        return XcBarcodeScanner.getLastDecodeImage()
+    fun getLastDecodeImage(): com.tools.XCImage? {
+        if (!isInitialized) return null
+        return com.xcheng.scanner.XcBarcodeScanner.getLastDecodeImage()
     }
 
     /**

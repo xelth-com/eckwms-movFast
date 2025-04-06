@@ -1,4 +1,5 @@
 // app/src/main/java/com/xelth/eckwms_movfast/ui/screens/ScannerSettingsScreen.kt
+// Обновлено с добавлением кнопки для глубокой диагностики функций изображения
 package com.xelth.eckwms_movfast.ui.screens
 
 import android.util.Log
@@ -20,17 +21,13 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -46,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import com.xcheng.scanner.AimerMode
 import com.xcheng.scanner.BarcodeType
 import com.xcheng.scanner.FlashMode
+import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
+import com.xelth.eckwms_movfast.diagnostics.ScannerImageDiagnostics
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 
 private const val TAG = "ScannerSettingsScreen"
@@ -54,7 +53,8 @@ private const val TAG = "ScannerSettingsScreen"
 @Composable
 fun ScannerSettingsScreen(
     scannerManager: ScannerManager,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onOpenImageViewer: () -> Unit
 ) {
     // Наблюдаем за последним отсканированным штрих-кодом
     val latestScanResult by scannerManager.scanResult.observeAsState()
@@ -110,14 +110,20 @@ fun ScannerSettingsScreen(
             TopAppBar(
                 title = { Text("Scanner Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    TextButton(onClick = onNavigateBack) {
+                        Text("← Back")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onOpenImageViewer) {
+                        Text("View Image")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         }
@@ -153,6 +159,15 @@ fun ScannerSettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = onOpenImageViewer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("View Scanned Image")
+                    }
                 }
             }
 
@@ -185,7 +200,7 @@ fun ScannerSettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     textAlign = TextAlign.Start
                                 )
-                                Icon(Icons.Default.ArrowDropDown, "Dropdown Arrow")
+                                Text("▼")
                             }
                             DropdownMenu(
                                 expanded = barcodeTypeExpanded,
@@ -227,7 +242,7 @@ fun ScannerSettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     textAlign = TextAlign.Start
                                 )
-                                Icon(Icons.Default.ArrowDropDown, "Dropdown Arrow")
+                                Text("▼")
                             }
                             DropdownMenu(
                                 expanded = flashModeExpanded,
@@ -264,7 +279,7 @@ fun ScannerSettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     textAlign = TextAlign.Start
                                 )
-                                Icon(Icons.Default.ArrowDropDown, "Dropdown Arrow")
+                                Text("▼")
                             }
                             DropdownMenu(
                                 expanded = aimerModeExpanded,
@@ -306,6 +321,45 @@ fun ScannerSettingsScreen(
             ) {
                 Text(if (isLoopScanActive) "Stop Continuous Scanning" else "Start Continuous Scanning")
             }
+
+            // Кнопки диагностики
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Кнопка тестирования API
+                OutlinedButton(
+                    onClick = {
+                        Log.d(TAG, "⭐ API Test button clicked")
+                        ScannerApiTester(scannerManager).testAndLogAllApiFunctions()
+                        Log.d(TAG, "⭐ API Test completed, check Logcat for results")
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Test API", textAlign = TextAlign.Center)
+                }
+
+                // Кнопка диагностики изображений
+                OutlinedButton(
+                    onClick = {
+                        Log.d(TAG, "⭐ Image Diagnostics button clicked")
+                        ScannerImageDiagnostics().runFullDiagnostics()
+                        Log.d(TAG, "⭐ Image Diagnostics completed, check Logcat for results")
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Image Diagnostics", textAlign = TextAlign.Center)
+                }
+            }
+
+            Text(
+                text = "Use Logcat to see diagnostic results",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            )
         }
     }
 }

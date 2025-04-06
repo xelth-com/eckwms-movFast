@@ -1,4 +1,5 @@
 // app/src/main/java/com/xelth/eckwms_movfast/scanners/ScannerManager.kt
+// Полный файл менеджера сканера с исправлениями для Android 13
 package com.xelth.eckwms_movfast.scanners
 
 import android.app.Application
@@ -98,10 +99,16 @@ class ScannerManager private constructor(private val application: Application) {
             }
         }
 
-        // Регистрируем BroadcastReceiver
+        // Регистрируем BroadcastReceiver с правильными флагами для Android 13+
         val intentFilter = IntentFilter(SCAN_ACTION)
-        application.registerReceiver(scanReceiver, intentFilter)
-        Log.d(TAG, "✓ BroadcastReceiver зарегистрирован")
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            application.registerReceiver(scanReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+            Log.d(TAG, "✓ BroadcastReceiver зарегистрирован с флагом RECEIVER_NOT_EXPORTED")
+        } else {
+            application.registerReceiver(scanReceiver, intentFilter)
+            Log.d(TAG, "✓ BroadcastReceiver зарегистрирован")
+        }
     }
 
     /**
@@ -169,6 +176,9 @@ class ScannerManager private constructor(private val application: Application) {
             XCScannerWrapper.stopLoopScan()
         }
 
+        // Очистка ресурсов изображений
+        cleanupImageResources()
+
         // Отменяем регистрацию BroadcastReceiver
         unregisterBroadcastReceiver()
 
@@ -177,6 +187,14 @@ class ScannerManager private constructor(private val application: Application) {
 
         isInitialized = false
         Log.d(TAG, "✓ Ресурсы сканера освобождены")
+    }
+
+    /**
+     * Проверяет, инициализирован ли сканер
+     * @return true если сканер инициализирован, false в противном случае
+     */
+    fun isInitialized(): Boolean {
+        return isInitialized
     }
 
     /**
