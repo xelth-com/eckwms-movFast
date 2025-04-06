@@ -1,5 +1,4 @@
 // app/src/main/java/com/xelth/eckwms_movfast/scanners/ScannerManager.kt
-// Полный файл менеджера сканера с исправлениями для Android 13
 package com.xelth.eckwms_movfast.scanners
 
 import android.app.Application
@@ -108,6 +107,48 @@ class ScannerManager private constructor(private val application: Application) {
         } else {
             application.registerReceiver(scanReceiver, intentFilter)
             Log.d(TAG, "✓ BroadcastReceiver зарегистрирован")
+        }
+    }
+
+    // Add this method directly to ScannerManager.kt class
+// rather than using an extension function
+
+    /**
+     * Возвращает тип последнего отсканированного штрихкода
+     * @return Строковое обозначение типа штрихкода (QR_CODE, DATAMATRIX, CODE_128, etc.)
+     */
+    fun getLastBarcodeType(): String {
+        // Get barcode type from scanner library if available
+        // The XcBarcodeScanner does not provide direct access to barcode type information
+        // so we'll use context clues from the barcode itself to determine the type
+
+        val lastBarcode = scanResult.value ?: return "UNKNOWN"
+
+        return when {
+            // QR Code typical patterns
+            lastBarcode.contains(":") && lastBarcode.contains("/") -> "QR_CODE"
+
+            // DataMatrix typical patterns (often used for small items or components)
+            lastBarcode.matches(Regex("^[0-9]{4}[A-Z]{2}\\d+$")) -> "DATAMATRIX"
+
+            // EAN/UPC codes are pure digits with specific lengths
+            lastBarcode.length == 13 && lastBarcode.all { it.isDigit() } -> "EAN_13"
+            lastBarcode.length == 8 && lastBarcode.all { it.isDigit() } -> "EAN_8"
+            lastBarcode.length == 12 && lastBarcode.all { it.isDigit() } -> "UPC_A"
+
+            // ECKWMS internal codes likely use CODE_128
+            lastBarcode.matches(Regex("^[ibpou][0-9]{18}$")) -> "CODE_128"
+            lastBarcode.length == 7 && lastBarcode.all { it.isDigit() } -> "CODE_128"
+            lastBarcode.startsWith("RMA") -> "CODE_128"
+
+            // CODE_39 usually contains only uppercase letters, digits and some symbols
+            lastBarcode.matches(Regex("^[A-Z0-9 \\-\\.$/+%*]+$")) -> "CODE_39"
+
+            // If no specific pattern matched, but has special characters, assume CODE_128
+            lastBarcode.any { !it.isLetterOrDigit() } -> "CODE_128"
+
+            // Default fallback
+            else -> "UNKNOWN"
         }
     }
 
@@ -238,16 +279,21 @@ class ScannerManager private constructor(private val application: Application) {
         XCScannerWrapper.stopLoopScan()
     }
 
+    /**
+     * Устанавливает режим подсветки
+     */
     fun setFlashLightsMode(flashMode: Int) {
         if (!isInitialized) initialize()
         XCScannerWrapper.setFlashLightsMode(flashMode)
     }
 
+    /**
+     * Устанавливает режим прицела
+     */
     fun setAimerLightsMode(aimerMode: Int) {
         if (!isInitialized) initialize()
         XCScannerWrapper.setAimerLightsMode(aimerMode)
     }
-
 
     /**
      * Проверяет, запущено ли непрерывное сканирование

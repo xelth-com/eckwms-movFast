@@ -81,10 +81,12 @@ class MainActivity : ComponentActivity() {
 
         // Инициализация ScanApiService
         scanApiService = ScanApiService(this)
+        // Предоставляем ScanApiService доступ к ScannerManager для получения типа штрих-кодов
+        scanApiService.setScannerManager(scannerManager)
 
         // Наблюдаем за результатами сканирования от ScannerManager
         scannerManager.scanResult.observeForever { barcode ->
-            if (!barcode.isNullOrEmpty()) {
+            if (barcode != null && barcode.isNotEmpty()) {
                 Log.d(TAG, "Scanner detected barcode: $barcode")
                 handleScannedBarcode(barcode)
             }
@@ -98,26 +100,14 @@ class MainActivity : ComponentActivity() {
                     val latestResultDetails by scanResultDetails.observeAsState()
                     val latestRequestStatus by serverRequestStatus.observeAsState()
 
-                    // Отображаем состояние постоянного сканирования
-                    var isLoopScanActive by remember { mutableStateOf(scannerManager.isLoopScanRunning()) }
-
                     MainContent(
                         scannedBarcode = latestScanResult,
                         resultDetails = latestResultDetails,
                         requestStatus = latestRequestStatus,
-                        isLoopScanActive = isLoopScanActive,
                         onScanSettingsClick = {
                             // Открываем экран настройки сканера
                             val intent = Intent(this, ScannerActivity::class.java)
                             startActivity(intent)
-                        },
-                        onToggleLoopScan = {
-                            if (isLoopScanActive) {
-                                scannerManager.stopLoopScan()
-                            } else {
-                                scannerManager.startLoopScan()
-                            }
-                            isLoopScanActive = !isLoopScanActive
                         },
                         onManualScanTest = { testBarcode ->
                             // Ручное тестирование сканирования
@@ -266,9 +256,7 @@ fun MainContent(
     scannedBarcode: String?,
     resultDetails: String?,
     requestStatus: RequestStatus?,
-    isLoopScanActive: Boolean,
     onScanSettingsClick: () -> Unit,
-    onToggleLoopScan: () -> Unit,
     onManualScanTest: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -352,27 +340,8 @@ fun MainContent(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Кнопки управления сканером
-        Button(
-            onClick = onScanSettingsClick,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Scanner Settings")
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Button(
-            onClick = onToggleLoopScan,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (isLoopScanActive) "Stop Continuous Scanning" else "Start Continuous Scanning")
-        }
-
         // Отображение деталей результата
-        if (!resultDetails.isNullOrEmpty()) {
+        if (resultDetails != null && resultDetails.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Card(
@@ -433,8 +402,19 @@ fun MainContent(
             }
         }
 
+        // Spacer to push Scanner Settings button to the bottom
+        Spacer(modifier = Modifier.weight(1f))
+
+        // Scanner Settings button moved to the bottom
+        Button(
+            onClick = onScanSettingsClick,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Scanner Settings")
+        }
+
         // Информация о сервере
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
             text = "Server: https://pda.repair/",

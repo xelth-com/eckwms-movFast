@@ -1,5 +1,4 @@
 // app/src/main/java/com/xelth/eckwms_movfast/scanners/ScannerManagerImageExtensions.kt
-// Расширение для ScannerManager с улучшенной обработкой ошибок изображений
 package com.xelth.eckwms_movfast.scanners
 
 import android.graphics.Bitmap
