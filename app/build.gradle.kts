@@ -68,5 +68,5 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     // Для интеграции LiveData с Compose
     implementation("androidx.compose.runtime:runtime-livedata:1.5.4")
-
+    implementation("io.coil-kt:coil-compose:2.5.0")
 }

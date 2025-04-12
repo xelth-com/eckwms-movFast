@@ -85,6 +85,12 @@ class ScannerManager private constructor(private val application: Application) {
                     if (barcode != null) {
                         Log.d(TAG, "⭐⭐⭐ Получен штрих-код через broadcast: $barcode")
 
+                        // Check if this is a duplicate of what we've already processed through the callback
+                        if (barcode == _scanResult.value) {
+                            Log.d(TAG, "Ignoring duplicate barcode from broadcast - already processed via callback")
+                            return
+                        }
+
                         // Отправляем результат через LiveData
                         _scanResult.postValue(barcode)
                     } else {
@@ -110,8 +116,23 @@ class ScannerManager private constructor(private val application: Application) {
         }
     }
 
+    /**
+     * Отменяет регистрацию BroadcastReceiver
+     */
+    private fun unregisterBroadcastReceiver() {
+        scanReceiver?.let {
+            try {
+                application.unregisterReceiver(it)
+                Log.d(TAG, "✓ BroadcastReceiver отменен")
+            } catch (e: Exception) {
+                Log.e(TAG, "Ошибка при отмене регистрации BroadcastReceiver", e)
+            }
+            scanReceiver = null
+        }
+    }
+
     // Add this method directly to ScannerManager.kt class
-// rather than using an extension function
+    // rather than using an extension function
 
     /**
      * Возвращает тип последнего отсканированного штрихкода
@@ -149,21 +170,6 @@ class ScannerManager private constructor(private val application: Application) {
 
             // Default fallback
             else -> "UNKNOWN"
-        }
-    }
-
-    /**
-     * Отменяет регистрацию BroadcastReceiver
-     */
-    private fun unregisterBroadcastReceiver() {
-        scanReceiver?.let {
-            try {
-                application.unregisterReceiver(it)
-                Log.d(TAG, "✓ BroadcastReceiver отменен")
-            } catch (e: Exception) {
-                Log.e(TAG, "Ошибка при отмене регистрации BroadcastReceiver", e)
-            }
-            scanReceiver = null
         }
     }
 

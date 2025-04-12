@@ -83,14 +83,28 @@ class ScanApiService(private val context: Context) {
                 val jsonResponse = JSONObject(response)
 
                 if (jsonResponse.has("success") && jsonResponse.getBoolean("success")) {
-                    // Извлекаем текст ответа из ключа text в соответствии с новой спецификацией API
+                    // Existing code to get message and type
                     val message = jsonResponse.optString("text", "Successful scan")
                     val type = jsonResponse.optString("contentType", "unknown")
+
+                    // Parse image URLs from the response
+                    val imageUrls = mutableListOf<String>()
+                    if (jsonResponse.has("images")) {
+                        try {
+                            val imagesArray = jsonResponse.getJSONArray("images")
+                            for (i in 0 until imagesArray.length()) {
+                                imageUrls.add(imagesArray.getString(i))
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing image URLs: ${e.message}")
+                        }
+                    }
 
                     return@withContext ScanResult.Success(
                         type = type,
                         message = message,
-                        data = response
+                        data = response,
+                        imageUrls = imageUrls
                     )
                 } else {
                     return@withContext ScanResult.Error(
@@ -149,7 +163,8 @@ sealed class ScanResult {
     data class Success(
         val type: String,
         val message: String,
-        val data: String
+        val data: String,
+        val imageUrls: List<String> = emptyList() // Added this field for image URLs
     ) : ScanResult()
 
     /**

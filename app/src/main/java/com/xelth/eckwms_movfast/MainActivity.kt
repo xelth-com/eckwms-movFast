@@ -2,7 +2,7 @@
 package com.xelth.eckwms_movfast
 
 import android.os.Bundle
-import android.widget.Toast
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,42 +14,32 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.Observer
 import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.scanners.ScannerManager
+import com.xelth.eckwms_movfast.ui.screens.SimpleImageViewerSection
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import android.content.Intent
-import android.util.Log
 
 class MainActivity : ComponentActivity() {
     private val TAG = "MainActivity"
@@ -60,10 +50,6 @@ class MainActivity : ComponentActivity() {
     // Ссылка на сервис API сканирования
     private lateinit var scanApiService: ScanApiService
 
-    // LiveData для результатов сканирования
-    private val _scanResult = MutableLiveData<String>()
-    private val scanResult: LiveData<String> = _scanResult
-
     // LiveData для деталей результата обработки сервером
     private val _scanResultDetails = MutableLiveData<String>()
     private val scanResultDetails: LiveData<String> = _scanResultDetails
@@ -71,6 +57,10 @@ class MainActivity : ComponentActivity() {
     // LiveData для статуса отправки на сервер
     private val _serverRequestStatus = MutableLiveData<RequestStatus>()
     private val serverRequestStatus: LiveData<RequestStatus> = _serverRequestStatus
+
+    // Added LiveData for image URLs
+    private val _imageUrls = MutableLiveData<List<String>>(emptyList())
+    private val imageUrls: LiveData<List<String>> = _imageUrls
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,23 +86,15 @@ class MainActivity : ComponentActivity() {
             EckwmsmovFastTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     // Наблюдаем за результатами сканирования через LiveData
-                    val latestScanResult by scanResult.observeAsState()
                     val latestResultDetails by scanResultDetails.observeAsState()
                     val latestRequestStatus by serverRequestStatus.observeAsState()
+                    val serverImageUrls by imageUrls.observeAsState(emptyList())
 
                     MainContent(
-                        scannedBarcode = latestScanResult,
+                        scannedBarcode = null, // Not used anymore
                         resultDetails = latestResultDetails,
                         requestStatus = latestRequestStatus,
-                        onScanSettingsClick = {
-                            // Открываем экран настройки сканера
-                            val intent = Intent(this, ScannerActivity::class.java)
-                            startActivity(intent)
-                        },
-                        onManualScanTest = { testBarcode ->
-                            // Ручное тестирование сканирования
-                            handleScannedBarcode(testBarcode)
-                        },
+                        imageUrls = serverImageUrls,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -124,10 +106,10 @@ class MainActivity : ComponentActivity() {
      * Обработка отсканированного штрих-кода и отправка на сервер
      */
     private fun handleScannedBarcode(barcode: String) {
-        // Обновляем UI с отсканированным штрих-кодом
-        _scanResult.postValue(barcode)
+        // Обновляем статус отправки
         _serverRequestStatus.postValue(RequestStatus.LOADING)
         _scanResultDetails.postValue("")
+        _imageUrls.postValue(emptyList()) // Clear previous images
 
         // Отправляем на сервер
         CoroutineScope(Dispatchers.IO).launch {
@@ -141,6 +123,12 @@ class MainActivity : ComponentActivity() {
                             // Обрабатываем успешный результат
                             Log.d(TAG, "Server response success: ${result.data}")
                             _serverRequestStatus.postValue(RequestStatus.SUCCESS)
+
+                            // Update image URLs if available
+                            if (result.imageUrls.isNotEmpty()) {
+                                Log.d(TAG, "Received ${result.imageUrls.size} images from server")
+                                _imageUrls.postValue(result.imageUrls)
+                            }
 
                             try {
                                 // Формируем удобный для отображения текст
@@ -195,6 +183,11 @@ class MainActivity : ComponentActivity() {
 
         if (responseData.has("class")) {
             stringBuilder.append("Class: ${responseData.getString("class")}\n")
+        }
+
+        // Information about images
+        if (result.imageUrls.isNotEmpty()) {
+            stringBuilder.append("\nImages: ${result.imageUrls.size}\n")
         }
 
         // Информация о буферах
@@ -256,12 +249,10 @@ fun MainContent(
     scannedBarcode: String?,
     resultDetails: String?,
     requestStatus: RequestStatus?,
-    onScanSettingsClick: () -> Unit,
-    onManualScanTest: (String) -> Unit,
+    imageUrls: List<String>,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
-    var testBarcodeInput by remember { mutableStateOf("1234567") }
 
     Column(
         modifier = modifier
@@ -269,81 +260,10 @@ fun MainContent(
             .verticalScroll(scrollState),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "EckWMS Scanner",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Карточка со штрих-кодом
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "Scanned Barcode:",
-                    style = MaterialTheme.typography.titleMedium
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                if (scannedBarcode != null) {
-                    Text(
-                        text = scannedBarcode,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                } else {
-                    Text(
-                        text = "No barcode scanned yet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                // Отображение статуса запроса
-                when (requestStatus) {
-                    RequestStatus.LOADING -> {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        )
-                        Text(
-                            text = "Sending to server...",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    RequestStatus.SUCCESS -> {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "✓ Server processed successfully",
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    RequestStatus.ERROR -> {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "✗ Error communicating with server",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    else -> { /* Ничего не отображаем */ }
-                }
-            }
-        }
+        // Removed the "EckWMS Scanner" title as requested
 
         // Отображение деталей результата
         if (resultDetails != null && resultDetails.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(16.dp))
-
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
@@ -366,56 +286,19 @@ fun MainContent(
             }
         }
 
-        // Раздел тестового сканирования (для отладки)
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "Test Scanning",
-                    style = MaterialTheme.typography.titleMedium
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                androidx.compose.material3.TextField(
-                    value = testBarcodeInput,
-                    onValueChange = { testBarcodeInput = it },
-                    label = { Text("Test Barcode") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Button(
-                    onClick = { onManualScanTest(testBarcodeInput) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Test Scan")
-                }
-            }
+        // Image viewer section that displays images from the server
+        if (imageUrls.isNotEmpty() || requestStatus == RequestStatus.SUCCESS) {
+            Spacer(modifier = Modifier.height(16.dp))
+            SimpleImageViewerSection(
+                imageUrls = imageUrls,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
-        // Spacer to push Scanner Settings button to the bottom
+        // Spacer to push content to the top
         Spacer(modifier = Modifier.weight(1f))
 
-        // Scanner Settings button moved to the bottom
-        Button(
-            onClick = onScanSettingsClick,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Scanner Settings")
-        }
-
         // Информация о сервере
-        Spacer(modifier = Modifier.height(16.dp))
-
         Text(
             text = "Server: https://pda.repair/",
             style = MaterialTheme.typography.bodySmall,
