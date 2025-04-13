@@ -18,7 +18,7 @@ import com.xcheng.scanner.TextCaseType
 import com.xcheng.scanner.XcBarcodeScanner
 
 /**
- * Kotlin wrapper for XCScanner SDK
+ * Kotlin wrapper for XCScanner SDK version 1.1.5
  * Provides a more Kotlin-friendly interface to interact with the scanner
  */
 object XCScannerWrapper {
@@ -136,6 +136,14 @@ object XCScannerWrapper {
      */
     fun getServiceVersion(): String {
         return XcBarcodeScanner.getServiceVersion()
+    }
+
+    /**
+     * Get SDK version
+     * @return SDK version string
+     */
+    fun getSdkVersion(context: Context): String {
+        return XcBarcodeScanner.getSdkVersion(context)
     }
 
     /**
@@ -260,6 +268,16 @@ object XCScannerWrapper {
     }
 
     /**
+     * Set text suffix2 for scan results
+     * @param suffix2 Second suffix string
+     */
+    fun setTextSuffix2(suffix2: String) {
+        if (!isInitialized) return
+        XcBarcodeScanner.setTextSuffix1(suffix2) // Note: Method name is different in the SDK
+        Log.d(TAG, "Text suffix2 set to $suffix2")
+    }
+
+    /**
      * Set loop scan interval in milliseconds
      * @param ms Interval in milliseconds
      */
@@ -317,15 +335,71 @@ object XCScannerWrapper {
         Log.d(TAG, "Scan region size set to $regionSize")
     }
 
+    /**
+     * Load settings from storage
+     */
+    fun loadSettings() {
+        if (!isInitialized) return
+        XcBarcodeScanner.loadSettings()
+        Log.d(TAG, "Settings loaded")
+    }
 
+    /**
+     * Save settings to storage
+     */
+    fun saveSettings() {
+        if (!isInitialized) return
+        XcBarcodeScanner.saveSettings()
+        Log.d(TAG, "Settings saved")
+    }
+
+    /**
+     * Reset settings to default
+     */
+    fun resetSettings() {
+        if (!isInitialized) return
+        XcBarcodeScanner.resetSettings()
+        Log.d(TAG, "Settings reset to default")
+    }
+
+    /**
+     * Set DataMatrix barcode format with separators
+     * @param withSeparators true to include separators, false to exclude
+     */
+    fun setDataMatrixWithSeparators(withSeparators: Boolean) {
+        if (!isInitialized) return
+        XcBarcodeScanner.setDataMatrixWithSeparators(withSeparators)
+        Log.d(TAG, "DataMatrix with separators: $withSeparators")
+    }
+
+    /**
+     * Set maximum output length for DataMatrix barcodes
+     * @param maxLength Maximum length for output
+     */
+    fun setDataMatrixMaxOutputLength(maxLength: Int) {
+        if (!isInitialized) return
+        XcBarcodeScanner.setDataMatrixMaxOutputLength(maxLength)
+        Log.d(TAG, "DataMatrix max output length: $maxLength")
+    }
 
     /**
      * Получает последнее отсканированное изображение
+     * ВАЖНО: метод в SDK не проверяет на null перед вызовом, будьте осторожны!
      * @return XCImage или null, если изображение недоступно
      */
-    fun getLastDecodeImage(): com.tools.XCImage? {
-        if (!isInitialized) return null
-        return com.xcheng.scanner.XcBarcodeScanner.getLastDecodeImage()
+    fun getLastDecodeImage(): XCImage? {
+        if (!isInitialized) {
+            Log.e(TAG, "Cannot get last decode image - scanner not initialized")
+            return null
+        }
+
+        try {
+            // Прямой вызов без проверки на null, как в оригинальном SDK
+            return XcBarcodeScanner.getLastDecodeImage()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting last decode image", e)
+            return null
+        }
     }
 
     /**

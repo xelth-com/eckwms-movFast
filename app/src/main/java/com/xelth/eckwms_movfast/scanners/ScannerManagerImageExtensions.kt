@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.util.Log
 import com.tools.XCImage
+import java.nio.ByteBuffer
 
 /**
  * Расширение ScannerManager для работы с изображениями штрих-кодов
@@ -56,79 +57,96 @@ fun ScannerManager.getLastDecodedImage(): Bitmap? {
     try {
         Log.d(TAG, "Getting last decoded image from scanner")
 
-        // Пробуем безопасно получить изображение от сканера
-        var xcImage: XCImage? = null
-        try {
-            xcImage = XCScannerWrapper.getLastDecodeImage()
-        } catch (e: NullPointerException) {
-            return handleImageError("Scanner service reference is null", e, lastBarcode)
-        } catch (e: Exception) {
-            return handleImageError("Error getting image from scanner", e, lastBarcode)
-        }
+        // Пробуем получить изображение
+        val xcImage = XCScannerWrapper.getLastDecodeImage()
 
         if (xcImage == null) {
             return handleImageError("No image available from scanner", barcodeValue = lastBarcode)
         }
 
         try {
-            Log.d(TAG, "Raw image obtained, width: ${xcImage.width}, height: ${xcImage.height}")
+            // Выводим подробную информацию о полученном изображении
+            Log.d(TAG, "Image details: width=${xcImage.width}, height=${xcImage.height}, stride=${xcImage.stride}")
+            Log.d(TAG, "Image format: ${xcImage.formatName}")
 
-            // Безопасно конвертируем XCImage в Bitmap
-            val bitmap = convertXCImageToBitmap(xcImage)
+            // Получаем байтовый массив данных изображения
+            val imageData = xcImage.data
 
-            if (bitmap != null) {
-                return bitmap
-            } else {
-                return handleImageError("Failed to convert XCImage to Bitmap", barcodeValue = lastBarcode)
+            if (imageData == null) {
+                return handleImageError("Image data is null", barcodeValue = lastBarcode)
             }
+
+            Log.d(TAG, "Image data size: ${imageData.size} bytes")
+
+            // Пробуем разные подходы преобразования в Bitmap
+            val bitmap = try {
+                // Сначала пробуем стандартный способ через BitmapFactory
+                val standardBitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
+                if (standardBitmap != null) {
+                    Log.d(TAG, "Successfully created bitmap using standard decoder")
+                    standardBitmap
+                } else {
+                    // Если стандартный способ не сработал, пробуем raw8 преобразование
+                    Log.d(TAG, "Standard bitmap conversion failed, trying raw8 conversion")
+                    raw8ToBitmap(imageData, xcImage.width, xcImage.height)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Standard conversion failed with exception: ${e.message}")
+                // При ошибке пробуем raw8 преобразование
+                raw8ToBitmap(imageData, xcImage.width, xcImage.height)
+            }
+
+            return bitmap ?: handleImageError("Failed to convert image data to bitmap", barcodeValue = lastBarcode)
         } catch (e: Exception) {
-            return handleImageError("Error processing image data", e, lastBarcode)
+            return handleImageError("Error processing XCImage", e, lastBarcode)
         }
     } catch (e: Exception) {
-        return handleImageError("Unexpected error when getting last decoded image", e, lastBarcode)
+        return handleImageError("Error getting image from scanner", e, lastBarcode)
     }
 }
 
 /**
- * Преобразует XCImage в Bitmap
+ * Преобразует 8-бит необработанные данные в Bitmap
  */
-private fun convertXCImageToBitmap(xcImage: XCImage): Bitmap? {
-    try {
-        // Получаем данные изображения безопасно
-        val imageData = try {
-            xcImage.data
-        } catch (e: Exception) {
-            Log.e(TAG, "Error accessing image data: ${e.message}")
+private fun raw8ToBitmap(data: ByteArray, width: Int, height: Int): Bitmap? {
+    return try {
+        Log.d(TAG, "Converting raw8 data to bitmap: ${width}x${height}, data size: ${data.size}")
+
+        // Проверка на валидность размеров
+        if (width <= 0 || height <= 0 || data.isEmpty()) {
+            Log.e(TAG, "Invalid image dimensions or empty data")
             return null
         }
 
-        if (imageData == null) {
-            Log.e(TAG, "Image data is null")
+        // Проверяем, достаточно ли данных для создания изображения
+        val expectedSize = width * height
+        if (data.size < expectedSize) {
+            Log.e(TAG, "Data size too small: got ${data.size}, need at least $expectedSize")
             return null
         }
 
-        // Проверяем тип данных
-        if (imageData !is ByteArray) {
-            Log.e(TAG, "Image data is not a ByteArray but ${imageData.javaClass.name}")
-            return null
+        // Создаем RGBA массив (4 байта на пиксель)
+        val rgbaData = ByteArray(width * height * 4)
+
+        // Преобразуем данные: для каждого байта создаем пиксель RGBA
+        // где R=G=B=исходное значение, A=255 (полная непрозрачность)
+        for (i in 0 until minOf(data.size, width * height)) {
+            rgbaData[i * 4 + 0] = data[i] // R
+            rgbaData[i * 4 + 1] = data[i] // G
+            rgbaData[i * 4 + 2] = data[i] // B
+            rgbaData[i * 4 + 3] = (-1).toByte() // A (255)
         }
 
-        // Проверяем, не пустой ли массив
-        if (imageData.isEmpty()) {
-            Log.e(TAG, "Image data is empty ByteArray")
-            return null
-        }
+        // Создаем Bitmap и копируем данные
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgbaData))
 
-        try {
-            // Создаем Bitmap из ByteArray
-            return BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error decoding bitmap from byte array: ${e.message}")
-            return null
-        }
+        Log.d(TAG, "Successfully converted raw8 data to bitmap")
+        bitmap
     } catch (e: Exception) {
-        Log.e(TAG, "Error converting XCImage to Bitmap", e)
-        return null
+        Log.e(TAG, "Error converting raw8 to bitmap: ${e.message}")
+        e.printStackTrace()
+        null
     }
 }
 
