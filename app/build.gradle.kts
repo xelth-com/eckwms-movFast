@@ -57,7 +57,7 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-    implementation("com.xcheng:scanner:1.1.5")
+    implementation("com.xcheng:scanner:1.1.4")
     implementation("com.google.accompanist:accompanist-permissions:0.31.1-alpha")
 
     // Jetpack Compose Navigation

@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.util.Log
 import com.tools.XCImage
+import com.xcheng.scanner.XcBarcodeScanner
 import java.nio.ByteBuffer
 
 /**
@@ -57,6 +58,18 @@ fun ScannerManager.getLastDecodedImage(): Bitmap? {
     try {
         Log.d(TAG, "Getting last decoded image from scanner")
 
+        // Проверяем состояние сервиса сканера
+        if (XcBarcodeScanner.a == null) {
+            Log.d(TAG, "Scanner service reference is null - cannot get image")
+            return handleImageError("Scanner service unavailable", barcodeValue = lastBarcode)
+        }
+
+        // Проверяем, поддерживает ли устройство захват изображений
+        if (!XCScannerWrapper.isImageCaptureSupported()) {
+            Log.d(TAG, "Device doesn't support image capture - generating mock image")
+            return handleImageError("Image capture not supported", barcodeValue = lastBarcode)
+        }
+
         // Пробуем получить изображение
         val xcImage = XCScannerWrapper.getLastDecodeImage()
 
@@ -64,42 +77,38 @@ fun ScannerManager.getLastDecodedImage(): Bitmap? {
             return handleImageError("No image available from scanner", barcodeValue = lastBarcode)
         }
 
-        try {
-            // Выводим подробную информацию о полученном изображении
-            Log.d(TAG, "Image details: width=${xcImage.width}, height=${xcImage.height}, stride=${xcImage.stride}")
-            Log.d(TAG, "Image format: ${xcImage.formatName}")
+        // Выводим подробную информацию о полученном изображении
+        Log.d(TAG, "Image details: width=${xcImage.width}, height=${xcImage.height}, stride=${xcImage.stride}")
+        Log.d(TAG, "Image format: ${xcImage.formatName}")
 
-            // Получаем байтовый массив данных изображения
-            val imageData = xcImage.data
+        // Получаем байтовый массив данных изображения
+        val imageData = xcImage.data
 
-            if (imageData == null) {
-                return handleImageError("Image data is null", barcodeValue = lastBarcode)
-            }
+        if (imageData == null) {
+            return handleImageError("Image data is null", barcodeValue = lastBarcode)
+        }
 
-            Log.d(TAG, "Image data size: ${imageData.size} bytes")
+        Log.d(TAG, "Image data size: ${imageData.size} bytes")
 
-            // Пробуем разные подходы преобразования в Bitmap
-            val bitmap = try {
-                // Сначала пробуем стандартный способ через BitmapFactory
-                val standardBitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
-                if (standardBitmap != null) {
-                    Log.d(TAG, "Successfully created bitmap using standard decoder")
-                    standardBitmap
-                } else {
-                    // Если стандартный способ не сработал, пробуем raw8 преобразование
-                    Log.d(TAG, "Standard bitmap conversion failed, trying raw8 conversion")
-                    raw8ToBitmap(imageData, xcImage.width, xcImage.height)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Standard conversion failed with exception: ${e.message}")
-                // При ошибке пробуем raw8 преобразование
+        // Пробуем разные подходы преобразования в Bitmap
+        val bitmap = try {
+            // Сначала пробуем стандартный способ через BitmapFactory
+            val standardBitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
+            if (standardBitmap != null) {
+                Log.d(TAG, "Successfully created bitmap using standard decoder")
+                standardBitmap
+            } else {
+                // Если стандартный способ не сработал, пробуем raw8 преобразование
+                Log.d(TAG, "Standard bitmap conversion failed, trying raw8 conversion")
                 raw8ToBitmap(imageData, xcImage.width, xcImage.height)
             }
-
-            return bitmap ?: handleImageError("Failed to convert image data to bitmap", barcodeValue = lastBarcode)
         } catch (e: Exception) {
-            return handleImageError("Error processing XCImage", e, lastBarcode)
+            Log.e(TAG, "Standard conversion failed with exception: ${e.message}")
+            // При ошибке пробуем raw8 преобразование
+            raw8ToBitmap(imageData, xcImage.width, xcImage.height)
         }
+
+        return bitmap ?: handleImageError("Failed to convert image data to bitmap", barcodeValue = lastBarcode)
     } catch (e: Exception) {
         return handleImageError("Error getting image from scanner", e, lastBarcode)
     }

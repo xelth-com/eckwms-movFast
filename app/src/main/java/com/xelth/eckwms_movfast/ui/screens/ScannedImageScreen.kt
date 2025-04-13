@@ -67,9 +67,18 @@ fun ScannedImageScreen(
     val latestScanResult by scannerManager.scanResult.observeAsState()
 
     // Загрузка изображения при отображении экрана
+    // Add this to the LaunchedEffect block in ScannedImageScreen.kt
     LaunchedEffect(Unit) {
         try {
             Log.d(TAG, "Attempting to load the last decoded image")
+
+            // Check if image capture is supported
+            val isSupported = scannerManager.isImageCaptureSupported()
+            if (!isSupported) {
+                isGeneratedImage = true
+                Log.d(TAG, "Image capture not supported on this device")
+            }
+
             bitmap = scannerManager.getLastDecodedImage()
 
             if (bitmap == null) {
@@ -77,7 +86,7 @@ fun ScannedImageScreen(
                 errorMessage = "Изображение не найдено. Отсканируйте штрих-код, чтобы увидеть его визуализацию."
             } else {
                 Log.d(TAG, "Image loaded successfully: ${bitmap?.width}x${bitmap?.height}")
-                // Проверяем, является ли это сгенерированным изображением
+                // Проверяем, является ли это сгенерированным изображением - размеры 800x400
                 isGeneratedImage = bitmap!!.width == 800 && bitmap!!.height == 400
             }
         } catch (e: Exception) {
@@ -85,6 +94,8 @@ fun ScannedImageScreen(
             errorMessage = "Ошибка загрузки изображения: ${e.message}"
         }
     }
+
+
 
     // Состояние для трансформации (масштабирование и смещение)
     val transformableState = rememberTransformableState { zoomChange, panChange, _ ->

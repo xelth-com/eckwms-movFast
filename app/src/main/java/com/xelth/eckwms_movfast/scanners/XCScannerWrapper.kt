@@ -4,6 +4,7 @@ package com.xelth.eckwms_movfast.scanners
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.RemoteException
 import android.util.Log
 import com.tools.XCImage
 import com.xcheng.scanner.AimerMode
@@ -18,7 +19,7 @@ import com.xcheng.scanner.TextCaseType
 import com.xcheng.scanner.XcBarcodeScanner
 
 /**
- * Kotlin wrapper for XCScanner SDK version 1.1.5
+ * Kotlin wrapper for XCScanner SDK version 1.1.4
  * Provides a more Kotlin-friendly interface to interact with the scanner
  */
 object XCScannerWrapper {
@@ -383,8 +384,31 @@ object XCScannerWrapper {
     }
 
     /**
-     * Получает последнее отсканированное изображение
-     * ВАЖНО: метод в SDK не проверяет на null перед вызовом, будьте осторожны!
+     * Check if the device supports image capture
+     * @return true if supported, false otherwise
+     */
+    fun isImageCaptureSupported(): Boolean {
+        if (!isInitialized) return false
+
+        // Check if the scanner service is available
+        if (XcBarcodeScanner.a == null) {
+            Log.d(TAG, "Image capture not supported: Scanner service reference is null")
+            return false
+        }
+
+        return try {
+            // Try a test call - this won't work if the device doesn't support images
+            val testImage = getLastDecodeImage()
+            testImage != null
+        } catch (e: Exception) {
+            Log.d(TAG, "Image capture not supported: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Gets the last decoded image from the scanner
+     * ВАЖНО: Исправлена проблема с null-reference и обработкой ошибок
      * @return XCImage или null, если изображение недоступно
      */
     fun getLastDecodeImage(): XCImage? {
@@ -393,9 +417,22 @@ object XCScannerWrapper {
             return null
         }
 
+        // Важная проверка на null сервиса сканера, которая отсутствует в SDK
+        if (XcBarcodeScanner.a == null) {
+            Log.e(TAG, "Scanner service reference is null - image retrieval not possible")
+            return null
+        }
+
         try {
-            // Прямой вызов без проверки на null, как в оригинальном SDK
+            // Now it's safe to call the method with a non-null scanner service
             return XcBarcodeScanner.getLastDecodeImage()
+        } catch (e: IllegalArgumentException) {
+            // This specific error occurs when trying to read from Parcel
+            Log.e(TAG, "Error parsing image data from scanner service (Ask Gemini)", e)
+            return null
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote service error while getting image", e)
+            return null
         } catch (e: Exception) {
             Log.e(TAG, "Error getting last decode image", e)
             return null
