@@ -1,5 +1,4 @@
 // app/src/main/java/com/xelth/eckwms_movfast/ScannerActivity.kt
-// Полный файл активности сканера с навигацией между экранами (без Material Icons)
 package com.xelth.eckwms_movfast
 
 import android.os.Bundle

@@ -1,6 +1,7 @@
 // app/src/main/java/com/xelth/eckwms_movfast/MainActivity.kt
 package com.xelth.eckwms_movfast
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
@@ -91,11 +93,16 @@ class MainActivity : ComponentActivity() {
                     val serverImageUrls by imageUrls.observeAsState(emptyList())
 
                     MainContent(
-                        scannedBarcode = null, // Not used anymore
+                        scannedBarcode = null,
                         resultDetails = latestResultDetails,
                         requestStatus = latestRequestStatus,
                         imageUrls = serverImageUrls,
-                        modifier = Modifier.padding(innerPadding)
+                        modifier = Modifier.padding(innerPadding),
+                        onOpenScannerSettings = {
+                            // Запускаем ScannerActivity
+                            val intent = Intent(this@MainActivity, ScannerActivity::class.java)
+                            startActivity(intent)
+                        }
                     )
                 }
             }
@@ -250,7 +257,8 @@ fun MainContent(
     resultDetails: String?,
     requestStatus: RequestStatus?,
     imageUrls: List<String>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenScannerSettings: () -> Unit
 ) {
     val scrollState = rememberScrollState()
 
@@ -260,7 +268,51 @@ fun MainContent(
             .verticalScroll(scrollState),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Removed the "EckWMS Scanner" title as requested
+        // Заголовок приложения
+        Text(
+            text = "ECKWMS Scanner",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        // Кнопка для настроек сканера
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Scanner Configuration",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Configure scanner settings, test API functions, and view scan images",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = onOpenScannerSettings,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open Scanner Settings")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Divider()
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Отображение деталей результата
         if (resultDetails != null && resultDetails.isNotEmpty()) {
