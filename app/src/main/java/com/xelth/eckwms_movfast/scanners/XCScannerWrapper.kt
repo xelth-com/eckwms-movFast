@@ -363,24 +363,40 @@ object XCScannerWrapper {
         Log.d(TAG, "Settings reset to default")
     }
 
+// Replace the DataMatrix functions in XCScannerWrapper.kt with these versions
+
     /**
-     * Set DataMatrix barcode format with separators
+     * Set DataMatrix barcode format with separators (dummy implementation)
+     * Note: This API does not seem available in current scanner SDK
      * @param withSeparators true to include separators, false to exclude
      */
     fun setDataMatrixWithSeparators(withSeparators: Boolean) {
         if (!isInitialized) return
-        XcBarcodeScanner.setDataMatrixWithSeparators(withSeparators)
-        Log.d(TAG, "DataMatrix with separators: $withSeparators")
+        try {
+            // Try reflection as a fallback if the direct method is not available
+            val method = XcBarcodeScanner::class.java.getDeclaredMethod("setDataMatrixWithSeparators", Boolean::class.java)
+            method.invoke(null, withSeparators)
+            Log.d(TAG, "DataMatrix with separators: $withSeparators")
+        } catch (e: Exception) {
+            Log.w(TAG, "setDataMatrixWithSeparators not supported in this scanner version: ${e.message}")
+        }
     }
 
     /**
-     * Set maximum output length for DataMatrix barcodes
+     * Set maximum output length for DataMatrix barcodes (dummy implementation)
+     * Note: This API does not seem available in current scanner SDK
      * @param maxLength Maximum length for output
      */
     fun setDataMatrixMaxOutputLength(maxLength: Int) {
         if (!isInitialized) return
-        XcBarcodeScanner.setDataMatrixMaxOutputLength(maxLength)
-        Log.d(TAG, "DataMatrix max output length: $maxLength")
+        try {
+            // Try reflection as a fallback if the direct method is not available
+            val method = XcBarcodeScanner::class.java.getDeclaredMethod("setDataMatrixMaxOutputLength", Int::class.java)
+            method.invoke(null, maxLength)
+            Log.d(TAG, "DataMatrix max output length: $maxLength")
+        } catch (e: Exception) {
+            Log.w(TAG, "setDataMatrixMaxOutputLength not supported in this scanner version: ${e.message}")
+        }
     }
 
     /**

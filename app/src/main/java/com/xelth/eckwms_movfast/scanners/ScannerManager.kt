@@ -22,6 +22,9 @@ private const val SCAN_ACTION = "com.xcheng.scanner.action.BARCODE_DECODING_BROA
 private const val SCAN_DATA_KEY = "EXTRA_BARCODE_DECODING_DATA"
 private const val TAG = "ScannerManager"
 
+
+
+
 /**
  * Синглтон для управления сканером на уровне приложения
  */
@@ -236,6 +239,8 @@ class ScannerManager private constructor(private val application: Application) {
         Log.d(TAG, "✓ Ресурсы сканера освобождены")
     }
 
+
+
     /**
      * Проверяет, инициализирован ли сканер
      * @return true если сканер инициализирован, false в противном случае
@@ -300,6 +305,19 @@ class ScannerManager private constructor(private val application: Application) {
         if (!isInitialized) initialize()
         XCScannerWrapper.setAimerLightsMode(aimerMode)
     }
+
+    /**
+     * Checks if the device's scanner hardware supports image capture
+     * @return true if image capture is supported, false otherwise
+     */
+    fun isImageCaptureSupported(): Boolean {
+        if (!isInitialized()) {
+            Log.d(TAG, "Scanner not initialized - cannot check image support")
+            return false
+        }
+        return XCScannerWrapper.isImageCaptureSupported()
+    }
+
 
     /**
      * Проверяет, запущено ли непрерывное сканирование
