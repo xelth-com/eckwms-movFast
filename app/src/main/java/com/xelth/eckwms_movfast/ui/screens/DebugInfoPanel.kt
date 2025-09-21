@@ -56,8 +56,10 @@ fun DebugInfoPanel(viewModel: ScanRecoveryViewModel, modifier: Modifier = Modifi
             // State and Status
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
                 Text("State: ${scanState?.name ?: "N/A"}", fontWeight = FontWeight.Bold)
-                if (recoveryStatus != null && scanState?.name?.contains("RECOVERY") == true) {
-                    Text("Images: ${recoveryStatus.imagesCollected}/${recoveryStatus.totalImages}", fontWeight = FontWeight.Bold)
+                recoveryStatus?.let { status ->
+                    if (scanState?.name?.contains("RECOVERY") == true) {
+                        Text("Images: ${status.imagesCollected}/${status.totalImages}", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))

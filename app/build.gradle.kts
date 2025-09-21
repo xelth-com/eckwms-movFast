@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "com.xelth.eckwms_movfast"
     compileSdk = 35
+    buildToolsVersion = "35.0.1"
 
     defaultConfig {
         applicationId = "com.xelth.eckwms_movfast"

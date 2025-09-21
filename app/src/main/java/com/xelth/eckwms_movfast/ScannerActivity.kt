@@ -4,6 +4,7 @@ package com.xelth.eckwms_movfast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,10 +17,15 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.ui.screens.ScannedImageScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
+import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 
 class ScannerActivity : ComponentActivity() {
     // Ссылка на ScannerManager
     private lateinit var scannerManager: ScannerManager
+    
+    private val viewModel: ScanRecoveryViewModel by viewModels {
+        ScanRecoveryViewModel.Companion.Factory(application)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +46,7 @@ class ScannerActivity : ComponentActivity() {
                         "settings" -> {
                             ScannerSettingsScreen(
                                 scannerManager = scannerManager,
+                                viewModel = viewModel,
                                 onNavigateBack = { finish() },
                                 onOpenImageViewer = { currentScreen = "image_viewer" }
                             )

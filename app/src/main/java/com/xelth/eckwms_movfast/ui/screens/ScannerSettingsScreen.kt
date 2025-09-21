@@ -87,11 +87,13 @@ private const val TAG = "ScannerSettingsScreen"
 @Composable
 fun ScannerSettingsScreen(
     scannerManager: ScannerManager,
+    viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel,
     onNavigateBack: () -> Unit,
     onOpenImageViewer: () -> Unit
 ) {
     // Наблюдаем за последним отсканированным штрих-кодом
     val latestScanResult by scannerManager.scanResult.observeAsState()
+    val debugPanelEnabled by viewModel.debugPanelEnabled.observeAsState(false)
     val scrollState = rememberScrollState()
 
     // Состояние для отслеживания переключения на API тестирование
@@ -200,6 +202,35 @@ fun ScannerSettingsScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Debug Panel Toggle Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Show Debug Panel",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    
+                    Switch(
+                        checked = debugPanelEnabled,
+                        onCheckedChange = { viewModel.setDebugPanelEnabled(it) }
+                    )
+                }
+            }
+
             // Переключатель для API Testing Section
             Card(
                 modifier = Modifier

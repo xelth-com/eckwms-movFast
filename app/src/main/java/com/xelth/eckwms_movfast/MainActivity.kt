@@ -26,7 +26,7 @@ import com.xelth.eckwms_movfast.ui.viewmodels.ScanState
 class MainActivity : ComponentActivity() {
 
     private val viewModel: ScanRecoveryViewModel by viewModels {
-        ScanRecoveryViewModel.Factory(application)
+        ScanRecoveryViewModel.Companion.Factory(application)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,14 +35,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             EckwmsmovFastTheme {
-                var showDebugPanel by remember { mutableStateOf(false) }
+                val debugPanelEnabled by viewModel.debugPanelEnabled.observeAsState(false)
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                         // Main content
                         MainContentWithDebug(
                             viewModel = viewModel,
-                            showDebugPanel = showDebugPanel,
+                            showDebugPanel = debugPanelEnabled,
                             onOpenScannerSettings = {
                                 val intent = Intent(this@MainActivity, ScannerActivity::class.java)
                                 startActivity(intent)
@@ -119,28 +119,6 @@ fun MainContent(
 
         Button(onClick = onOpenScannerSettings, modifier = Modifier.fillMaxWidth()) {
             Text("Scanner Hardware Settings")
-        }
-
-        // Debug Panel Toggle
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "🔍 Debug Panel",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Switch(
-                    checked = showDebugPanel,
-                    onCheckedChange = { showDebugPanel = it }
-                )
-            }
         }
 
         Divider()
