@@ -6,10 +6,11 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.xelth.eckwms_movfast.EckwmsApp
 import com.xelth.eckwms_movfast.scanners.ScannerManager
@@ -50,32 +51,51 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     private val _errorMessage = MutableLiveData<String?>(null)
     val errorMessage: LiveData<String?> = _errorMessage
 
+    // --- DEBUG ---
+    private val _debugLog = MutableLiveData<List<String>>(emptyList())
+    val debugLog: LiveData<List<String>> = _debugLog
+
+    private val _recoveryImagesPreview = MutableLiveData<List<Bitmap>>(emptyList())
+    val recoveryImagesPreview: LiveData<List<Bitmap>> = _recoveryImagesPreview
+
+    private val _debugPanelEnabled = MutableLiveData<Boolean>(false)
+    val debugPanelEnabled: LiveData<Boolean> = _debugPanelEnabled
+    // --- END DEBUG ---
+
     private var hardwareScanJob: Job? = null
     private val recoveryImages = mutableListOf<Bitmap>()
     private val RECOVERY_IMAGE_COUNT = 3
 
     init {
+        addLog("ViewModel Initialized.")
         scannerManager.scanResult.observeForever {
             if (it != null && _scanState.value == ScanState.HW_SCANNING) {
-                Log.d(TAG, "Hardware scan success: $it")
+                addLog("Hardware scan SUCCESS: $it")
                 hardwareScanJob?.cancel()
+                scannerManager.stopLoopScan()
                 _scannedBarcode.postValue(it)
                 _scanState.postValue(ScanState.SUCCESS)
             }
         }
     }
 
+    private fun addLog(message: String) {
+        Log.d(TAG, message)
+        val currentLog = _debugLog.value ?: emptyList()
+        _debugLog.postValue(currentLog + message)
+    }
+
     fun startHardwareScan() {
-        Log.d(TAG, "Starting hardware scan...")
+        addLog("Attempting hardware scan...")
         _scanState.value = ScanState.HW_SCANNING
         _errorMessage.value = null
         _scannedBarcode.value = null
         scannerManager.startLoopScan(500)
 
         hardwareScanJob = viewModelScope.launch {
-            delay(5000) // 5 second timeout for hardware scan
+            delay(5000)
             if (_scanState.value == ScanState.HW_SCANNING) {
-                Log.d(TAG, "Hardware scan timed out.")
+                addLog("Hardware scan TIMEOUT.")
                 scannerManager.stopLoopScan()
                 _scanState.postValue(ScanState.HW_SCAN_FAILED)
             }
@@ -83,30 +103,32 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun trySingleImageRecovery() {
-        Log.d(TAG, "Starting single image recovery (Chance 2)...")
+        addLog("Chance 2: ML Kit single image analysis.")
         _scanState.value = ScanState.ML_ANALYSIS_SINGLE
         val image = scannerManager.getLastDecodedImage()
         if (image != null) {
             processImageWithMlKit(image) { success, result ->
                 if (success) {
+                    addLog("ML Kit single image SUCCESS: $result")
                     _scannedBarcode.postValue(result)
                     _scanState.postValue(ScanState.SUCCESS)
                 } else {
-                    Log.d(TAG, "Single image recovery failed.")
+                    addLog("ML Kit single image FAILED: $result")
                     _errorMessage.postValue(result)
                     _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
                 }
             }
         } else {
-            Log.e(TAG, "Failed to get image from scanner for recovery.")
+            addLog("ML Kit FAILED: Could not get image from scanner.")
             _errorMessage.postValue("Could not get image from scanner.")
             _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
         }
     }
 
     fun startRecoverySession() {
-        Log.d(TAG, "Starting multi-image recovery session (Chance 3)...")
+        addLog("Chance 3: Starting multi-image recovery session.")
         recoveryImages.clear()
+        _recoveryImagesPreview.value = emptyList()
         _recoveryStatus.value = RecoveryStatus(0, RECOVERY_IMAGE_COUNT)
         _scanState.value = ScanState.RECOVERY_SESSION_ACTIVE
         _errorMessage.value = null
@@ -114,36 +136,42 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     fun captureImageForRecovery() {
         if (_scanState.value != ScanState.RECOVERY_SESSION_ACTIVE) return
+        addLog("Capturing image for recovery...")
+        scannerManager.startScan()
+        viewModelScope.launch {
+            delay(500)
+            val image = scannerManager.getLastDecodedImage()
+            if (image != null) {
+                recoveryImages.add(image)
+                _recoveryImagesPreview.postValue(ArrayList(recoveryImages)) // Post a copy
+                _recoveryStatus.postValue(RecoveryStatus(recoveryImages.size, RECOVERY_IMAGE_COUNT))
+                addLog("Collected image ${recoveryImages.size}/$RECOVERY_IMAGE_COUNT.")
 
-        val image = scannerManager.getLastDecodedImage()
-        if (image != null) {
-            recoveryImages.add(image)
-            _recoveryStatus.value = RecoveryStatus(recoveryImages.size, RECOVERY_IMAGE_COUNT)
-            Log.d(TAG, "Collected image ${recoveryImages.size}/$RECOVERY_IMAGE_COUNT for recovery.")
-
-            if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
-                processRecoveryImages()
+                if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
+                    processRecoveryImages()
+                }
+            } else {
+                addLog("Image capture FAILED.")
+                _errorMessage.postValue("Failed to capture image. Please try again.")
             }
-        } else {
-            _errorMessage.postValue("Failed to capture image. Please try again.")
         }
     }
 
     private fun processRecoveryImages() {
-        Log.d(TAG, "Processing ${recoveryImages.size} collected images...")
+        addLog("Processing ${recoveryImages.size} collected images...")
         _scanState.value = ScanState.RECOVERY_ANALYSIS
-
         viewModelScope.launch(Dispatchers.IO) {
             for ((index, image) in recoveryImages.withIndex()) {
-                Log.d(TAG, "Analyzing image ${index + 1}...")
-                val found = processImageWithMlKitSuspending(image) // Using suspending version
+                addLog("Analyzing image ${index + 1}...")
+                val found = processImageWithMlKitSuspending(image)
                 if (found != null) {
+                    addLog("Multi-image recovery SUCCESS: $found")
                     _scannedBarcode.postValue(found)
                     _scanState.postValue(ScanState.SUCCESS)
                     return@launch
                 }
             }
-            Log.d(TAG, "Multi-image recovery failed.")
+            addLog("Multi-image recovery FAILED.")
             _errorMessage.postValue("Could not decode barcode from any of the images.")
             _scanState.postValue(ScanState.FAILURE)
         }
@@ -151,9 +179,7 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     private fun processImageWithMlKit(bitmap: Bitmap, callback: (Boolean, String) -> Unit) {
         val image = InputImage.fromBitmap(bitmap, 0)
-        val options = BarcodeScannerOptions.Builder().build() // All formats
-        val scanner = BarcodeScanning.getClient(options)
-
+        val scanner = BarcodeScanning.getClient(BarcodeScannerOptions.Builder().build())
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
                 if (barcodes.isNotEmpty()) {
@@ -170,25 +196,42 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     private suspend fun processImageWithMlKitSuspending(bitmap: Bitmap): String? {
         return kotlin.coroutines.suspendCoroutine { continuation ->
             processImageWithMlKit(bitmap) { success, result ->
-                if (success) {
-                    continuation.resumeWith(Result.success(result))
-                } else {
-                    continuation.resumeWith(Result.success(null))
-                }
+                continuation.resumeWith(Result.success(if (success) result else null))
             }
         }
     }
 
+    fun setDebugPanelEnabled(enabled: Boolean) {
+        _debugPanelEnabled.value = enabled
+        addLog("Debug panel ${if (enabled) "enabled" else "disabled"}")
+    }
+
     fun reset() {
+        addLog("Resetting state to IDLE.")
         hardwareScanJob?.cancel()
         scannerManager.stopLoopScan()
         _scanState.postValue(ScanState.IDLE)
         _scannedBarcode.postValue(null)
         _errorMessage.postValue(null)
+        _recoveryImagesPreview.postValue(emptyList())
+        recoveryImages.clear()
     }
 
     override fun onCleared() {
         super.onCleared()
         scannerManager.scanResult.removeObserver { }
+        reset()
+    }
+    
+    companion object {
+        class Factory(private val application: Application) : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                if (modelClass.isAssignableFrom(ScanRecoveryViewModel::class.java)) {
+                    return ScanRecoveryViewModel(application) as T
+                }
+                throw IllegalArgumentException("Unknown ViewModel class")
+            }
+        }
     }
 }

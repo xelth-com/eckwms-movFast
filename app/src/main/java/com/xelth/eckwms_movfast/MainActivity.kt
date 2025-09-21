@@ -6,25 +6,28 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.xelth.eckwms_movfast.ui.screens.DebugInfoPanel
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanState
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: ScanRecoveryViewModel by viewModels()
+    private val viewModel: ScanRecoveryViewModel by viewModels {
+        ScanRecoveryViewModel.Factory(application)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,30 +35,56 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             EckwmsmovFastTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
-                    val scannedBarcode by viewModel.scannedBarcode.observeAsState()
-                    val recoveryStatus by viewModel.recoveryStatus.observeAsState()
-                    val errorMessage by viewModel.errorMessage.observeAsState()
+                var showDebugPanel by remember { mutableStateOf(false) }
 
-                    MainContent(
-                        modifier = Modifier.padding(innerPadding),
-                        scanState = scanState,
-                        scannedBarcode = scannedBarcode,
-                        recoveryStatus = recoveryStatus,
-                        errorMessage = errorMessage,
-                        onStartScan = { viewModel.startHardwareScan() },
-                        onTryEnhancedScan = { viewModel.trySingleImageRecovery() },
-                        onStartRecovery = { viewModel.startRecoverySession() },
-                        onCaptureForRecovery = { viewModel.captureImageForRecovery() },
-                        onReset = { viewModel.reset() },
-                        onOpenScannerSettings = {
-                            val intent = Intent(this@MainActivity, ScannerActivity::class.java)
-                            startActivity(intent)
-                        }
-                    )
+                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                    Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
+                        // Main content
+                        MainContentWithDebug(
+                            viewModel = viewModel,
+                            showDebugPanel = showDebugPanel,
+                            onOpenScannerSettings = {
+                                val intent = Intent(this@MainActivity, ScannerActivity::class.java)
+                                startActivity(intent)
+                            }
+                        )
+
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun MainContentWithDebug(
+    viewModel: ScanRecoveryViewModel,
+    showDebugPanel: Boolean,
+    onOpenScannerSettings: () -> Unit
+) {
+    val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
+    val scannedBarcode by viewModel.scannedBarcode.observeAsState()
+    val recoveryStatus by viewModel.recoveryStatus.observeAsState()
+    val errorMessage by viewModel.errorMessage.observeAsState()
+
+    Column {
+        MainContent(
+            modifier = Modifier.weight(1f),
+            scanState = scanState,
+            scannedBarcode = scannedBarcode,
+            recoveryStatus = recoveryStatus,
+            errorMessage = errorMessage,
+            onStartScan = { viewModel.startHardwareScan() },
+            onTryEnhancedScan = { viewModel.trySingleImageRecovery() },
+            onStartRecovery = { viewModel.startRecoverySession() },
+            onCaptureForRecovery = { viewModel.captureImageForRecovery() },
+            onReset = { viewModel.reset() },
+            onOpenScannerSettings = onOpenScannerSettings,
+            showDebugPanel = showDebugPanel
+        )
+        
+        if (showDebugPanel) {
+            DebugInfoPanel(viewModel = viewModel)
         }
     }
 }
@@ -72,7 +101,8 @@ fun MainContent(
     onStartRecovery: () -> Unit,
     onCaptureForRecovery: () -> Unit,
     onReset: () -> Unit,
-    onOpenScannerSettings: () -> Unit
+    onOpenScannerSettings: () -> Unit,
+    showDebugPanel: Boolean
 ) {
     Column(
         modifier = modifier
@@ -89,6 +119,28 @@ fun MainContent(
 
         Button(onClick = onOpenScannerSettings, modifier = Modifier.fillMaxWidth()) {
             Text("Scanner Hardware Settings")
+        }
+
+        // Debug Panel Toggle
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "🔍 Debug Panel",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Switch(
+                    checked = showDebugPanel,
+                    onCheckedChange = { showDebugPanel = it }
+                )
+            }
         }
 
         Divider()

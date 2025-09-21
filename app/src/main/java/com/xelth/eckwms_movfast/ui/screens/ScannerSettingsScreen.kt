@@ -181,6 +181,7 @@ fun ScannerSettingsScreen(
                     TextButton(onClick = onOpenImageViewer) {
                         Text("View Image")
                     }
+                    // TODO: Add Debug Panel Toggle here
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
