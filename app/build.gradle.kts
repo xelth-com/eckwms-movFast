@@ -18,6 +18,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file(project.property("MYAPP_RELEASE_STORE_FILE") as String)
+            storePassword = project.property("MYAPP_RELEASE_STORE_PASSWORD") as String
+            keyAlias = project.property("MYAPP_RELEASE_KEY_ALIAS") as String
+            keyPassword = project.property("MYAPP_RELEASE_KEY_PASSWORD") as String
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -25,6 +34,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
@@ -69,4 +79,7 @@ dependencies {
     // Для интеграции LiveData с Compose
     implementation("androidx.compose.runtime:runtime-livedata:1.5.4")
     implementation("io.coil-kt:coil-compose:2.5.0")
+    
+    // ML Kit Barcode Scanning
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 }
