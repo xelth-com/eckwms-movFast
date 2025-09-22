@@ -30,6 +30,8 @@ fun DebugInfoPanel(viewModel: ScanRecoveryViewModel, modifier: Modifier = Modifi
     val recoveryStatus by viewModel.recoveryStatus.observeAsState()
     val debugLog by viewModel.debugLog.observeAsState(emptyList())
     val recoveryImages by viewModel.recoveryImagesPreview.observeAsState(emptyList())
+    val singleRecoveryImage by viewModel.singleRecoveryImage.observeAsState()
+    val allDiagnosticImages by viewModel.allDiagnosticImages.observeAsState(emptyList())
     val logListState = rememberLazyListState()
 
     // Auto-scroll log to the bottom
@@ -64,8 +66,31 @@ fun DebugInfoPanel(viewModel: ScanRecoveryViewModel, modifier: Modifier = Modifi
             }
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Image Previews
+            // Single Recovery Image (Stage 2)
+            singleRecoveryImage?.let { bitmap ->
+                Text(
+                    "Stage 2 - Single Recovery Image:",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Single recovery image",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Recovery Session Images (Stage 3)
             if (recoveryImages.isNotEmpty()) {
+                Text(
+                    "Stage 3 - Recovery Session Images:",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
                 LazyRow(
                     modifier = Modifier.fillMaxWidth().height(80.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -76,6 +101,35 @@ fun DebugInfoPanel(viewModel: ScanRecoveryViewModel, modifier: Modifier = Modifi
                             contentDescription = "Recovery image preview",
                             modifier = Modifier.height(80.dp).background(MaterialTheme.colorScheme.onSurfaceVariant)
                         )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // All Diagnostic Images Summary
+            if (allDiagnosticImages.isNotEmpty()) {
+                Text(
+                    "All Diagnostic Images (${allDiagnosticImages.size} total):",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().height(60.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(allDiagnosticImages.withIndex().toList()) { (index, bitmap) ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "Diagnostic image ${index + 1}",
+                                modifier = Modifier.height(45.dp).background(MaterialTheme.colorScheme.onSurfaceVariant)
+                            )
+                            Text(
+                                "${index + 1}",
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))

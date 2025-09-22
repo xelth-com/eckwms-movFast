@@ -11,8 +11,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.xelth.eckwms_movfast.EckwmsApp
+import com.xelth.eckwms_movfast.utils.FileUtils
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.scanners.getLastDecodedImage
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +60,13 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     private val _recoveryImagesPreview = MutableLiveData<List<Bitmap>>(emptyList())
     val recoveryImagesPreview: LiveData<List<Bitmap>> = _recoveryImagesPreview
 
-    private val _debugPanelEnabled = MutableLiveData<Boolean>(false)
+    private val _singleRecoveryImage = MutableLiveData<Bitmap?>(null)
+    val singleRecoveryImage: LiveData<Bitmap?> = _singleRecoveryImage
+
+    private val _allDiagnosticImages = MutableLiveData<List<Bitmap>>(emptyList())
+    val allDiagnosticImages: LiveData<List<Bitmap>> = _allDiagnosticImages
+
+    private val _debugPanelEnabled = MutableLiveData<Boolean>(true)
     val debugPanelEnabled: LiveData<Boolean> = _debugPanelEnabled
     // --- END DEBUG ---
 
@@ -107,6 +115,16 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
         _scanState.value = ScanState.ML_ANALYSIS_SINGLE
         val image = scannerManager.getLastDecodedImage()
         if (image != null) {
+            addLog("Retrieved image for single recovery: ${image.width}x${image.height}")
+
+            // Store image for UI display
+            _singleRecoveryImage.postValue(image)
+            updateAllDiagnosticImages()
+
+            // Save diagnostic image
+            val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "single_recovery")
+            addLog("Diagnostic image saved: $savedUri")
+
             processImageWithMlKit(image) { success, result ->
                 if (success) {
                     addLog("ML Kit single image SUCCESS: $result")
@@ -142,9 +160,16 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
             delay(500)
             val image = scannerManager.getLastDecodedImage()
             if (image != null) {
+                addLog("Retrieved recovery image: ${image.width}x${image.height}")
+
+                // Save diagnostic image
+                val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "recovery_${recoveryImages.size + 1}")
+                addLog("Diagnostic recovery image saved: $savedUri")
+
                 recoveryImages.add(image)
                 _recoveryImagesPreview.postValue(ArrayList(recoveryImages)) // Post a copy
                 _recoveryStatus.postValue(RecoveryStatus(recoveryImages.size, RECOVERY_IMAGE_COUNT))
+                updateAllDiagnosticImages()
                 addLog("Collected image ${recoveryImages.size}/$RECOVERY_IMAGE_COUNT.")
 
                 if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
@@ -178,17 +203,45 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun processImageWithMlKit(bitmap: Bitmap, callback: (Boolean, String) -> Unit) {
+        addLog("Starting ML Kit analysis on ${bitmap.width}x${bitmap.height} image")
         val image = InputImage.fromBitmap(bitmap, 0)
-        val scanner = BarcodeScanning.getClient(BarcodeScannerOptions.Builder().build())
+
+        // Configure scanner to detect all barcode formats
+        val options = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(
+                Barcode.FORMAT_QR_CODE,
+                Barcode.FORMAT_CODE_128,
+                Barcode.FORMAT_CODE_39,
+                Barcode.FORMAT_CODE_93,
+                Barcode.FORMAT_CODABAR,
+                Barcode.FORMAT_EAN_13,
+                Barcode.FORMAT_EAN_8,
+                Barcode.FORMAT_ITF,
+                Barcode.FORMAT_UPC_A,
+                Barcode.FORMAT_UPC_E,
+                Barcode.FORMAT_PDF417,
+                Barcode.FORMAT_AZTEC,
+                Barcode.FORMAT_DATA_MATRIX
+            )
+            .build()
+
+        val scanner = BarcodeScanning.getClient(options)
+        addLog("ML Kit scanner configured for all formats")
+
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
+                addLog("ML Kit analysis completed. Found ${barcodes.size} barcodes")
                 if (barcodes.isNotEmpty()) {
-                    callback(true, barcodes[0].rawValue ?: "")
+                    val barcode = barcodes[0]
+                    addLog("Barcode details - Format: ${barcode.format}, Value: ${barcode.rawValue}")
+                    callback(true, barcode.rawValue ?: "")
                 } else {
+                    addLog("No barcode detected in image")
                     callback(false, "No barcode found in image.")
                 }
             }
             .addOnFailureListener { e ->
+                addLog("ML Kit analysis failed with exception: ${e.message}")
                 callback(false, "ML Kit analysis failed: ${e.message}")
             }
     }
@@ -199,6 +252,25 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
                 continuation.resumeWith(Result.success(if (success) result else null))
             }
         }
+    }
+
+    private fun updateAllDiagnosticImages() {
+        val allImages = mutableListOf<Bitmap>()
+
+        // Add single recovery image if available
+        _singleRecoveryImage.value?.let {
+            allImages.add(it)
+            addLog("Added single recovery image to UI display")
+        }
+
+        // Add all recovery session images
+        allImages.addAll(recoveryImages)
+        if (recoveryImages.isNotEmpty()) {
+            addLog("Added ${recoveryImages.size} recovery session images to UI display")
+        }
+
+        addLog("Total diagnostic images for UI: ${allImages.size}")
+        _allDiagnosticImages.postValue(allImages)
     }
 
     fun setDebugPanelEnabled(enabled: Boolean) {
@@ -214,6 +286,8 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
         _scannedBarcode.postValue(null)
         _errorMessage.postValue(null)
         _recoveryImagesPreview.postValue(emptyList())
+        _singleRecoveryImage.postValue(null)
+        _allDiagnosticImages.postValue(emptyList())
         recoveryImages.clear()
     }
 

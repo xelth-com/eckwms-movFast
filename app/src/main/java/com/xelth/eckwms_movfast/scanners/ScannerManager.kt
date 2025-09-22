@@ -46,16 +46,20 @@ class ScannerManager private constructor(private val application: Application) {
      * Инициализирует сканер и BroadcastReceiver
      */
     fun initialize() {
+        val timestamp = System.currentTimeMillis()
+        Log.d(TAG, "[$timestamp] Starting scanner initialization...")
+
         if (isInitialized) {
-            Log.d(TAG, "Сканер уже инициализирован")
+            Log.d(TAG, "[$timestamp] Scanner already initialized")
             return
         }
 
-        Log.d(TAG, "⭐ Инициализация сканера на уровне приложения...")
+        Log.d(TAG, "[$timestamp] ⭐ Initializing scanner at application level...")
 
         // Инициализация XCScannerWrapper
         XCScannerWrapper.initialize(application) { result ->
-            Log.d(TAG, "⭐ Scan result received via SDK callback: $result")
+            val callbackTimestamp = System.currentTimeMillis()
+            Log.d(TAG, "[$callbackTimestamp] ⭐ Scan result received via SDK callback: $result")
             _scanResult.postValue(result)
         }
 
@@ -66,7 +70,8 @@ class ScannerManager private constructor(private val application: Application) {
         registerBroadcastReceiver()
 
         isInitialized = true
-        Log.d(TAG, "✓ Сканер успешно инициализирован")
+        val endTimestamp = System.currentTimeMillis()
+        Log.d(TAG, "[$endTimestamp] ✓ Scanner successfully initialized (took ${endTimestamp - timestamp}ms)")
     }
 
     /**
@@ -79,30 +84,34 @@ class ScannerManager private constructor(private val application: Application) {
         // Создаем новый BroadcastReceiver
         scanReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                Log.d(TAG, "⭐ BroadcastReceiver получил Intent: ${intent.action}")
+                val receiveTimestamp = System.currentTimeMillis()
+                Log.d(TAG, "[$receiveTimestamp] ⭐ BroadcastReceiver caught Intent: ${intent.action}")
 
                 // Проверяем, что это именно наш action
                 if (intent.action == SCAN_ACTION) {
                     val barcode = intent.getStringExtra(SCAN_DATA_KEY)
 
                     if (barcode != null) {
-                        Log.d(TAG, "⭐⭐⭐ Получен штрих-код через broadcast: $barcode")
+                        Log.d(TAG, "[$receiveTimestamp] ⭐⭐⭐ Barcode received via broadcast: $barcode")
 
                         // Check if this is a duplicate of what we've already processed through the callback
                         if (barcode == _scanResult.value) {
-                            Log.d(TAG, "Ignoring duplicate barcode from broadcast - already processed via callback")
+                            Log.d(TAG, "[$receiveTimestamp] Ignoring duplicate barcode from broadcast - already processed via callback")
                             return
                         }
 
                         // Отправляем результат через LiveData
                         _scanResult.postValue(barcode)
+                        Log.d(TAG, "[$receiveTimestamp] Barcode posted to LiveData")
                     } else {
-                        Log.d(TAG, "⚠️ Intent не содержит данных по ключу $SCAN_DATA_KEY")
+                        Log.d(TAG, "[$receiveTimestamp] ⚠️ Intent contains no data for key $SCAN_DATA_KEY")
                         // Проверяем все extras для отладки
                         intent.extras?.keySet()?.forEach { key ->
-                            Log.d(TAG, "  Ключ: $key, Значение: ${intent.extras?.get(key)}")
+                            Log.d(TAG, "[$receiveTimestamp]   Key: $key, Value: ${intent.extras?.get(key)}")
                         }
                     }
+                } else {
+                    Log.d(TAG, "[$receiveTimestamp] BroadcastReceiver received unrelated intent: ${intent.action}")
                 }
             }
         }
