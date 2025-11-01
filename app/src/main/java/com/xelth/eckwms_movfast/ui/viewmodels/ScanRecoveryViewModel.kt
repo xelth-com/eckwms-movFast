@@ -2,6 +2,7 @@ package com.xelth.eckwms_movfast.ui.viewmodels
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
@@ -21,6 +22,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+// Функция для поворота изображения на 180 градусов
+private fun rotateBitmap180(bitmap: Bitmap): Bitmap {
+    val matrix = Matrix()
+    matrix.postRotate(180f)
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -204,7 +212,10 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     private fun processImageWithMlKit(bitmap: Bitmap, callback: (Boolean, String) -> Unit) {
         addLog("Starting ML Kit analysis on ${bitmap.width}x${bitmap.height} image")
-        val image = InputImage.fromBitmap(bitmap, 0)
+        // Поворачиваем изображение на 180 градусов, так как они отображаются вверх ногами
+        val rotatedBitmap = rotateBitmap180(bitmap)
+        addLog("Rotated image for ML Kit analysis: ${rotatedBitmap.width}x${rotatedBitmap.height}")
+        val image = InputImage.fromBitmap(rotatedBitmap, 0)
 
         // Configure scanner to detect all barcode formats
         val options = BarcodeScannerOptions.Builder()

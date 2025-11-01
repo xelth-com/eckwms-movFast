@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -202,6 +203,9 @@ fun ScannerSettingsScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Scanning Status Card
+            ScanningStatusCard(viewModel)
+
             // Debug Panel Toggle Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -223,7 +227,7 @@ fun ScannerSettingsScreen(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
-                    
+
                     Switch(
                         checked = debugPanelEnabled,
                         onCheckedChange = { viewModel.setDebugPanelEnabled(it) }
@@ -346,6 +350,9 @@ fun ScannerSettingsScreen(
                     }
                 }
             }
+
+            // ML Kit Recovery Section
+            MlKitRecoverySection(viewModel)
 
             // Показываем либо API тесты, либо обычные настройки в зависимости от состояния
             if (showApiTestingSection) {
@@ -520,6 +527,11 @@ fun ScannerSettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(if (isLoopScanActive) "Stop Continuous Scanning" else "Start Continuous Scanning")
+            }
+
+            // Show Debug Panel if enabled
+            if (debugPanelEnabled) {
+                com.xelth.eckwms_movfast.ui.screens.DebugInfoPanel(viewModel = viewModel)
             }
         }
     }
@@ -928,6 +940,222 @@ fun TestResultItem(result: FunctionTestResult) {
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.alpha(0.8f)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * ML Kit Recovery Section Component
+ */
+@Composable
+fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel) {
+    // Наблюдаем за состоянием ML Kit
+    val scanState by viewModel.scanState.observeAsState(com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE)
+    val recoveryStatus by viewModel.recoveryStatus.observeAsState()
+    val errorMessage by viewModel.errorMessage.observeAsState()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "ML Kit Barcode Recovery",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+
+            Text(
+                text = "When hardware scanner fails, use ML Kit as backup",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+
+            // Показать статус
+            if (scanState != com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE) {
+                Text(
+                    "Status: ${scanState.name}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+
+            errorMessage?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            if (scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.RECOVERY_SESSION_ACTIVE) {
+                recoveryStatus?.let { status ->
+                    Text("Recovery Mode: Capture ${status.totalImages} images from different angles.")
+                    Text("Collected: ${status.imagesCollected} / ${status.totalImages}")
+                }
+            }
+
+            // Кнопки ML Kit
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Enhanced Scan button
+                Button(
+                    onClick = { viewModel.trySingleImageRecovery() },
+                    modifier = Modifier.weight(1f),
+                    enabled = scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCAN_FAILED || scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE
+                ) {
+                    Text("Enhanced Scan")
+                }
+
+                // Recovery Session button
+                Button(
+                    onClick = { viewModel.startRecoverySession() },
+                    modifier = Modifier.weight(1f),
+                    enabled = scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.ML_ANALYSIS_FAILED || scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE
+                ) {
+                    Text("Recovery Session")
+                }
+            }
+
+            if (scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.RECOVERY_SESSION_ACTIVE) {
+                Button(
+                    onClick = { viewModel.captureImageForRecovery() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Capture Image (${(recoveryStatus?.imagesCollected ?: 0) + 1}/${recoveryStatus?.totalImages})")
+                }
+            }
+
+            if (scanState != com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE) {
+                OutlinedButton(
+                    onClick = { viewModel.reset() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Scanning Status Card Component
+ */
+@Composable
+fun ScanningStatusCard(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel) {
+    // Наблюдаем за состоянием сканирования
+    val scanState by viewModel.scanState.observeAsState(com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE)
+    val scannedBarcode by viewModel.scannedBarcode.observeAsState()
+    val errorMessage by viewModel.errorMessage.observeAsState()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when (scanState) {
+                com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCANNING -> MaterialTheme.colorScheme.primaryContainer
+                com.xelth.eckwms_movfast.ui.viewmodels.ScanState.SUCCESS -> MaterialTheme.colorScheme.tertiaryContainer
+                com.xelth.eckwms_movfast.ui.viewmodels.ScanState.FAILURE -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Scanner Status",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Status: ${scanState.name}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                if (scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCANNING) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
+
+            if (scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCANNING) {
+                Text("Point hardware scanner at barcode... (5s timeout)")
+            }
+
+            scannedBarcode?.let {
+                Text("Last Scan Result:", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            errorMessage?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            // Scan control buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                when (scanState) {
+                    com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE,
+                    com.xelth.eckwms_movfast.ui.viewmodels.ScanState.FAILURE,
+                    com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCAN_FAILED,
+                    com.xelth.eckwms_movfast.ui.viewmodels.ScanState.ML_ANALYSIS_FAILED -> {
+                        Button(
+                            onClick = { viewModel.startHardwareScan() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Start Hardware Scan")
+                        }
+                    }
+                    com.xelth.eckwms_movfast.ui.viewmodels.ScanState.SUCCESS -> {
+                        Button(
+                            onClick = { viewModel.reset() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Scan Again")
+                        }
+                    }
+                    else -> {
+                        // In scanning states, show a cancel/reset button
+                        Button(
+                            onClick = { viewModel.reset() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Cancel and Reset")
+                        }
+                    }
+                }
             }
         }
     }

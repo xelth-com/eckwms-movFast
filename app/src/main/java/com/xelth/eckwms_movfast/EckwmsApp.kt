@@ -23,9 +23,9 @@ class EckwmsApp : Application() {
         scannerManager.initialize()
 
         // Запуск автоматического тестирования API сканера при запуске
-        Log.d(TAG, "Запуск автоматического тестирования API сканера...")
-        ScannerApiTester(scannerManager).testAndLogAllApiFunctions()
-        Log.d(TAG, "Автоматическое тестирование API сканера завершено")
+        // Log.d(TAG, "Запуск автоматического тестирования API сканера...")
+        // ScannerApiTester(scannerManager).testAndLogAllApiFunctions()
+        // Log.d(TAG, "Автоматическое тестирование API сканера завершено")
     }
 
     override fun onTerminate() {

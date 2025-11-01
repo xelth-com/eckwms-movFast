@@ -35,20 +35,16 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             EckwmsmovFastTheme {
-                val debugPanelEnabled by viewModel.debugPanelEnabled.observeAsState(false)
-
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                         // Main content
-                        MainContentWithDebug(
+                        MainContent(
                             viewModel = viewModel,
-                            showDebugPanel = debugPanelEnabled,
                             onOpenScannerSettings = {
                                 val intent = Intent(this@MainActivity, ScannerActivity::class.java)
                                 startActivity(intent)
                             }
                         )
-
                     }
                 }
             }
@@ -57,158 +53,34 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainContentWithDebug(
+fun MainContent(
     viewModel: ScanRecoveryViewModel,
-    showDebugPanel: Boolean,
     onOpenScannerSettings: () -> Unit
 ) {
-    val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
-    val scannedBarcode by viewModel.scannedBarcode.observeAsState()
-    val recoveryStatus by viewModel.recoveryStatus.observeAsState()
-    val errorMessage by viewModel.errorMessage.observeAsState()
-
-    Column {
-        MainContent(
-            modifier = Modifier.weight(1f),
-            scanState = scanState,
-            scannedBarcode = scannedBarcode,
-            recoveryStatus = recoveryStatus,
-            errorMessage = errorMessage,
-            onStartScan = { viewModel.startHardwareScan() },
-            onTryEnhancedScan = { viewModel.trySingleImageRecovery() },
-            onStartRecovery = { viewModel.startRecoverySession() },
-            onCaptureForRecovery = { viewModel.captureImageForRecovery() },
-            onReset = { viewModel.reset() },
-            onOpenScannerSettings = onOpenScannerSettings,
-            showDebugPanel = showDebugPanel
-        )
-        
-        if (showDebugPanel) {
-            DebugInfoPanel(viewModel = viewModel)
-        }
-    }
-}
-
-@Composable
-fun MainContent(
-    modifier: Modifier = Modifier,
-    scanState: ScanState,
-    scannedBarcode: String?,
-    recoveryStatus: com.xelth.eckwms_movfast.ui.viewmodels.RecoveryStatus?,
-    errorMessage: String?,
-    onStartScan: () -> Unit,
-    onTryEnhancedScan: () -> Unit,
-    onStartRecovery: () -> Unit,
-    onCaptureForRecovery: () -> Unit,
-    onReset: () -> Unit,
-    onOpenScannerSettings: () -> Unit,
-    showDebugPanel: Boolean
-) {
     Column(
-        modifier = modifier
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "ECKWMS Hybrid Scanner",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
+            text = "ECKWMS Scanner",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
         )
 
-        Button(onClick = onOpenScannerSettings, modifier = Modifier.fillMaxWidth()) {
-            Text("Scanner Hardware Settings")
-        }
+        Spacer(modifier = Modifier.height(48.dp))
 
-        Divider()
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    "Status: ${scanState.name}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-
-                if (scanState == ScanState.HW_SCANNING) {
-                    CircularProgressIndicator()
-                    Text("Point hardware scanner at barcode... (5s timeout)")
-                }
-
-                if (scannedBarcode != null) {
-                    Text("Result:", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        scannedBarcode,
-                        style = MaterialTheme.typography.bodyLarge,
-                        textAlign = TextAlign.Center,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                if (errorMessage != null) {
-                    Text(
-                        errorMessage,
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                if (scanState == ScanState.RECOVERY_SESSION_ACTIVE && recoveryStatus != null) {
-                    Text("Recovery Mode: Please capture ${recoveryStatus.totalImages} images from different angles.")
-                    Text("Collected: ${recoveryStatus.imagesCollected} / ${recoveryStatus.totalImages}")
-                    LinearProgressIndicator(
-                        progress = recoveryStatus.imagesCollected.toFloat() / recoveryStatus.totalImages.toFloat(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                if (scanState == ScanState.RECOVERY_ANALYSIS) {
-                     CircularProgressIndicator()
-                     Text("Analyzing collected images with ML Kit...")
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // State-driven buttons
-        when (scanState) {
-            ScanState.IDLE, ScanState.FAILURE -> {
-                Button(onClick = onStartScan, modifier = Modifier.fillMaxWidth()) {
-                    Text("Start Scan")
-                }
-            }
-            ScanState.HW_SCAN_FAILED -> {
-                Button(onClick = onTryEnhancedScan, modifier = Modifier.fillMaxWidth()) {
-                    Text("Try Enhanced Scan (Chance 2)")
-                }
-            }
-            ScanState.ML_ANALYSIS_FAILED -> {
-                 Button(onClick = onStartRecovery, modifier = Modifier.fillMaxWidth()) {
-                    Text("Start Recovery Session (Chance 3)")
-                }
-            }
-            ScanState.RECOVERY_SESSION_ACTIVE -> {
-                 Button(onClick = onCaptureForRecovery, modifier = Modifier.fillMaxWidth()) {
-                    Text("Capture Image (${(recoveryStatus?.imagesCollected ?: 0) + 1}/${recoveryStatus?.totalImages})")
-                }
-            }
-            ScanState.SUCCESS -> {
-                Button(onClick = onReset, modifier = Modifier.fillMaxWidth()) {
-                    Text("Scan Again")
-                }
-            }
-            else -> {
-                // In scanning or analysis states, show a cancel/reset button
-                Button(onClick = onReset, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                    Text("Cancel and Reset")
-                }
-            }
+        Button(
+            onClick = onOpenScannerSettings,
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text(
+                "Scanner Hardware Settings",
+                style = MaterialTheme.typography.titleMedium
+            )
         }
     }
 }

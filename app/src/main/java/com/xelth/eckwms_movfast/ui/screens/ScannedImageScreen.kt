@@ -210,6 +210,7 @@ fun ScannedImageScreen(
                                 scaleY = scale
                                 translationX = offset.x
                                 translationY = offset.y
+                                rotationZ = 180f  // Поворот на 180 градусов
                             }
                             .transformable(transformableState)
                     )

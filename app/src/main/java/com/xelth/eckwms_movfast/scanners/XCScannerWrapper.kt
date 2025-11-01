@@ -317,13 +317,12 @@ object XCScannerWrapper {
     /**
      * Set multi-barcode scanning options
      * @param numberOfBarcodes Number of barcodes to scan (1-20)
-     * @param fixedNumber true for fixed number, false for variable number
      */
-    fun setMultiBarcodes(numberOfBarcodes: Int, fixedNumber: Boolean) {
+    fun setMultiBarcodes(numberOfBarcodes: Int) {
         if (!isInitialized) return
         val limitedNumber = numberOfBarcodes.coerceIn(1, 20)
-        XcBarcodeScanner.setMultiBarcodes(limitedNumber, fixedNumber)
-        Log.d(TAG, "Multi barcodes set to $limitedNumber, fixed: $fixedNumber")
+        XcBarcodeScanner.setMultiBarcodes(limitedNumber)
+        Log.d(TAG, "Multi barcodes set to $limitedNumber")
     }
 
     /**
@@ -441,7 +440,10 @@ object XCScannerWrapper {
 
         try {
             // Now it's safe to call the method with a non-null scanner service
-            return XcBarcodeScanner.getLastDecodeImage()
+            Log.d(TAG, "Calling XcBarcodeScanner.getLastDecodeImage()...")
+            val result = XcBarcodeScanner.getLastDecodeImage()
+            Log.d(TAG, "getLastDecodeImage() returned: ${if (result == null) "null" else "image ${result.width}x${result.height}"}")
+            return result
         } catch (e: IllegalArgumentException) {
             // This specific error occurs when trying to read from Parcel
             Log.e(TAG, "Error parsing image data from scanner service (Ask Gemini)", e)
