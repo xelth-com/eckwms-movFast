@@ -18,6 +18,10 @@ import com.xelth.eckwms_movfast.EckwmsApp
 import com.xelth.eckwms_movfast.utils.FileUtils
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.scanners.getLastDecodedImage
+import com.xelth.eckwms_movfast.api.ScanApiService
+import com.xelth.eckwms_movfast.api.ScanResult
+import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
+import com.xelth.eckwms_movfast.ui.data.ScanStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -48,6 +52,9 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     private val TAG = "ScanRecoveryVM"
     private val scannerManager: ScannerManager = (application as EckwmsApp).scannerManager
+    private val scanApiService: ScanApiService = ScanApiService(application).apply {
+        setScannerManager(scannerManager)
+    }
 
     private val _scanState = MutableLiveData<ScanState>(ScanState.IDLE)
     val scanState: LiveData<ScanState> = _scanState
@@ -60,6 +67,10 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     private val _errorMessage = MutableLiveData<String?>(null)
     val errorMessage: LiveData<String?> = _errorMessage
+
+    // Scan history management
+    private val _scanHistory = MutableLiveData<List<ScanHistoryItem>>(emptyList())
+    val scanHistory: LiveData<List<ScanHistoryItem>> = _scanHistory
 
     // --- DEBUG ---
     private val _debugLog = MutableLiveData<List<String>>(emptyList())
@@ -85,12 +96,26 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     init {
         addLog("ViewModel Initialized.")
         scannerManager.scanResult.observeForever {
-            if (it != null && _scanState.value == ScanState.HW_SCANNING) {
-                addLog("Hardware scan SUCCESS: $it")
+            if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE || _scanState.value == ScanState.SUCCESS)) {
+                addLog("Hardware scan SUCCESS: $it (state: ${_scanState.value})")
                 hardwareScanJob?.cancel()
                 scannerManager.stopLoopScan()
                 _scannedBarcode.postValue(it)
                 _scanState.postValue(ScanState.SUCCESS)
+
+                // Send scan to server
+                val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+                addLog("Barcode type from scanner: $barcodeType")
+                sendScanToServer(it, barcodeType)
+
+                // Auto-reset to IDLE after a short delay to allow continuous scanning
+                viewModelScope.launch {
+                    delay(1000) // 1 second delay
+                    if (_scanState.value == ScanState.SUCCESS) {
+                        _scanState.postValue(ScanState.IDLE)
+                        addLog("Auto-reset to IDLE for continuous scanning")
+                    }
+                }
             }
         }
     }
@@ -138,6 +163,10 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
                     addLog("ML Kit single image SUCCESS: $result")
                     _scannedBarcode.postValue(result)
                     _scanState.postValue(ScanState.SUCCESS)
+
+                    // Send scan to server
+                    val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+                    sendScanToServer(result, barcodeType)
                 } else {
                     addLog("ML Kit single image FAILED: $result")
                     _errorMessage.postValue(result)
@@ -201,6 +230,11 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
                     addLog("Multi-image recovery SUCCESS: $found")
                     _scannedBarcode.postValue(found)
                     _scanState.postValue(ScanState.SUCCESS)
+
+                    // Send scan to server
+                    val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+                    sendScanToServer(found, barcodeType)
+
                     return@launch
                 }
             }
@@ -287,6 +321,63 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     fun setDebugPanelEnabled(enabled: Boolean) {
         _debugPanelEnabled.value = enabled
         addLog("Debug panel ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * Sends a scanned barcode to the server and updates the scan history
+     */
+    fun sendScanToServer(barcode: String, barcodeType: String) {
+        addLog("Sending scan to server: $barcode")
+
+        // Create a new scan history item with PENDING status
+        val scanItem = ScanHistoryItem(
+            barcode = barcode,
+            timestamp = System.currentTimeMillis(),
+            status = ScanStatus.PENDING,
+            type = barcodeType
+        )
+
+        // Add to history list
+        val currentHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
+        currentHistory.add(0, scanItem) // Add to the beginning of the list
+        _scanHistory.postValue(currentHistory)
+
+        // Send to server
+        viewModelScope.launch {
+            try {
+                val result = scanApiService.processScan(barcode)
+
+                // Update the status based on the result
+                val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
+                val index = updatedHistory.indexOfFirst { it.id == scanItem.id }
+
+                if (index != -1) {
+                    when (result) {
+                        is ScanResult.Success -> {
+                            addLog("Server confirmed scan: $barcode")
+                            updatedHistory[index].status = ScanStatus.CONFIRMED
+                        }
+                        is ScanResult.Error -> {
+                            addLog("Server rejected scan: ${result.message}")
+                            updatedHistory[index].status = ScanStatus.FAILED
+                            _errorMessage.postValue("Server error: ${result.message}")
+                        }
+                    }
+                    _scanHistory.postValue(updatedHistory)
+                }
+            } catch (e: Exception) {
+                addLog("Error sending scan to server: ${e.message}")
+
+                // Update status to FAILED
+                val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
+                val index = updatedHistory.indexOfFirst { it.id == scanItem.id }
+                if (index != -1) {
+                    updatedHistory[index].status = ScanStatus.FAILED
+                    _scanHistory.postValue(updatedHistory)
+                }
+                _errorMessage.postValue("Network error: ${e.message}")
+            }
+        }
     }
 
     fun reset() {

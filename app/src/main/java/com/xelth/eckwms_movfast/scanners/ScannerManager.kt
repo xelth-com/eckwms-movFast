@@ -20,6 +20,7 @@ import com.xcheng.scanner.TextCaseType
 // Константы для broadcast
 private const val SCAN_ACTION = "com.xcheng.scanner.action.BARCODE_DECODING_BROADCAST"
 private const val SCAN_DATA_KEY = "EXTRA_BARCODE_DECODING_DATA"
+private const val SCAN_TYPE_KEY = "EXTRA_BARCODE_DECODING_SYMBOLE"
 private const val TAG = "ScannerManager"
 
 
@@ -32,6 +33,10 @@ class ScannerManager private constructor(private val application: Application) {
     // LiveData для передачи результатов сканирования
     private val _scanResult = MutableLiveData<String>()
     val scanResult: LiveData<String> get() = _scanResult
+
+    // LiveData для типа штрих-кода
+    private val _barcodeType = MutableLiveData<String>()
+    val barcodeType: LiveData<String> get() = _barcodeType
 
     // BroadcastReceiver для получения результатов сканирования
     private var scanReceiver: BroadcastReceiver? = null
@@ -90,14 +95,25 @@ class ScannerManager private constructor(private val application: Application) {
                 // Проверяем, что это именно наш action
                 if (intent.action == SCAN_ACTION) {
                     val barcode = intent.getStringExtra(SCAN_DATA_KEY)
+                    val barcodeType = intent.getStringExtra(SCAN_TYPE_KEY)
 
                     if (barcode != null) {
                         Log.d(TAG, "[$receiveTimestamp] ⭐⭐⭐ Barcode received via broadcast: $barcode")
+                        Log.d(TAG, "[$receiveTimestamp] ⭐⭐⭐ Barcode type: $barcodeType")
 
                         // Check if this is a duplicate of what we've already processed through the callback
                         if (barcode == _scanResult.value) {
                             Log.d(TAG, "[$receiveTimestamp] Ignoring duplicate barcode from broadcast - already processed via callback")
                             return
+                        }
+
+                        // Сохраняем тип штрих-кода
+                        if (barcodeType != null) {
+                            _barcodeType.postValue(barcodeType)
+                            Log.d(TAG, "[$receiveTimestamp] Barcode type posted to LiveData: $barcodeType")
+                        } else {
+                            _barcodeType.postValue("UNKNOWN")
+                            Log.d(TAG, "[$receiveTimestamp] No barcode type in intent, using UNKNOWN")
                         }
 
                         // Отправляем результат через LiveData
@@ -143,46 +159,13 @@ class ScannerManager private constructor(private val application: Application) {
         }
     }
 
-    // Add this method directly to ScannerManager.kt class
-    // rather than using an extension function
-
     /**
      * Возвращает тип последнего отсканированного штрихкода
+     * Теперь использует реальный тип из broadcast intent, а не догадки
      * @return Строковое обозначение типа штрихкода (QR_CODE, DATAMATRIX, CODE_128, etc.)
      */
     fun getLastBarcodeType(): String {
-        // Get barcode type from scanner library if available
-        // The XcBarcodeScanner does not provide direct access to barcode type information
-        // so we'll use context clues from the barcode itself to determine the type
-
-        val lastBarcode = scanResult.value ?: return "UNKNOWN"
-
-        return when {
-            // QR Code typical patterns
-            lastBarcode.contains(":") && lastBarcode.contains("/") -> "QR_CODE"
-
-            // DataMatrix typical patterns (often used for small items or components)
-            lastBarcode.matches(Regex("^[0-9]{4}[A-Z]{2}\\d+$")) -> "DATAMATRIX"
-
-            // EAN/UPC codes are pure digits with specific lengths
-            lastBarcode.length == 13 && lastBarcode.all { it.isDigit() } -> "EAN_13"
-            lastBarcode.length == 8 && lastBarcode.all { it.isDigit() } -> "EAN_8"
-            lastBarcode.length == 12 && lastBarcode.all { it.isDigit() } -> "UPC_A"
-
-            // ECKWMS internal codes likely use CODE_128
-            lastBarcode.matches(Regex("^[ibpou][0-9]{18}$")) -> "CODE_128"
-            lastBarcode.length == 7 && lastBarcode.all { it.isDigit() } -> "CODE_128"
-            lastBarcode.startsWith("RMA") -> "CODE_128"
-
-            // CODE_39 usually contains only uppercase letters, digits and some symbols
-            lastBarcode.matches(Regex("^[A-Z0-9 \\-\\.$/+%*]+$")) -> "CODE_39"
-
-            // If no specific pattern matched, but has special characters, assume CODE_128
-            lastBarcode.any { !it.isLetterOrDigit() } -> "CODE_128"
-
-            // Default fallback
-            else -> "UNKNOWN"
-        }
+        return _barcodeType.value ?: "UNKNOWN"
     }
 
     /**

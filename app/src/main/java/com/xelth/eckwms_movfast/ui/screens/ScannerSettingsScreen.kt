@@ -81,6 +81,11 @@ import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
 import kotlinx.coroutines.launch
+import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
+import com.xelth.eckwms_movfast.ui.data.ScanStatus
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private const val TAG = "ScannerSettingsScreen"
 
@@ -205,6 +210,9 @@ fun ScannerSettingsScreen(
         ) {
             // Scanning Status Card
             ScanningStatusCard(viewModel)
+
+            // Scan History Section
+            ScanHistorySection(viewModel)
 
             // Debug Panel Toggle Card
             Card(
@@ -1045,6 +1053,144 @@ fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
                     Text("Reset")
                 }
             }
+        }
+    }
+}
+
+/**
+ * Scan History Section Component
+ */
+@Composable
+fun ScanHistorySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel) {
+    val scanHistory by viewModel.scanHistory.observeAsState(emptyList())
+    var isExpanded by remember { mutableStateOf(true) }
+    val rotationAngle by animateFloatAsState(targetValue = if (isExpanded) 0f else -90f, label = "rotation")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Header with expand/collapse button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Scan History (${scanHistory.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "▼",
+                    modifier = Modifier.rotate(rotationAngle),
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+
+            // Expandable list
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                if (scanHistory.isEmpty()) {
+                    Text(
+                        text = "No scans yet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(300.dp)
+                    ) {
+                        items(scanHistory) { item ->
+                            ScanHistoryItemCard(item)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Individual Scan History Item Card
+ */
+@Composable
+fun ScanHistoryItemCard(item: ScanHistoryItem) {
+    val backgroundColor = when (item.status) {
+        ScanStatus.PENDING -> Color(0xFFFFF9C4) // Light yellow
+        ScanStatus.CONFIRMED -> Color(0xFFC8E6C9) // Light green
+        ScanStatus.FAILED -> Color(0xFFFFCDD2) // Light red
+    }
+
+    val statusText = when (item.status) {
+        ScanStatus.PENDING -> "Pending"
+        ScanStatus.CONFIRMED -> "Confirmed"
+        ScanStatus.FAILED -> "Failed"
+    }
+
+    val statusColor = when (item.status) {
+        ScanStatus.PENDING -> Color(0xFFF57F17) // Dark yellow
+        ScanStatus.CONFIRMED -> Color(0xFF2E7D32) // Dark green
+        ScanStatus.FAILED -> Color(0xFFC62828) // Dark red
+    }
+
+    val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    val timeString = dateFormat.format(Date(item.timestamp))
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = backgroundColor
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = item.barcode,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "${item.type} • $timeString",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = statusColor
+            )
         }
     }
 }

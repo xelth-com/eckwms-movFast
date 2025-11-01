@@ -20,7 +20,7 @@ class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
     // Базовый URL для API
-    private val BASE_URL = "https://pda.repair/api/scan"
+    private val BASE_URL = "https://pda.repair/eckwms/api"
 
     // Ссылка на ScannerManager для получения информации о типе штрих-кода
     private var scannerManager: ScannerManager? = null
@@ -49,19 +49,20 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Processing scan: $barcode")
 
         try {
-            val url = URL("$BASE_URL/process")
+            val url = URL("$BASE_URL/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.doOutput = true
 
-            // Создаем JSON запрос с barcode и type
+            // Создаем JSON запрос с barcode, type и deviceId
             val jsonRequest = JSONObject().apply {
                 put("barcode", barcode)
 
-                // Используем ScannerManager для получения типа напрямую, если доступен
-                val barcodeType = scannerManager?.getLastBarcodeType() ?: guessType(barcode)
+                // Используем ScannerManager для получения типа напрямую из broadcast intent
+                val barcodeType = scannerManager?.getLastBarcodeType() ?: "UNKNOWN"
+                Log.d(TAG, "Barcode type for server: $barcodeType")
 
                 put("type", barcodeType)
                 put("deviceId", deviceId)
@@ -77,40 +78,17 @@ class ScanApiService(private val context: Context) {
             // Получаем ответ
             val responseCode = connection.responseCode
 
-            if (responseCode == HttpURLConnection.HTTP_OK) {
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
                 // Читаем успешный ответ
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
-                val jsonResponse = JSONObject(response)
+                Log.d(TAG, "Server response: $response")
 
-                if (jsonResponse.has("success") && jsonResponse.getBoolean("success")) {
-                    // Existing code to get message and type
-                    val message = jsonResponse.optString("text", "Successful scan")
-                    val type = jsonResponse.optString("contentType", "unknown")
-
-                    // Parse image URLs from the response
-                    val imageUrls = mutableListOf<String>()
-                    if (jsonResponse.has("images")) {
-                        try {
-                            val imagesArray = jsonResponse.getJSONArray("images")
-                            for (i in 0 until imagesArray.length()) {
-                                imageUrls.add(imagesArray.getString(i))
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error parsing image URLs: ${e.message}")
-                        }
-                    }
-
-                    return@withContext ScanResult.Success(
-                        type = type,
-                        message = message,
-                        data = response,
-                        imageUrls = imageUrls
-                    )
-                } else {
-                    return@withContext ScanResult.Error(
-                        jsonResponse.optString("text", "Unknown error")
-                    )
-                }
+                return@withContext ScanResult.Success(
+                    type = "scan",
+                    message = "Scan confirmed by server",
+                    data = response,
+                    imageUrls = emptyList()
+                )
             } else {
                 // Обрабатываем ошибку
                 val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
@@ -124,33 +102,6 @@ class ScanApiService(private val context: Context) {
         }
     }
 
-    /**
-     * Определяет предполагаемый формат штрих-кода
-     * Возвращает тип по стандарту GS1 (QR_CODE, DATAMATRIX, CODE_128 и т.д.)
-     */
-    private fun guessType(barcode: String): String {
-        return when {
-            // Формат QR кода обычно включает определенные символы и может иметь разную длину
-            barcode.contains(":") && barcode.contains("/") -> "QR_CODE"
-            // DataMatrix обычно имеет определенную структуру
-            barcode.matches(Regex("^[0-9]{4}[A-Z]{2}\\d+$")) -> "DATAMATRIX"
-            // Коды EAN/UPC состоят только из цифр и имеют определенную длину
-            barcode.length == 13 && barcode.all { it.isDigit() } -> "EAN_13"
-            barcode.length == 8 && barcode.all { it.isDigit() } -> "EAN_8"
-            barcode.length == 12 && barcode.all { it.isDigit() } -> "UPC_A"
-            // CODE_128 может содержать любые символы
-            barcode.length > 5 && barcode.any { !it.isLetterOrDigit() } -> "CODE_128"
-            // CODE_39 обычно содержит только заглавные буквы, цифры и некоторые символы
-            barcode.matches(Regex("^[A-Z0-9 \\-\\.$/+%*]+$")) -> "CODE_39"
-            // Для семизначных кодов предметов используем CODE_128
-            barcode.length == 7 && barcode.all { it.isDigit() } -> "CODE_128"
-            // Для внутренних кодов ECKWMS можно определить формат
-            barcode.matches(Regex("^[ibpou][0-9]{18}$")) -> "CODE_128"
-            barcode.startsWith("RMA") -> "CODE_128"
-            // По умолчанию - неизвестный формат
-            else -> "UNKNOWN"
-        }
-    }
 }
 
 /**
