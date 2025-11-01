@@ -2,10 +2,6 @@
 package com.xelth.eckwms_movfast.scanners
 
 import android.app.Application
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -13,14 +9,9 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.xcheng.scanner.BarcodeType
 import com.xcheng.scanner.NotificationType
-import com.xcheng.scanner.OutputMethod
 import com.xcheng.scanner.RegionSizeType
 import com.xcheng.scanner.TextCaseType
 
-// Константы для broadcast
-private const val SCAN_ACTION = "com.xcheng.scanner.action.BARCODE_DECODING_BROADCAST"
-private const val SCAN_DATA_KEY = "EXTRA_BARCODE_DECODING_DATA"
-private const val SCAN_TYPE_KEY = "EXTRA_BARCODE_DECODING_SYMBOLE"
 private const val TAG = "ScannerManager"
 
 
@@ -38,9 +29,6 @@ class ScannerManager private constructor(private val application: Application) {
     private val _barcodeType = MutableLiveData<String>()
     val barcodeType: LiveData<String> get() = _barcodeType
 
-    // BroadcastReceiver для получения результатов сканирования
-    private var scanReceiver: BroadcastReceiver? = null
-
     // Флаг для отслеживания состояния инициализации
     private var isInitialized = false
 
@@ -48,7 +36,7 @@ class ScannerManager private constructor(private val application: Application) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * Инициализирует сканер и BroadcastReceiver
+     * Инициализирует сканер с использованием ScannerSymResult
      */
     fun initialize() {
         val timestamp = System.currentTimeMillis()
@@ -61,18 +49,20 @@ class ScannerManager private constructor(private val application: Application) {
 
         Log.d(TAG, "[$timestamp] ⭐ Initializing scanner at application level...")
 
-        // Инициализация XCScannerWrapper
-        XCScannerWrapper.initialize(application) { result ->
+        // Инициализация XCScannerWrapper с получением типа и штрих-кода
+        XCScannerWrapper.initialize(application) { symbology, barcode ->
             val callbackTimestamp = System.currentTimeMillis()
-            Log.d(TAG, "[$callbackTimestamp] ⭐ Scan result received via SDK callback: $result")
-            _scanResult.postValue(result)
+            Log.d(TAG, "[$callbackTimestamp] ⭐ Scan result: type=$symbology, barcode=$barcode")
+
+            // Сохраняем тип штрих-кода
+            _barcodeType.postValue(symbology)
+
+            // Сохраняем сам штрих-код
+            _scanResult.postValue(barcode)
         }
 
         // Настройка сканера
         configureScanner()
-
-        // Регистрация BroadcastReceiver для получения результатов сканирования
-        registerBroadcastReceiver()
 
         isInitialized = true
         val endTimestamp = System.currentTimeMillis()
@@ -80,89 +70,9 @@ class ScannerManager private constructor(private val application: Application) {
     }
 
     /**
-     * Регистрирует BroadcastReceiver для получения результатов сканирования
-     */
-    private fun registerBroadcastReceiver() {
-        // Отменяем предыдущую регистрацию, если есть
-        unregisterBroadcastReceiver()
-
-        // Создаем новый BroadcastReceiver
-        scanReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                val receiveTimestamp = System.currentTimeMillis()
-                Log.d(TAG, "[$receiveTimestamp] ⭐ BroadcastReceiver caught Intent: ${intent.action}")
-
-                // Проверяем, что это именно наш action
-                if (intent.action == SCAN_ACTION) {
-                    val barcode = intent.getStringExtra(SCAN_DATA_KEY)
-                    val barcodeType = intent.getStringExtra(SCAN_TYPE_KEY)
-
-                    if (barcode != null) {
-                        Log.d(TAG, "[$receiveTimestamp] ⭐⭐⭐ Barcode received via broadcast: $barcode")
-                        Log.d(TAG, "[$receiveTimestamp] ⭐⭐⭐ Barcode type: $barcodeType")
-
-                        // Check if this is a duplicate of what we've already processed through the callback
-                        if (barcode == _scanResult.value) {
-                            Log.d(TAG, "[$receiveTimestamp] Ignoring duplicate barcode from broadcast - already processed via callback")
-                            return
-                        }
-
-                        // Сохраняем тип штрих-кода
-                        if (barcodeType != null) {
-                            _barcodeType.postValue(barcodeType)
-                            Log.d(TAG, "[$receiveTimestamp] Barcode type posted to LiveData: $barcodeType")
-                        } else {
-                            _barcodeType.postValue("UNKNOWN")
-                            Log.d(TAG, "[$receiveTimestamp] No barcode type in intent, using UNKNOWN")
-                        }
-
-                        // Отправляем результат через LiveData
-                        _scanResult.postValue(barcode)
-                        Log.d(TAG, "[$receiveTimestamp] Barcode posted to LiveData")
-                    } else {
-                        Log.d(TAG, "[$receiveTimestamp] ⚠️ Intent contains no data for key $SCAN_DATA_KEY")
-                        // Проверяем все extras для отладки
-                        intent.extras?.keySet()?.forEach { key ->
-                            Log.d(TAG, "[$receiveTimestamp]   Key: $key, Value: ${intent.extras?.get(key)}")
-                        }
-                    }
-                } else {
-                    Log.d(TAG, "[$receiveTimestamp] BroadcastReceiver received unrelated intent: ${intent.action}")
-                }
-            }
-        }
-
-        // Регистрируем BroadcastReceiver с правильными флагами для Android 13+
-        val intentFilter = IntentFilter(SCAN_ACTION)
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            application.registerReceiver(scanReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
-            Log.d(TAG, "✓ BroadcastReceiver зарегистрирован с флагом RECEIVER_NOT_EXPORTED")
-        } else {
-            application.registerReceiver(scanReceiver, intentFilter)
-            Log.d(TAG, "✓ BroadcastReceiver зарегистрирован")
-        }
-    }
-
-    /**
-     * Отменяет регистрацию BroadcastReceiver
-     */
-    private fun unregisterBroadcastReceiver() {
-        scanReceiver?.let {
-            try {
-                application.unregisterReceiver(it)
-                Log.d(TAG, "✓ BroadcastReceiver отменен")
-            } catch (e: Exception) {
-                Log.e(TAG, "Ошибка при отмене регистрации BroadcastReceiver", e)
-            }
-            scanReceiver = null
-        }
-    }
-
-    /**
      * Возвращает тип последнего отсканированного штрихкода
-     * Теперь использует реальный тип из broadcast intent, а не догадки
-     * @return Строковое обозначение типа штрихкода (QR_CODE, DATAMATRIX, CODE_128, etc.)
+     * Использует реальный тип из SDK callback (ScannerSymResult)
+     * @return Строковое обозначение типа штрихкода (QRCODE, DATAMATRIX, CODE128, etc.)
      */
     fun getLastBarcodeType(): String {
         return _barcodeType.value ?: "UNKNOWN"
@@ -173,9 +83,6 @@ class ScannerManager private constructor(private val application: Application) {
      */
     private fun configureScanner() {
         Log.d(TAG, "⭐ Настройка сканера...")
-
-        // Настройка вывода для работы с broadcast
-        XCScannerWrapper.setOutputMethod(OutputMethod.BROADCAST)
 
         // Максимальная область сканирования
         XCScannerWrapper.setScanRegionSize(RegionSizeType.VIEWSIZE_100)
@@ -220,9 +127,6 @@ class ScannerManager private constructor(private val application: Application) {
 
         // Очистка ресурсов изображений
         cleanupImageResources()
-
-        // Отменяем регистрацию BroadcastReceiver
-        unregisterBroadcastReceiver()
 
         // Деинициализируем сканер
         XCScannerWrapper.deinitialize(application)

@@ -60,7 +60,7 @@ class ScanApiService(private val context: Context) {
             val jsonRequest = JSONObject().apply {
                 put("barcode", barcode)
 
-                // Используем ScannerManager для получения типа напрямую из broadcast intent
+                // Используем ScannerManager для получения типа напрямую из SDK (ScannerSymResult)
                 val barcodeType = scannerManager?.getLastBarcodeType() ?: "UNKNOWN"
                 Log.d(TAG, "Barcode type for server: $barcodeType")
 

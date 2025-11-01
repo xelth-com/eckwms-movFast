@@ -127,10 +127,10 @@ fun ScannerScreen(
         Log.d(TAG, "⭐ Инициализация сканера начинается...")
 
         // Инициализация XCScannerWrapper
-        XCScannerWrapper.initialize(context) { result ->
-            Log.d(TAG, "⭐ Scan result received via SDK callback: $result")
-            scanResult = "Отсканировано (SDK): $result"
-            onBarcodeScanned(result)
+        XCScannerWrapper.initialize(context) { symbology, barcode ->
+            Log.d(TAG, "⭐ Scan result: type=$symbology, barcode=$barcode")
+            scanResult = "Отсканировано (SDK): type=$symbology, barcode=$barcode"
+            onBarcodeScanned(barcode)
         }
 
         // Настройка сканера

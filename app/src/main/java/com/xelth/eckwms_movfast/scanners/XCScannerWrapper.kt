@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.RemoteException
 import android.util.Log
+import com.tools.ScanInfo
 import com.tools.XCImage
 import com.xcheng.scanner.AimerMode
 import com.xcheng.scanner.BarcodeType
@@ -15,6 +16,7 @@ import com.xcheng.scanner.NotificationType
 import com.xcheng.scanner.OutputMethod
 import com.xcheng.scanner.RegionSizeType
 import com.xcheng.scanner.ScannerResult
+import com.xcheng.scanner.ScannerSymResult
 import com.xcheng.scanner.TextCaseType
 import com.xcheng.scanner.XcBarcodeScanner
 
@@ -25,11 +27,11 @@ import com.xcheng.scanner.XcBarcodeScanner
 object XCScannerWrapper {
     private const val TAG = "XCScannerWrapper"
     private var isInitialized = false
-    private var scanResultCallback: ((String) -> Unit)? = null
+    private var scanResultCallback: ((String, String) -> Unit)? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Обновленный метод инициализации
-    fun initialize(context: Context, callback: (String) -> Unit) {
+    // Обновленный метод инициализации с ScannerSymResult
+    fun initialize(context: Context, callback: (String, String) -> Unit) {
         if (isInitialized) {
             Log.d(TAG, "Scanner already initialized")
             scanResultCallback = callback // Обновляем колбэк в любом случае
@@ -37,23 +39,30 @@ object XCScannerWrapper {
         }
 
         scanResultCallback = callback
-        Log.d(TAG, "⭐ Initializing XcBarcodeScanner...")
+        Log.d(TAG, "⭐ Initializing XcBarcodeScanner with ScannerSymResult...")
 
-        // Используем анонимный класс вместо лямбды для лучшей обработки
-        XcBarcodeScanner.init(context, object : ScannerResult {
-            override fun onResult(result: String) {
-                Log.d(TAG, "⭐⭐⭐ SCAN RESULT RECEIVED FROM SCANNER: $result")
+        // Используем ScannerSymResult для получения типа и штрих-кода
+        XcBarcodeScanner.init(context, object : ScannerSymResult {
+            override fun onResult(sym: String, barCode: String) {
+                Log.d(TAG, "⭐⭐⭐ SCAN RESULT: type=$sym, barcode=$barCode")
 
                 // Всегда выполняем колбэк в основном потоке
                 mainHandler.post {
                     try {
                         scanResultCallback?.let { callback ->
-                            Log.d(TAG, "Forwarding result to UI: $result")
-                            callback(result)
+                            Log.d(TAG, "Forwarding to UI: type=$sym, barcode=$barCode")
+                            callback(sym, barCode)
                         } ?: Log.e(TAG, "scanResultCallback is null!")
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in scan result callback", e)
                     }
+                }
+            }
+
+            override fun scanInfo(info: ScanInfo?) {
+                // Дополнительная информация о скане (опциональный метод)
+                if (info != null) {
+                    Log.d(TAG, "Scan info received: $info")
                 }
             }
         })

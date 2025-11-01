@@ -93,10 +93,27 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     private val recoveryImages = mutableListOf<Bitmap>()
     private val RECOVERY_IMAGE_COUNT = 3
 
+    // Для предотвращения дубликатов
+    private var lastProcessedBarcode: String? = null
+    private var lastProcessedTime: Long = 0
+
     init {
         addLog("ViewModel Initialized.")
         scannerManager.scanResult.observeForever {
-            if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE || _scanState.value == ScanState.SUCCESS)) {
+            // Обрабатываем только в состояниях IDLE или HW_SCANNING
+            // И только если это новый штрих-код (не дубликат)
+            if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE)) {
+                val currentTime = System.currentTimeMillis()
+
+                // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
+                if (it == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
+                    addLog("Ignoring duplicate scan: $it")
+                    return@observeForever
+                }
+
+                lastProcessedBarcode = it
+                lastProcessedTime = currentTime
+
                 addLog("Hardware scan SUCCESS: $it (state: ${_scanState.value})")
                 hardwareScanJob?.cancel()
                 scannerManager.stopLoopScan()
