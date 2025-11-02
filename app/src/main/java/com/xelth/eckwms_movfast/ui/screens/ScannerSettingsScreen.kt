@@ -95,15 +95,13 @@ fun ScannerSettingsScreen(
     scannerManager: ScannerManager,
     viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel,
     onNavigateBack: () -> Unit,
-    onOpenImageViewer: () -> Unit
+    onOpenImageViewer: () -> Unit,
+    onNavigateToCamera: (String) -> Unit = {}
 ) {
     // Наблюдаем за последним отсканированным штрих-кодом
     val latestScanResult by scannerManager.scanResult.observeAsState()
     val debugPanelEnabled by viewModel.debugPanelEnabled.observeAsState(false)
     val scrollState = rememberScrollState()
-
-    // Состояние для отслеживания переключения на API тестирование
-    var showApiTestingSection by remember { mutableStateOf(false) }
 
     // Для логгирования ошибок
     val context = LocalContext.current
@@ -185,12 +183,6 @@ fun ScannerSettingsScreen(
                         Text("← Back")
                     }
                 },
-                actions = {
-                    TextButton(onClick = onOpenImageViewer) {
-                        Text("View Image")
-                    }
-                    // TODO: Add Debug Panel Toggle here
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -208,74 +200,6 @@ fun ScannerSettingsScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Debug Panel Toggle Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Show Debug Panel",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-
-                    Switch(
-                        checked = debugPanelEnabled,
-                        onCheckedChange = { viewModel.setDebugPanelEnabled(it) }
-                    )
-                }
-            }
-
-            // Переключатель для API Testing Section
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showApiTestingSection = !showApiTestingSection },
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (showApiTestingSection)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else
-                        MaterialTheme.colorScheme.surface
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "API Testing Tools",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (showApiTestingSection)
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        else
-                            MaterialTheme.colorScheme.onSurface
-                    )
-
-                    // Индикатор состояния
-                    Text(
-                        text = if (showApiTestingSection) "▼" else "▶",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
             // Отображение ошибок, если они есть
             if (errorMessages.isNotEmpty()) {
                 Card(
@@ -317,7 +241,29 @@ fun ScannerSettingsScreen(
                 }
             }
 
-            // Result Card
+            // 1. Continuous Scan Toggle
+            Button(
+                onClick = {
+                    Log.d(TAG, "⭐ Toggle scan button clicked, current state: ${if (isLoopScanActive) "scanning" else "not scanning"}")
+                    try {
+                        if (isLoopScanActive) {
+                            scannerManager.stopLoopScan()
+                        } else {
+                            scannerManager.startLoopScan(500) // 500ms интервал
+                        }
+                        isLoopScanActive = !isLoopScanActive
+                        Log.d(TAG, "⭐ Scan state changed to: ${if (isLoopScanActive) "scanning" else "not scanning"}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error toggling scan", e)
+                        errorMessages.add("Error toggling scan: ${e.message}")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isLoopScanActive) "Stop Continuous Scanning" else "Start Continuous Scanning")
+            }
+
+            // 2. View Image Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
@@ -353,182 +299,156 @@ fun ScannerSettingsScreen(
                 }
             }
 
-            // ML Kit Recovery Section
-            MlKitRecoverySection(viewModel)
+            // 3. ML Kit Recovery Section
+            MlKitRecoverySection(viewModel, onNavigateToCamera)
 
-            // Показываем либо API тесты, либо обычные настройки в зависимости от состояния
-            if (showApiTestingSection) {
-                ApiTestsSection(scannerManager)
-            } else {
-                // Settings Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                    shape = RoundedCornerShape(8.dp)
+            // 4. API Testing Tools Section (Simplified)
+            ApiTestsSection(viewModel, scannerManager)
+
+            // 5. Scanner Settings Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Scanner Settings",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
+                    Text(
+                        text = "Scanner Settings",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
 
-                        // Barcode Type Dropdown
-                        Column {
-                            Text("Barcode Type", fontWeight = FontWeight.Bold)
-                            Box {
-                                TextButton(
-                                    onClick = { barcodeTypeExpanded = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = selectedBarcodeType,
-                                        modifier = Modifier.weight(1f),
-                                        textAlign = TextAlign.Start
-                                    )
-                                    Text("▼")
-                                }
-                                DropdownMenu(
-                                    expanded = barcodeTypeExpanded,
-                                    onDismissRequest = { barcodeTypeExpanded = false },
-                                    modifier = Modifier.fillMaxWidth(0.9f)
-                                ) {
-                                    barcodeTypes.forEach { (name, type) ->
-                                        DropdownMenuItem(
-                                            text = { Text(name) },
-                                            onClick = {
-                                                selectedBarcodeType = name
-                                                barcodeTypeExpanded = false
+                    // Barcode Type Dropdown
+                    Column {
+                        Text("Barcode Type", fontWeight = FontWeight.Bold)
+                        Box {
+                            TextButton(
+                                onClick = { barcodeTypeExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = selectedBarcodeType,
+                                    modifier = Modifier.weight(1f),
+                                    textAlign = TextAlign.Start
+                                )
+                                Text("▼")
+                            }
+                            DropdownMenu(
+                                expanded = barcodeTypeExpanded,
+                                onDismissRequest = { barcodeTypeExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.9f)
+                            ) {
+                                barcodeTypes.forEach { (name, type) ->
+                                    DropdownMenuItem(
+                                        text = { Text(name) },
+                                        onClick = {
+                                            selectedBarcodeType = name
+                                            barcodeTypeExpanded = false
 
-                                                try {
-                                                    // Включаем только выбранный тип штрих-кода
-                                                    barcodeTypes.forEach { (_, barcodeType) ->
-                                                        scannerManager.enableBarcodeType(barcodeType, barcodeType == type)
-                                                    }
-                                                    Log.d(TAG, "Selected barcode type: $name")
-                                                } catch (e: Exception) {
-                                                    Log.e(TAG, "Error setting barcode type", e)
-                                                    errorMessages.add("Error setting barcode type: ${e.message}")
+                                            try {
+                                                // Включаем только выбранный тип штрих-кода
+                                                barcodeTypes.forEach { (_, barcodeType) ->
+                                                    scannerManager.enableBarcodeType(barcodeType, barcodeType == type)
                                                 }
+                                                Log.d(TAG, "Selected barcode type: $name")
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Error setting barcode type", e)
+                                                errorMessages.add("Error setting barcode type: ${e.message}")
                                             }
-                                        )
-                                    }
+                                        }
+                                    )
                                 }
                             }
                         }
+                    }
 
-                        Divider()
+                    Divider()
 
-                        // Flash Mode Dropdown
-                        Column {
-                            Text("Flash Mode", fontWeight = FontWeight.Bold)
-                            Box {
-                                TextButton(
-                                    onClick = { flashModeExpanded = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = selectedFlashMode,
-                                        modifier = Modifier.weight(1f),
-                                        textAlign = TextAlign.Start
-                                    )
-                                    Text("▼")
-                                }
-                                DropdownMenu(
-                                    expanded = flashModeExpanded,
-                                    onDismissRequest = { flashModeExpanded = false },
-                                    modifier = Modifier.fillMaxWidth(0.9f)
-                                ) {
-                                    flashModes.forEach { (name, mode) ->
-                                        DropdownMenuItem(
-                                            text = { Text(name) },
-                                            onClick = {
-                                                selectedFlashMode = name
-                                                flashModeExpanded = false
-                                                try {
-                                                    scannerManager.setFlashLightsMode(mode)
-                                                    Log.d(TAG, "Selected flash mode: $name")
-                                                } catch (e: Exception) {
-                                                    Log.e(TAG, "Error setting flash mode", e)
-                                                    errorMessages.add("Error setting flash mode: ${e.message}")
-                                                }
+                    // Flash Mode Dropdown
+                    Column {
+                        Text("Flash Mode", fontWeight = FontWeight.Bold)
+                        Box {
+                            TextButton(
+                                onClick = { flashModeExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = selectedFlashMode,
+                                    modifier = Modifier.weight(1f),
+                                    textAlign = TextAlign.Start
+                                )
+                                Text("▼")
+                            }
+                            DropdownMenu(
+                                expanded = flashModeExpanded,
+                                onDismissRequest = { flashModeExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.9f)
+                            ) {
+                                flashModes.forEach { (name, mode) ->
+                                    DropdownMenuItem(
+                                        text = { Text(name) },
+                                        onClick = {
+                                            selectedFlashMode = name
+                                            flashModeExpanded = false
+                                            try {
+                                                scannerManager.setFlashLightsMode(mode)
+                                                Log.d(TAG, "Selected flash mode: $name")
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Error setting flash mode", e)
+                                                errorMessages.add("Error setting flash mode: ${e.message}")
                                             }
-                                        )
-                                    }
+                                        }
+                                    )
                                 }
                             }
                         }
+                    }
 
-                        Divider()
+                    Divider()
 
-                        // Aimer Mode Dropdown
-                        Column {
-                            Text("Aimer Mode", fontWeight = FontWeight.Bold)
-                            Box {
-                                TextButton(
-                                    onClick = { aimerModeExpanded = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = selectedAimerMode,
-                                        modifier = Modifier.weight(1f),
-                                        textAlign = TextAlign.Start
-                                    )
-                                    Text("▼")
-                                }
-                                DropdownMenu(
-                                    expanded = aimerModeExpanded,
-                                    onDismissRequest = { aimerModeExpanded = false },
-                                    modifier = Modifier.fillMaxWidth(0.9f)
-                                ) {
-                                    aimerModes.forEach { (name, mode) ->
-                                        DropdownMenuItem(
-                                            text = { Text(name) },
-                                            onClick = {
-                                                selectedAimerMode = name
-                                                aimerModeExpanded = false
-                                                try {
-                                                    scannerManager.setAimerLightsMode(mode)
-                                                    Log.d(TAG, "Selected aimer mode: $name")
-                                                } catch (e: Exception) {
-                                                    Log.e(TAG, "Error setting aimer mode", e)
-                                                    errorMessages.add("Error setting aimer mode: ${e.message}")
-                                                }
+                    // Aimer Mode Dropdown
+                    Column {
+                        Text("Aimer Mode", fontWeight = FontWeight.Bold)
+                        Box {
+                            TextButton(
+                                onClick = { aimerModeExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = selectedAimerMode,
+                                    modifier = Modifier.weight(1f),
+                                    textAlign = TextAlign.Start
+                                )
+                                Text("▼")
+                            }
+                            DropdownMenu(
+                                expanded = aimerModeExpanded,
+                                onDismissRequest = { aimerModeExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.9f)
+                            ) {
+                                aimerModes.forEach { (name, mode) ->
+                                    DropdownMenuItem(
+                                        text = { Text(name) },
+                                        onClick = {
+                                            selectedAimerMode = name
+                                            aimerModeExpanded = false
+                                            try {
+                                                scannerManager.setAimerLightsMode(mode)
+                                                Log.d(TAG, "Selected aimer mode: $name")
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Error setting aimer mode", e)
+                                                errorMessages.add("Error setting aimer mode: ${e.message}")
                                             }
-                                        )
-                                    }
+                                        }
+                                    )
                                 }
                             }
                         }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Scan Button
-            Button(
-                onClick = {
-                    Log.d(TAG, "⭐ Toggle scan button clicked, current state: ${if (isLoopScanActive) "scanning" else "not scanning"}")
-                    try {
-                        if (isLoopScanActive) {
-                            scannerManager.stopLoopScan()
-                        } else {
-                            scannerManager.startLoopScan(500) // 500ms интервал
-                        }
-                        isLoopScanActive = !isLoopScanActive
-                        Log.d(TAG, "⭐ Scan state changed to: ${if (isLoopScanActive) "scanning" else "not scanning"}")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error toggling scan", e)
-                        errorMessages.add("Error toggling scan: ${e.message}")
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (isLoopScanActive) "Stop Continuous Scanning" else "Start Continuous Scanning")
             }
 
             // Show Debug Panel if enabled
@@ -540,418 +460,88 @@ fun ScannerSettingsScreen(
 }
 
 /**
- * Выделение секции тестирования API в отдельный компонент
+ * Simplified API Testing Section - Single button that logs to Debug Panel
  */
 @Composable
-fun ApiTestsSection(scannerManager: ScannerManager) {
+fun ApiTestsSection(
+    viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel,
+    scannerManager: ScannerManager
+) {
     val coroutineScope = rememberCoroutineScope()
-
-    // States for the API testing UI
-    val apiTestResults = remember { mutableStateListOf<FunctionTestResult>() }
     var isTestRunning by remember { mutableStateOf(false) }
-
-    // Help dialog state
-    var showHelpDialog by remember { mutableStateOf(false) }
-
-    if (showHelpDialog) {
-        ApiTestHelpDialog(onDismiss = { showHelpDialog = false })
-    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(8.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        )
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Header with help button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Title
-                Text(
-                    text = "Scanner API Tests",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-
-                // Help button
-                TextButton(
-                    onClick = { showHelpDialog = true },
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                ) {
-                    Text("?")
-                }
-            }
-
-            // Test content section
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Run tests to verify scanner API functionality",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-
-                // Test buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Basic scanner functionality test
-                    OutlinedButton(
-                        onClick = {
-                            if (!isTestRunning) {
-                                isTestRunning = true
-                                apiTestResults.clear()
-
-                                coroutineScope.launch {
-                                    try {
-                                        // Run the tests
-                                        val tester = ScannerApiTester(scannerManager)
-                                        val results = tester.runUIFriendlyTests()
-
-                                        // Update the UI with results
-                                        apiTestResults.clear()
-                                        apiTestResults.addAll(results.functionResults)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Error running tests", e)
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Test Execution",
-                                                passed = false,
-                                                message = "Error: ${e.message}"
-                                            )
-                                        )
-                                    } finally {
-                                        isTestRunning = false
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !isTestRunning
-                    ) {
-                        Text("Run All Tests")
-                    }
-
-                    // Barcode type test
-                    OutlinedButton(
-                        onClick = {
-                            if (!isTestRunning) {
-                                isTestRunning = true
-                                apiTestResults.clear()
-
-                                coroutineScope.launch {
-                                    try {
-                                        // Run just the barcode type tests
-                                        val tester = ScannerApiTester(scannerManager)
-                                        val results = tester.testBarcodeTypesUI()
-
-                                        // Update the UI with results
-                                        apiTestResults.clear()
-                                        apiTestResults.addAll(results)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Error testing barcode types", e)
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Barcode Types Test",
-                                                passed = false,
-                                                message = "Error: ${e.message}"
-                                            )
-                                        )
-                                    } finally {
-                                        isTestRunning = false
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !isTestRunning
-                    ) {
-                        Text("Test Barcode Types")
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Scanner settings test
-                    OutlinedButton(
-                        onClick = {
-                            if (!isTestRunning) {
-                                isTestRunning = true
-                                apiTestResults.clear()
-
-                                coroutineScope.launch {
-                                    try {
-                                        // Run just the scanner settings tests
-                                        val tester = ScannerApiTester(scannerManager)
-                                        val results = tester.testScannerSettingsUI()
-
-                                        // Update the UI with results
-                                        apiTestResults.clear()
-                                        apiTestResults.addAll(results)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Error testing scanner settings", e)
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Scanner Settings Test",
-                                                passed = false,
-                                                message = "Error: ${e.message}"
-                                            )
-                                        )
-                                    } finally {
-                                        isTestRunning = false
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !isTestRunning
-                    ) {
-                        Text("Test Settings")
-                    }
-
-                    // Image capabilities test
-                    OutlinedButton(
-                        onClick = {
-                            if (!isTestRunning) {
-                                isTestRunning = true
-                                apiTestResults.clear()
-
-                                coroutineScope.launch {
-                                    try {
-                                        // Run the image capabilities tests
-                                        val tester = ScannerApiTester(scannerManager)
-                                        val results = tester.testImageFunctionsUI()
-
-                                        // Update the UI with results
-                                        apiTestResults.clear()
-                                        apiTestResults.addAll(results)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Error testing image functions", e)
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Image Functions Test",
-                                                passed = false,
-                                                message = "Error: ${e.message}"
-                                            )
-                                        )
-                                    } finally {
-                                        isTestRunning = false
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !isTestRunning
-                    ) {
-                        Text("Test Image API")
-                    }
-                }
-
-                // Добавляем кнопку для тестирования последнего изображения
-                OutlinedButton(
-                    onClick = {
-                        if (!isTestRunning) {
-                            isTestRunning = true
-                            apiTestResults.clear()
-
-                            coroutineScope.launch {
-                                try {
-                                    // Получаем последнее изображение через XCScannerWrapper
-                                    val lastImg = XCScannerWrapper.getLastDecodeImage()
-
-                                    if (lastImg != null) {
-                                        val width = lastImg.width
-                                        val height = lastImg.height
-                                        val hasData = lastImg.data != null
-                                        val dataSize = lastImg.data?.size ?: 0
-
-                                        // Добавляем результаты
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Last Image Test",
-                                                passed = true,
-                                                message = "Got image: ${width}x${height}, data size: $dataSize bytes"
-                                            )
-                                        )
-                                    } else {
-                                        apiTestResults.add(
-                                            FunctionTestResult(
-                                                functionName = "Last Image Test",
-                                                passed = false,
-                                                message = "No image available - try scanning a barcode first"
-                                            )
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Error getting last image", e)
-                                    apiTestResults.add(
-                                        FunctionTestResult(
-                                            functionName = "Last Image Test",
-                                            passed = false,
-                                            message = "Error: ${e.message}"
-                                        )
-                                    )
-                                } finally {
-                                    isTestRunning = false
-                                }
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isTestRunning
-                ) {
-                    Text("Get Last Image (Direct API)")
-                }
-
-                // Loading indicator
-                if (isTestRunning) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Running tests...",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-
-                // Results display
-                if (apiTestResults.isNotEmpty()) {
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
-
-                    Text(
-                        text = "Test Results:",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                    ) {
-                        items(apiTestResults) { result ->
-                            TestResultItem(result)
-                        }
-                    }
-
-                    // Summary
-                    val passedCount = apiTestResults.count { it.passed }
-                    val totalCount = apiTestResults.size
-                    val passPercentage = if (totalCount > 0) (passedCount * 100 / totalCount) else 0
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Passed: $passedCount/$totalCount",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-
-                        Text(
-                            text = "$passPercentage%",
-                            color = when {
-                                passPercentage > 80 -> Color.Green
-                                passPercentage > 50 -> Color.Yellow
-                                else -> Color.Red
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun TestResultItem(result: FunctionTestResult) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Status indicator
-        Surface(
-            modifier = Modifier.size(20.dp),
-            shape = CircleShape,
-            color = if (result.passed) Color.Green else Color.Red,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = if (result.passed) "✓" else "✗",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
-
-        // Function name and result
-        Column(
-            modifier = Modifier.weight(1f)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = result.functionName,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold
+                text = "API Testing Tools",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
             )
 
-            if (result.message.isNotEmpty()) {
-                Text(
-                    text = buildAnnotatedString {
-                        if (result.passed) {
-                            withStyle(style = SpanStyle(color = Color.Gray)) {
-                                append(result.message)
-                            }
-                        } else {
-                            withStyle(style = SpanStyle(color = Color.Red, fontFamily = FontFamily.Monospace, fontSize = 12.sp)) {
-                                append(result.message)
+            Text(
+                text = "Run tests and view results in the Debug Panel below",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+
+            Button(
+                onClick = {
+                    if (!isTestRunning) {
+                        isTestRunning = true
+
+                        // Enable debug panel if not already enabled
+                        viewModel.setDebugPanelEnabled(true)
+
+                        coroutineScope.launch {
+                            try {
+                                val tester = ScannerApiTester(scannerManager)
+                                tester.testAndLogToViewModel { message ->
+                                    viewModel.addLog(message)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error running tests", e)
+                                viewModel.addLog("❌ Error running tests: ${e.message}")
+                            } finally {
+                                isTestRunning = false
                             }
                         }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.alpha(0.8f)
-                )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isTestRunning
+            ) {
+                if (isTestRunning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(if (isTestRunning) "Running Tests..." else "Run All Tests")
             }
         }
     }
 }
 
 /**
- * ML Kit Recovery Section Component
+ * ML Kit Recovery Section Component - Now uses camera for image capture
  */
 @Composable
-fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel) {
+fun MlKitRecoverySection(
+    viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel,
+    onNavigateToCamera: (String) -> Unit
+) {
     // Наблюдаем за состоянием ML Kit
     val scanState by viewModel.scanState.observeAsState(com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE)
     val recoveryStatus by viewModel.recoveryStatus.observeAsState()
@@ -976,7 +566,7 @@ fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
             )
 
             Text(
-                text = "When hardware scanner fails, use ML Kit as backup",
+                text = "When hardware scanner fails, use ML Kit with camera",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onTertiaryContainer
             )
@@ -1006,23 +596,29 @@ fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
                 }
             }
 
-            // Кнопки ML Kit
+            // Кнопки ML Kit - теперь открывают камеру
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Enhanced Scan button
+                // Enhanced Scan button - открывает камеру для single recovery
                 Button(
-                    onClick = { viewModel.trySingleImageRecovery() },
+                    onClick = {
+                        viewModel.requestSingleImageRecovery()
+                        onNavigateToCamera("single_recovery")
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.HW_SCAN_FAILED || scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE
                 ) {
                     Text("Enhanced Scan")
                 }
 
-                // Recovery Session button
+                // Recovery Session button - открывает камеру для multi recovery
                 Button(
-                    onClick = { viewModel.startRecoverySession() },
+                    onClick = {
+                        viewModel.requestRecoverySession()
+                        onNavigateToCamera("multi_recovery")
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.ML_ANALYSIS_FAILED || scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.IDLE
                 ) {
@@ -1032,7 +628,9 @@ fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
 
             if (scanState == com.xelth.eckwms_movfast.ui.viewmodels.ScanState.RECOVERY_SESSION_ACTIVE) {
                 Button(
-                    onClick = { viewModel.captureImageForRecovery() },
+                    onClick = {
+                        onNavigateToCamera("multi_recovery_continue")
+                    },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Capture Image (${(recoveryStatus?.imagesCollected ?: 0) + 1}/${recoveryStatus?.totalImages})")
@@ -1050,4 +648,3 @@ fun MlKitRecoverySection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
         }
     }
 }
-

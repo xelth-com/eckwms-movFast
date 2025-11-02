@@ -1,6 +1,7 @@
 // app/src/main/java/com/xelth/eckwms_movfast/ScannerActivity.kt
 package com.xelth.eckwms_movfast
 
+import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,7 +14,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import androidx.navigation.NavType
+import androidx.compose.runtime.LaunchedEffect
 import com.xelth.eckwms_movfast.scanners.ScannerManager
+import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannedImageScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
@@ -22,7 +30,7 @@ import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 class ScannerActivity : ComponentActivity() {
     // Ссылка на ScannerManager
     private lateinit var scannerManager: ScannerManager
-    
+
     private val viewModel: ScanRecoveryViewModel by viewModels {
         ScanRecoveryViewModel.Companion.Factory(application)
     }
@@ -39,22 +47,60 @@ class ScannerActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // Управление навигацией между экранами внутри активности
-                    var currentScreen by remember { mutableStateOf("settings") }
+                    val navController = rememberNavController()
 
-                    when (currentScreen) {
-                        "settings" -> {
+                    NavHost(
+                        navController = navController,
+                        startDestination = "settings"
+                    ) {
+                        composable("settings") { backStackEntry ->
+                            // Listen for results from camera
+                            val savedStateHandle = backStackEntry.savedStateHandle
+                            LaunchedEffect(savedStateHandle) {
+                                // Handle single recovery image capture
+                                savedStateHandle.get<Bitmap>("captured_recovery_image")?.let { bitmap ->
+                                    viewModel.processCapturedImageForSingleRecovery(bitmap)
+                                    savedStateHandle.remove<Bitmap>("captured_recovery_image")
+                                }
+
+                                // Handle multi-recovery image capture
+                                savedStateHandle.get<Bitmap>("captured_session_image")?.let { bitmap ->
+                                    viewModel.processCapturedImageForRecoverySession(bitmap)
+                                    savedStateHandle.remove<Bitmap>("captured_session_image")
+                                }
+                            }
+
                             ScannerSettingsScreen(
                                 scannerManager = scannerManager,
                                 viewModel = viewModel,
                                 onNavigateBack = { finish() },
-                                onOpenImageViewer = { currentScreen = "image_viewer" }
+                                onOpenImageViewer = { navController.navigate("image_viewer") },
+                                onNavigateToCamera = { scanMode ->
+                                    navController.navigate("cameraScanScreen?scan_mode=$scanMode")
+                                }
                             )
                         }
-                        "image_viewer" -> {
+
+                        composable("image_viewer") {
                             ScannedImageScreen(
                                 scannerManager = scannerManager,
-                                onNavigateBack = { currentScreen = "settings" }
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable(
+                            route = "cameraScanScreen?scan_mode={scan_mode}",
+                            arguments = listOf(
+                                navArgument("scan_mode") {
+                                    type = NavType.StringType
+                                    defaultValue = "barcode"
+                                }
+                            )
+                        ) { backStackEntry ->
+                            val scanMode = backStackEntry.arguments?.getString("scan_mode") ?: "barcode"
+                            CameraScanScreen(
+                                navController = navController,
+                                scanMode = scanMode
                             )
                         }
                     }

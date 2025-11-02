@@ -140,7 +140,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         scannerManager.scanResult.observeForever(scanResultObserver)
     }
 
-    private fun addLog(message: String) {
+    /**
+     * Public method to add log messages (used both internally and externally)
+     */
+    fun addLog(message: String) {
         Log.d(TAG, message)
         val currentLog = _debugLog.value ?: emptyList()
         _debugLog.postValue(currentLog + message)
@@ -163,36 +166,57 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    /**
+     * Request to start single image recovery - prepares state for camera capture
+     */
+    fun requestSingleImageRecovery() {
+        addLog("Requesting single image recovery via camera")
+        _scanState.value = ScanState.ML_ANALYSIS_SINGLE
+        _errorMessage.value = null
+    }
+
+    /**
+     * Process a captured image from camera for single recovery
+     */
+    fun processCapturedImageForSingleRecovery(image: Bitmap) {
+        addLog("Processing captured image for single recovery: ${image.width}x${image.height}")
+
+        // Store image for UI display
+        _singleRecoveryImage.postValue(image)
+        updateAllDiagnosticImages()
+
+        // Save diagnostic image
+        val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "single_recovery")
+        addLog("Diagnostic image saved: $savedUri")
+
+        processImageWithMlKit(image) { success, result ->
+            if (success) {
+                addLog("ML Kit single image SUCCESS: $result")
+                _scannedBarcode.postValue(result)
+                _scanState.postValue(ScanState.SUCCESS)
+
+                // Send scan to server
+                val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+                sendScanToServer(result, barcodeType)
+            } else {
+                addLog("ML Kit single image FAILED: $result")
+                _errorMessage.postValue(result)
+                _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
+            }
+        }
+    }
+
+    /**
+     * Legacy method for backward compatibility - now redirects to camera capture
+     * @deprecated Use requestSingleImageRecovery() and processCapturedImageForSingleRecovery() instead
+     */
+    @Deprecated("Use camera-based recovery methods instead")
     fun trySingleImageRecovery() {
         addLog("Chance 2: ML Kit single image analysis.")
         _scanState.value = ScanState.ML_ANALYSIS_SINGLE
         val image = scannerManager.getLastDecodedImage()
         if (image != null) {
-            addLog("Retrieved image for single recovery: ${image.width}x${image.height}")
-
-            // Store image for UI display
-            _singleRecoveryImage.postValue(image)
-            updateAllDiagnosticImages()
-
-            // Save diagnostic image
-            val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "single_recovery")
-            addLog("Diagnostic image saved: $savedUri")
-
-            processImageWithMlKit(image) { success, result ->
-                if (success) {
-                    addLog("ML Kit single image SUCCESS: $result")
-                    _scannedBarcode.postValue(result)
-                    _scanState.postValue(ScanState.SUCCESS)
-
-                    // Send scan to server
-                    val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
-                    sendScanToServer(result, barcodeType)
-                } else {
-                    addLog("ML Kit single image FAILED: $result")
-                    _errorMessage.postValue(result)
-                    _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
-                }
-            }
+            processCapturedImageForSingleRecovery(image)
         } else {
             addLog("ML Kit FAILED: Could not get image from scanner.")
             _errorMessage.postValue("Could not get image from scanner.")
@@ -200,8 +224,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
-    fun startRecoverySession() {
-        addLog("Chance 3: Starting multi-image recovery session.")
+    /**
+     * Request to start recovery session - prepares state for multi-image camera capture
+     */
+    fun requestRecoverySession() {
+        addLog("Requesting multi-image recovery session via camera")
         recoveryImages.clear()
         _recoveryImagesPreview.value = emptyList()
         _recoveryStatus.value = RecoveryStatus(0, RECOVERY_IMAGE_COUNT)
@@ -209,6 +236,46 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         _errorMessage.value = null
     }
 
+    /**
+     * Process a captured image from camera for recovery session
+     */
+    fun processCapturedImageForRecoverySession(image: Bitmap) {
+        if (_scanState.value != ScanState.RECOVERY_SESSION_ACTIVE) {
+            addLog("Warning: Received image but not in recovery session state")
+            return
+        }
+
+        addLog("Processing captured image for recovery session: ${image.width}x${image.height}")
+
+        // Save diagnostic image
+        val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "recovery_${recoveryImages.size + 1}")
+        addLog("Diagnostic recovery image saved: $savedUri")
+
+        recoveryImages.add(image)
+        _recoveryImagesPreview.postValue(ArrayList(recoveryImages)) // Post a copy
+        _recoveryStatus.postValue(RecoveryStatus(recoveryImages.size, RECOVERY_IMAGE_COUNT))
+        updateAllDiagnosticImages()
+        addLog("Collected image ${recoveryImages.size}/$RECOVERY_IMAGE_COUNT.")
+
+        if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
+            processRecoveryImages()
+        }
+    }
+
+    /**
+     * Legacy method for backward compatibility - now uses camera capture
+     * @deprecated Use requestRecoverySession() and processCapturedImageForRecoverySession() instead
+     */
+    @Deprecated("Use camera-based recovery methods instead")
+    fun startRecoverySession() {
+        requestRecoverySession()
+    }
+
+    /**
+     * Legacy method for backward compatibility - now uses camera capture
+     * @deprecated Use processCapturedImageForRecoverySession() instead
+     */
+    @Deprecated("Use camera-based recovery methods instead")
     fun captureImageForRecovery() {
         if (_scanState.value != ScanState.RECOVERY_SESSION_ACTIVE) return
         addLog("Capturing image for recovery...")
@@ -217,21 +284,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             delay(500)
             val image = scannerManager.getLastDecodedImage()
             if (image != null) {
-                addLog("Retrieved recovery image: ${image.width}x${image.height}")
-
-                // Save diagnostic image
-                val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "recovery_${recoveryImages.size + 1}")
-                addLog("Diagnostic recovery image saved: $savedUri")
-
-                recoveryImages.add(image)
-                _recoveryImagesPreview.postValue(ArrayList(recoveryImages)) // Post a copy
-                _recoveryStatus.postValue(RecoveryStatus(recoveryImages.size, RECOVERY_IMAGE_COUNT))
-                updateAllDiagnosticImages()
-                addLog("Collected image ${recoveryImages.size}/$RECOVERY_IMAGE_COUNT.")
-
-                if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
-                    processRecoveryImages()
-                }
+                processCapturedImageForRecoverySession(image)
             } else {
                 addLog("Image capture FAILED.")
                 _errorMessage.postValue("Failed to capture image. Please try again.")

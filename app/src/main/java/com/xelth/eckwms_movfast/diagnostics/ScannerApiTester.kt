@@ -743,4 +743,61 @@ class ScannerApiTester(private val scannerManager: ScannerManager) {
 
         return results
     }
+
+    /**
+     * Run UI-friendly tests and log results to ViewModel via callback
+     * This method allows test results to be piped directly to the debug log
+     *
+     * @param onLog Callback function to log each test result message
+     */
+    fun testAndLogToViewModel(onLog: (String) -> Unit) {
+        onLog("===== API TEST START =====")
+        onLog("")
+
+        // Test scanner status
+        onLog("--- Scanner Status Tests ---")
+        val statusResults = testScannerStatusUI()
+        statusResults.forEach { result ->
+            val prefix = if (result.passed) "✓" else "✗"
+            onLog("$prefix ${result.functionName}: ${result.message}")
+        }
+        onLog("")
+
+        // Test barcode types
+        onLog("--- Barcode Type Tests ---")
+        val barcodeResults = testBarcodeTypesUI()
+        barcodeResults.forEach { result ->
+            val prefix = if (result.passed) "✓" else "✗"
+            onLog("$prefix ${result.functionName}: ${result.message}")
+        }
+        onLog("")
+
+        // Test scanner settings
+        onLog("--- Scanner Settings Tests ---")
+        val settingsResults = testScannerSettingsUI()
+        settingsResults.forEach { result ->
+            val prefix = if (result.passed) "✓" else "✗"
+            onLog("$prefix ${result.functionName}: ${result.message}")
+        }
+        onLog("")
+
+        // Test image functions
+        onLog("--- Image Function Tests ---")
+        val imageResults = testImageFunctionsUI()
+        imageResults.forEach { result ->
+            val prefix = if (result.passed) "✓" else "✗"
+            onLog("$prefix ${result.functionName}: ${result.message}")
+        }
+        onLog("")
+
+        // Calculate summary
+        val allResults = statusResults + barcodeResults + settingsResults + imageResults
+        val passedCount = allResults.count { it.passed }
+        val totalCount = allResults.size
+        val passPercentage = if (totalCount > 0) (passedCount * 100 / totalCount) else 0
+
+        onLog("===== TEST SUMMARY =====")
+        onLog("Passed: $passedCount / $totalCount ($passPercentage%)")
+        onLog("========================")
+    }
 }
