@@ -2,7 +2,6 @@ package com.xelth.eckwms_movfast.ui.viewmodels
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
@@ -26,13 +25,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-// Функция для поворота изображения на 180 градусов
-private fun rotateBitmap180(bitmap: Bitmap): Bitmap {
-    val matrix = Matrix()
-    matrix.postRotate(180f)
-    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-}
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -189,18 +181,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val savedUri = FileUtils.saveBitmapToPictures(getApplication(), image, "single_recovery")
         addLog("Diagnostic image saved: $savedUri")
 
-        processImageWithMlKit(image) { success, result ->
+        processImageWithMlKit(image) { success, barcodeValue, barcodeType ->
             if (success) {
-                addLog("ML Kit single image SUCCESS: $result")
-                _scannedBarcode.postValue(result)
+                addLog("ML Kit single image SUCCESS: $barcodeValue (type: $barcodeType)")
+                _scannedBarcode.postValue(barcodeValue)
                 _scanState.postValue(ScanState.SUCCESS)
 
-                // Send scan to server
-                val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
-                sendScanToServer(result, barcodeType)
+                // Send scan to server with ML Kit detected type
+                sendScanToServer(barcodeValue, barcodeType)
             } else {
-                addLog("ML Kit single image FAILED: $result")
-                _errorMessage.postValue(result)
+                addLog("ML Kit single image FAILED: $barcodeValue")
+                _errorMessage.postValue(barcodeValue)
                 _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
             }
         }
@@ -298,15 +289,15 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         viewModelScope.launch(Dispatchers.IO) {
             for ((index, image) in recoveryImages.withIndex()) {
                 addLog("Analyzing image ${index + 1}...")
-                val found = processImageWithMlKitSuspending(image)
-                if (found != null) {
-                    addLog("Multi-image recovery SUCCESS: $found")
-                    _scannedBarcode.postValue(found)
+                val result = processImageWithMlKitSuspending(image)
+                if (result != null) {
+                    val (barcodeValue, barcodeType) = result
+                    addLog("Multi-image recovery SUCCESS: $barcodeValue (type: $barcodeType)")
+                    _scannedBarcode.postValue(barcodeValue)
                     _scanState.postValue(ScanState.SUCCESS)
 
-                    // Send scan to server
-                    val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
-                    sendScanToServer(found, barcodeType)
+                    // Send scan to server with ML Kit detected type
+                    sendScanToServer(barcodeValue, barcodeType)
 
                     return@launch
                 }
@@ -317,12 +308,14 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
-    private fun processImageWithMlKit(bitmap: Bitmap, callback: (Boolean, String) -> Unit) {
+    /**
+     * Process an image with ML Kit and return (success, barcodeValue, barcodeType)
+     * Now correctly handles camera images without rotation and returns ML Kit detected type
+     */
+    private fun processImageWithMlKit(bitmap: Bitmap, callback: (Boolean, String, String) -> Unit) {
         addLog("Starting ML Kit analysis on ${bitmap.width}x${bitmap.height} image")
-        // Поворачиваем изображение на 180 градусов, так как они отображаются вверх ногами
-        val rotatedBitmap = rotateBitmap180(bitmap)
-        addLog("Rotated image for ML Kit analysis: ${rotatedBitmap.width}x${rotatedBitmap.height}")
-        val image = InputImage.fromBitmap(rotatedBitmap, 0)
+        // NOTE: Camera images are already correctly oriented, no rotation needed
+        val image = InputImage.fromBitmap(bitmap, 0)
 
         // Configure scanner to detect all barcode formats
         val options = BarcodeScannerOptions.Builder()
@@ -351,23 +344,50 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 addLog("ML Kit analysis completed. Found ${barcodes.size} barcodes")
                 if (barcodes.isNotEmpty()) {
                     val barcode = barcodes[0]
-                    addLog("Barcode details - Format: ${barcode.format}, Value: ${barcode.rawValue}")
-                    callback(true, barcode.rawValue ?: "")
+                    val barcodeValue = barcode.rawValue ?: ""
+                    val barcodeType = getBarcodeTypeName(barcode.format)
+                    addLog("Barcode details - Format: $barcodeType, Value: $barcodeValue")
+                    callback(true, barcodeValue, barcodeType)
                 } else {
                     addLog("No barcode detected in image")
-                    callback(false, "No barcode found in image.")
+                    callback(false, "No barcode found in image.", "UNKNOWN")
                 }
             }
             .addOnFailureListener { e ->
                 addLog("ML Kit analysis failed with exception: ${e.message}")
-                callback(false, "ML Kit analysis failed: ${e.message}")
+                callback(false, "ML Kit analysis failed: ${e.message}", "UNKNOWN")
             }
     }
 
-    private suspend fun processImageWithMlKitSuspending(bitmap: Bitmap): String? {
+    /**
+     * Convert ML Kit barcode format to string type name
+     */
+    private fun getBarcodeTypeName(format: Int): String {
+        return when (format) {
+            Barcode.FORMAT_QR_CODE -> "QR_CODE"
+            Barcode.FORMAT_CODE_128 -> "CODE_128"
+            Barcode.FORMAT_CODE_39 -> "CODE_39"
+            Barcode.FORMAT_CODE_93 -> "CODE_93"
+            Barcode.FORMAT_CODABAR -> "CODABAR"
+            Barcode.FORMAT_EAN_13 -> "EAN_13"
+            Barcode.FORMAT_EAN_8 -> "EAN_8"
+            Barcode.FORMAT_ITF -> "ITF"
+            Barcode.FORMAT_UPC_A -> "UPC_A"
+            Barcode.FORMAT_UPC_E -> "UPC_E"
+            Barcode.FORMAT_PDF417 -> "PDF417"
+            Barcode.FORMAT_AZTEC -> "AZTEC"
+            Barcode.FORMAT_DATA_MATRIX -> "DATA_MATRIX"
+            else -> "UNKNOWN"
+        }
+    }
+
+    /**
+     * Suspending version that returns a Pair of (barcodeValue, barcodeType) or null
+     */
+    private suspend fun processImageWithMlKitSuspending(bitmap: Bitmap): Pair<String, String>? {
         return kotlin.coroutines.suspendCoroutine { continuation ->
-            processImageWithMlKit(bitmap) { success, result ->
-                continuation.resumeWith(Result.success(if (success) result else null))
+            processImageWithMlKit(bitmap) { success, barcodeValue, barcodeType ->
+                continuation.resumeWith(Result.success(if (success) Pair(barcodeValue, barcodeType) else null))
             }
         }
     }

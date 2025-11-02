@@ -1,7 +1,6 @@
 package com.xelth.eckwms_movfast
 
 import android.content.Intent
-import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,6 +16,7 @@ import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
+import com.xelth.eckwms_movfast.utils.BitmapCache
 
 class MainActivity : ComponentActivity() {
 
@@ -50,15 +50,27 @@ class MainActivity : ComponentActivity() {
                             }
 
                             // Handle single recovery image capture
-                            savedStateHandle.get<Bitmap>("captured_recovery_image")?.let { bitmap ->
-                                viewModel.processCapturedImageForSingleRecovery(bitmap)
-                                savedStateHandle.remove<Bitmap>("captured_recovery_image")
+                            savedStateHandle.get<Boolean>("captured_recovery_image")?.let { success ->
+                                if (success) {
+                                    val bitmap = BitmapCache.getCapturedImage()
+                                    if (bitmap != null) {
+                                        viewModel.processCapturedImageForSingleRecovery(bitmap)
+                                        BitmapCache.clearCapturedImage()
+                                    }
+                                }
+                                savedStateHandle.remove<Boolean>("captured_recovery_image")
                             }
 
                             // Handle multi-recovery image capture
-                            savedStateHandle.get<Bitmap>("captured_session_image")?.let { bitmap ->
-                                viewModel.processCapturedImageForRecoverySession(bitmap)
-                                savedStateHandle.remove<Bitmap>("captured_session_image")
+                            savedStateHandle.get<Boolean>("captured_session_image")?.let { success ->
+                                if (success) {
+                                    val bitmap = BitmapCache.getCapturedImage()
+                                    if (bitmap != null) {
+                                        viewModel.processCapturedImageForRecoverySession(bitmap)
+                                        BitmapCache.clearCapturedImage()
+                                    }
+                                }
+                                savedStateHandle.remove<Boolean>("captured_session_image")
                             }
                         }
 

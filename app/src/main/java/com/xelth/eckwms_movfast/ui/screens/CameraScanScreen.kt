@@ -3,6 +3,8 @@ package com.xelth.eckwms_movfast.ui.screens
 import android.Manifest
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -44,6 +46,7 @@ import com.google.accompanist.permissions.rememberPermissionState
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.xelth.eckwms_movfast.utils.BitmapCache
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
@@ -61,6 +64,7 @@ fun CameraScanScreen(
 
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     var isProcessing by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
@@ -193,23 +197,36 @@ fun CameraScanScreen(
                                                     val bitmap = imageProxyToBitmap(image)
                                                     Log.d(TAG, "Image captured: ${bitmap.width}x${bitmap.height}")
 
-                                                    // Pass bitmap back to ViewModel via savedStateHandle
-                                                    val resultKey = when (scanMode) {
-                                                        "single_recovery" -> "captured_recovery_image"
-                                                        "multi_recovery", "multi_recovery_continue" -> "captured_session_image"
-                                                        else -> "captured_recovery_image"
+                                                    // Store bitmap in cache to avoid TransactionTooLargeException
+                                                    BitmapCache.setCapturedImage(bitmap)
+
+                                                    // Post to main thread for navigation and state updates
+                                                    mainHandler.post {
+                                                        try {
+                                                            // Signal success via savedStateHandle
+                                                            val resultKey = when (scanMode) {
+                                                                "single_recovery" -> "captured_recovery_image"
+                                                                "multi_recovery", "multi_recovery_continue" -> "captured_session_image"
+                                                                else -> "captured_recovery_image"
+                                                            }
+
+                                                            navController.previousBackStackEntry?.savedStateHandle?.set(
+                                                                resultKey,
+                                                                true // Just signal that capture succeeded
+                                                            )
+
+                                                            // Navigate back on main thread
+                                                            navController.popBackStack()
+                                                        } catch (e: Exception) {
+                                                            Log.e(TAG, "Error during navigation", e)
+                                                            isCapturing = false
+                                                        }
                                                     }
-
-                                                    navController.previousBackStackEntry?.savedStateHandle?.set(
-                                                        resultKey,
-                                                        bitmap
-                                                    )
-
-                                                    // Navigate back
-                                                    navController.popBackStack()
                                                 } catch (e: Exception) {
                                                     Log.e(TAG, "Error processing captured image", e)
-                                                    isCapturing = false
+                                                    mainHandler.post {
+                                                        isCapturing = false
+                                                    }
                                                 } finally {
                                                     image.close()
                                                 }
@@ -217,7 +234,9 @@ fun CameraScanScreen(
 
                                             override fun onError(exception: ImageCaptureException) {
                                                 Log.e(TAG, "Image capture failed", exception)
-                                                isCapturing = false
+                                                mainHandler.post {
+                                                    isCapturing = false
+                                                }
                                             }
                                         }
                                     )
