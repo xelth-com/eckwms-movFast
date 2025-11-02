@@ -6,22 +6,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import com.xelth.eckwms_movfast.ui.screens.DebugInfoPanel
+import androidx.compose.runtime.LaunchedEffect
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
+import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
-import com.xelth.eckwms_movfast.ui.viewmodels.ScanState
 
 class MainActivity : ComponentActivity() {
 
@@ -35,52 +27,39 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             EckwmsmovFastTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                        // Main content
-                        MainContent(
+                val navController = rememberNavController()
+
+                NavHost(
+                    navController = navController,
+                    startDestination = "scanScreen"
+                ) {
+                    composable("scanScreen") { backStackEntry ->
+                        // Listen for result from camera scan
+                        val savedStateHandle = backStackEntry.savedStateHandle
+                        LaunchedEffect(savedStateHandle) {
+                            savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
+                                val barcode = data["barcode"] ?: return@let
+                                val type = data["type"] ?: "UNKNOWN"
+                                viewModel.handleScannedData(barcode, type)
+                                // Clear the result after processing
+                                savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
+                            }
+                        }
+
+                        ScanScreen(
                             viewModel = viewModel,
-                            onOpenScannerSettings = {
+                            navController = navController,
+                            onNavigateToSettings = {
                                 val intent = Intent(this@MainActivity, ScannerActivity::class.java)
                                 startActivity(intent)
                             }
                         )
                     }
+                    composable("cameraScanScreen") {
+                        CameraScanScreen(navController = navController)
+                    }
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun MainContent(
-    viewModel: ScanRecoveryViewModel,
-    onOpenScannerSettings: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "ECKWMS Scanner",
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(48.dp))
-
-        Button(
-            onClick = onOpenScannerSettings,
-            modifier = Modifier.fillMaxWidth().height(56.dp)
-        ) {
-            Text(
-                "Scanner Hardware Settings",
-                style = MaterialTheme.typography.titleMedium
-            )
         }
     }
 }

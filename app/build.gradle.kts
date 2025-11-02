@@ -7,7 +7,6 @@ plugins {
 android {
     namespace = "com.xelth.eckwms_movfast"
     compileSdk = 35
-    buildToolsVersion = "35.0.1"
 
     defaultConfig {
         applicationId = "com.xelth.eckwms_movfast"
@@ -83,4 +82,10 @@ dependencies {
     
     // ML Kit Barcode Scanning
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // CameraX dependencies
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
 }

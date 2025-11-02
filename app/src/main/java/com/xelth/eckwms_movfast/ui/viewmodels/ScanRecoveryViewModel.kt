@@ -97,44 +97,47 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
     private var lastProcessedBarcode: String? = null
     private var lastProcessedTime: Long = 0
 
-    init {
-        addLog("ViewModel Initialized.")
-        scannerManager.scanResult.observeForever {
-            // Обрабатываем только в состояниях IDLE или HW_SCANNING
-            // И только если это новый штрих-код (не дубликат)
-            if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE)) {
-                val currentTime = System.currentTimeMillis()
+    // Observer для scanResult - должен быть переменной для корректного удаления в onCleared()
+    private val scanResultObserver = androidx.lifecycle.Observer<String> {
+        // Обрабатываем только в состояниях IDLE или HW_SCANNING
+        // И только если это новый штрих-код (не дубликат)
+        if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE)) {
+            val currentTime = System.currentTimeMillis()
 
-                // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
-                if (it == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
-                    addLog("Ignoring duplicate scan: $it")
-                    return@observeForever
-                }
+            // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
+            if (it == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
+                addLog("Ignoring duplicate scan: $it")
+                return@Observer
+            }
 
-                lastProcessedBarcode = it
-                lastProcessedTime = currentTime
+            lastProcessedBarcode = it
+            lastProcessedTime = currentTime
 
-                addLog("Hardware scan SUCCESS: $it (state: ${_scanState.value})")
-                hardwareScanJob?.cancel()
-                scannerManager.stopLoopScan()
-                _scannedBarcode.postValue(it)
-                _scanState.postValue(ScanState.SUCCESS)
+            addLog("Hardware scan SUCCESS: $it (state: ${_scanState.value})")
+            hardwareScanJob?.cancel()
+            scannerManager.stopLoopScan()
+            _scannedBarcode.postValue(it)
+            _scanState.postValue(ScanState.SUCCESS)
 
-                // Send scan to server
-                val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
-                addLog("Barcode type from scanner: $barcodeType")
-                sendScanToServer(it, barcodeType)
+            // Send scan to server
+            val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+            addLog("Barcode type from scanner: $barcodeType")
+            sendScanToServer(it, barcodeType)
 
-                // Auto-reset to IDLE after a short delay to allow continuous scanning
-                viewModelScope.launch {
-                    delay(1000) // 1 second delay
-                    if (_scanState.value == ScanState.SUCCESS) {
-                        _scanState.postValue(ScanState.IDLE)
-                        addLog("Auto-reset to IDLE for continuous scanning")
-                    }
+            // Auto-reset to IDLE after a short delay to allow continuous scanning
+            viewModelScope.launch {
+                delay(1000) // 1 second delay
+                if (_scanState.value == ScanState.SUCCESS) {
+                    _scanState.postValue(ScanState.IDLE)
+                    addLog("Auto-reset to IDLE for continuous scanning")
                 }
             }
         }
+    }
+
+    init {
+        addLog("ViewModel Initialized.")
+        scannerManager.scanResult.observeForever(scanResultObserver)
     }
 
     private fun addLog(message: String) {
@@ -397,6 +400,39 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /**
+     * Handles scanned data from camera or other sources
+     * This centralizes the processing of all scan results
+     */
+    fun handleScannedData(barcode: String, type: String) {
+        val currentTime = System.currentTimeMillis()
+
+        // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
+        if (barcode == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
+            addLog("Ignoring duplicate camera scan: $barcode")
+            return
+        }
+
+        lastProcessedBarcode = barcode
+        lastProcessedTime = currentTime
+
+        addLog("Camera scan SUCCESS: $barcode (type: $type)")
+        _scannedBarcode.postValue(barcode)
+        _scanState.postValue(ScanState.SUCCESS)
+
+        // Send scan to server
+        sendScanToServer(barcode, type)
+
+        // Auto-reset to IDLE after a short delay to allow continuous scanning
+        viewModelScope.launch {
+            delay(1000) // 1 second delay
+            if (_scanState.value == ScanState.SUCCESS) {
+                _scanState.postValue(ScanState.IDLE)
+                addLog("Auto-reset to IDLE for continuous scanning")
+            }
+        }
+    }
+
     fun reset() {
         addLog("Resetting state to IDLE.")
         hardwareScanJob?.cancel()
@@ -412,7 +448,8 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     override fun onCleared() {
         super.onCleared()
-        scannerManager.scanResult.removeObserver { }
+        // Удаляем тот же самый observer, который был добавлен в init
+        scannerManager.scanResult.removeObserver(scanResultObserver)
         reset()
     }
     
