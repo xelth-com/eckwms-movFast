@@ -374,8 +374,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 if (index != -1) {
                     when (result) {
                         is ScanResult.Success -> {
-                            addLog("Server confirmed scan: $barcode")
-                            updatedHistory[index].status = ScanStatus.CONFIRMED
+                            addLog("Server buffered scan: $barcode (checksum: ${result.checksum})")
+                            updatedHistory[index].status = ScanStatus.BUFFERED
+                            updatedHistory[index].checksum = result.checksum
                         }
                         is ScanResult.Error -> {
                             addLog("Server rejected scan: ${result.message}")

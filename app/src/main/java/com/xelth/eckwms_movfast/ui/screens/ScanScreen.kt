@@ -139,13 +139,15 @@ fun ScanHistorySection(viewModel: ScanRecoveryViewModel) {
 @Composable
 fun ScanHistoryItemCard(item: ScanHistoryItem) {
     val backgroundColor = when (item.status) {
-        ScanStatus.PENDING -> Color(0xFFFFF9C4) // Light yellow
-        ScanStatus.CONFIRMED -> Color(0xFFC8E6C9) // Light green
-        ScanStatus.FAILED -> Color(0xFFFFCDD2) // Light red
+        ScanStatus.PENDING -> Color(0xFFEEEEEE) // Light grey (not yet sent)
+        ScanStatus.BUFFERED -> Color(0xFFFFF9C4) // Light yellow (in server buffer)
+        ScanStatus.CONFIRMED -> Color(0xFFC8E6C9) // Light green (processed by client)
+        ScanStatus.FAILED -> Color(0xFFFFCDD2) // Light red (error)
     }
     val statusText = item.status.name
     val statusColor = when (item.status) {
-        ScanStatus.PENDING -> Color(0xFFF57F17) // Dark yellow
+        ScanStatus.PENDING -> Color(0xFF757575) // Dark grey
+        ScanStatus.BUFFERED -> Color(0xFFF57F17) // Dark yellow
         ScanStatus.CONFIRMED -> Color(0xFF2E7D32) // Dark green
         ScanStatus.FAILED -> Color(0xFFC62828) // Dark red
     }

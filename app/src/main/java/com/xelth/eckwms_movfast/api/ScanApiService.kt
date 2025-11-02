@@ -22,6 +22,10 @@ class ScanApiService(private val context: Context) {
     // Базовый URL для API
     private val BASE_URL = "https://pda.repair/eckwms/api"
 
+    // API Key for authentication with the server buffer
+    // Configured for public demo mode - scans will be visible on pda.repair/eckwms
+    private val API_KEY = "public-demo-key-for-eckwms-app"
+
     // Ссылка на ScannerManager для получения информации о типе штрих-кода
     private var scannerManager: ScannerManager? = null
 
@@ -55,14 +59,17 @@ class ScanApiService(private val context: Context) {
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-API-Key", API_KEY)
             connection.doOutput = true
 
-            // Создаем JSON запрос с barcode, type и deviceId
+            // Создаем JSON запрос в новом формате для buffer API
             val jsonRequest = JSONObject().apply {
-                put("barcode", barcode)
-                put("type", barcodeType)
                 put("deviceId", deviceId)
+                put("payload", barcode)
+                put("type", barcodeType)
             }
+
+            Log.d(TAG, "Sending request: $jsonRequest")
 
             // Отправляем запрос
             val outputStream = connection.outputStream
@@ -79,17 +86,25 @@ class ScanApiService(private val context: Context) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Server response: $response")
 
+                // Parse the JSON response to extract checksum
+                val responseJson = JSONObject(response)
+                val checksum = responseJson.optString("checksum", "")
+                val message = responseJson.optString("message", "Scan buffered successfully")
+
+                Log.d(TAG, "Extracted checksum: $checksum")
+
                 return@withContext ScanResult.Success(
                     type = "scan",
-                    message = "Scan confirmed by server",
+                    message = message,
                     data = response,
-                    imageUrls = emptyList()
+                    checksum = checksum
                 )
             } else {
                 // Обрабатываем ошибку
                 val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
                     ?: "Error code: $responseCode"
 
+                Log.e(TAG, "Server error: $errorMessage")
                 return@withContext ScanResult.Error(errorMessage)
             }
         } catch (e: Exception) {
@@ -111,7 +126,8 @@ sealed class ScanResult {
         val type: String,
         val message: String,
         val data: String,
-        val imageUrls: List<String> = emptyList() // Added this field for image URLs
+        val checksum: String = "", // Checksum returned by the server buffer
+        val imageUrls: List<String> = emptyList()
     ) : ScanResult()
 
     /**
