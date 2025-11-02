@@ -43,10 +43,11 @@ class ScanApiService(private val context: Context) {
     /**
      * Отправляет отсканированный штрих-код на сервер
      * @param barcode Отсканированный штрих-код
+     * @param barcodeType Тип штрих-кода (QR_CODE, CODE_128, и т.д.)
      * @return Результат обработки штрих-кода
      */
-    suspend fun processScan(barcode: String): ScanResult = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Processing scan: $barcode")
+    suspend fun processScan(barcode: String, barcodeType: String): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Processing scan: $barcode (type: $barcodeType)")
 
         try {
             val url = URL("$BASE_URL/scan")
@@ -59,11 +60,6 @@ class ScanApiService(private val context: Context) {
             // Создаем JSON запрос с barcode, type и deviceId
             val jsonRequest = JSONObject().apply {
                 put("barcode", barcode)
-
-                // Используем ScannerManager для получения типа напрямую из SDK (ScannerSymResult)
-                val barcodeType = scannerManager?.getLastBarcodeType() ?: "UNKNOWN"
-                Log.d(TAG, "Barcode type for server: $barcodeType")
-
                 put("type", barcodeType)
                 put("deviceId", deviceId)
             }

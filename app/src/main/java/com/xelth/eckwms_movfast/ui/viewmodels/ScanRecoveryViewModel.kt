@@ -48,7 +48,7 @@ enum class ScanState {
 
 data class RecoveryStatus(val imagesCollected: Int, val totalImages: Int)
 
-class ScanRecoveryViewModel(application: Application) : AndroidViewModel(application) {
+class ScanRecoveryViewModel private constructor(application: Application) : AndroidViewModel(application) {
 
     private val TAG = "ScanRecoveryVM"
     private val scannerManager: ScannerManager = (application as EckwmsApp).scannerManager
@@ -365,7 +365,7 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
         // Send to server
         viewModelScope.launch {
             try {
-                val result = scanApiService.processScan(barcode)
+                val result = scanApiService.processScan(barcode, barcodeType)
 
                 // Update the status based on the result
                 val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
@@ -448,17 +448,34 @@ class ScanRecoveryViewModel(application: Application) : AndroidViewModel(applica
 
     override fun onCleared() {
         super.onCleared()
+        // NOTE: onCleared is commented out because this is now a singleton ViewModel
+        // that persists for the app's lifetime. Removing the observer would break
+        // functionality when switching between activities.
+        //
         // Удаляем тот же самый observer, который был добавлен в init
-        scannerManager.scanResult.removeObserver(scanResultObserver)
-        reset()
+        // scannerManager.scanResult.removeObserver(scanResultObserver)
+        // reset()
     }
-    
+
     companion object {
+        @Volatile
+        private var INSTANCE: ScanRecoveryViewModel? = null
+
+        /**
+         * Returns the singleton instance of ScanRecoveryViewModel
+         * Thread-safe implementation using double-checked locking
+         */
+        fun getInstance(application: Application): ScanRecoveryViewModel {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: ScanRecoveryViewModel(application).also { INSTANCE = it }
+            }
+        }
+
         class Factory(private val application: Application) : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 if (modelClass.isAssignableFrom(ScanRecoveryViewModel::class.java)) {
-                    return ScanRecoveryViewModel(application) as T
+                    return getInstance(application) as T
                 }
                 throw IllegalArgumentException("Unknown ViewModel class")
             }
