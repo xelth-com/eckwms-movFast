@@ -305,7 +305,10 @@ fun ScannerSettingsScreen(
             // 4. API Testing Tools Section (Simplified)
             ApiTestsSection(viewModel, scannerManager)
 
-            // 5. Scanner Settings Card
+            // 5. Image Upload Section
+            ImageUploadSection(viewModel = viewModel)
+
+            // 6. Scanner Settings Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
@@ -644,6 +647,70 @@ fun MlKitRecoverySection(
                 ) {
                     Text("Reset")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun ImageUploadSection(
+    viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
+) {
+    val singleRecoveryImage by viewModel.singleRecoveryImage.observeAsState()
+    val isImageAvailable = singleRecoveryImage != null
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Image Upload Tools",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                text = "Upload the last captured image (from Stage 2 recovery) to the server.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { viewModel.uploadLastImage("dumb") },
+                    modifier = Modifier.weight(1f),
+                    enabled = isImageAvailable
+                ) {
+                    Text("Upload (Dumb)")
+                }
+
+                Button(
+                    onClick = { viewModel.uploadLastImage("mlkit") },
+                    modifier = Modifier.weight(1f),
+                    enabled = isImageAvailable
+                ) {
+                    Text("Upload (ML Kit)")
+                }
+            }
+            if (!isImageAvailable) {
+                Text(
+                    text = "No image available. Use 'Enhanced Scan' to capture one.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }

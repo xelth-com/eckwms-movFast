@@ -2,6 +2,7 @@
 package com.xelth.eckwms_movfast.api
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -110,6 +111,79 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error processing scan: ${e.message}", e)
             return@withContext ScanResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Uploads an image to the server with optional barcode data
+     * @param bitmap The image to upload
+     * @param deviceId The device identifier
+     * @param scanMode The scan mode ("dumb" or "mlkit")
+     * @param barcodeData Optional barcode data from ML Kit analysis
+     * @return Result of the upload operation
+     */
+    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?): ScanResult = withContext(Dispatchers.IO) {
+        val boundary = "Boundary-${System.currentTimeMillis()}"
+        val url = URL("$BASE_URL/upload/image")
+        val connection = url.openConnection() as HttpURLConnection
+        val outputStream: java.io.OutputStream
+        val writer: java.io.PrintWriter
+
+        try {
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZWZhdWx0X3VzZXJfaWQiLCJyb2xlIjoidXNlciIsImlhdCI6MTcxNjM4ODgzMywiZXhwIjoxNzE2MzkyNDMzfQ.8G7Db-25I152G2ny9hYf842t-G9e-m4R2fP6a_o4J4Y")
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.doOutput = true
+
+            outputStream = connection.outputStream
+            writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+
+            // Send deviceId
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"deviceId\"").append("\r\n")
+            writer.append("\r\n").append(deviceId).append("\r\n").flush()
+
+            // Send scanMode
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"scanMode\"").append("\r\n")
+            writer.append("\r\n").append(scanMode).append("\r\n").flush()
+
+            // Send barcodeData if available
+            barcodeData?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"barcodeData\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Send image file
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.png\"").append("\r\n")
+            writer.append("Content-Type: image/png").append("\r\n")
+            writer.append("\r\n").flush()
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            outputStream.write(stream.toByteArray())
+            outputStream.flush()
+            writer.append("\r\n").flush()
+
+            // End of multipart data
+            writer.append("--$boundary--").append("\r\n").flush()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Image upload successful: $response")
+                return@withContext ScanResult.Success("upload", "Image uploaded", response)
+            } else {
+                val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                Log.e(TAG, "Image upload failed: $error")
+                return@withContext ScanResult.Error("Upload failed: $error")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error uploading image: ${e.message}", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown upload error")
+        } finally {
+            connection.disconnect()
         }
     }
 

@@ -507,6 +507,63 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    /**
+     * Uploads the last captured image to the server
+     * @param scanMode Either "dumb" (direct upload) or "mlkit" (with ML Kit analysis first)
+     */
+    fun uploadLastImage(scanMode: String) {
+        val imageToUpload = _singleRecoveryImage.value
+        if (imageToUpload == null) {
+            addLog("Upload failed: No image captured yet.")
+            _errorMessage.postValue("No image available to upload.")
+            return
+        }
+
+        addLog("Starting image upload in '$scanMode' mode...")
+        val deviceId = android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown-android-id"
+
+        viewModelScope.launch {
+            if (scanMode == "mlkit") {
+                addLog("Analyzing image with ML Kit before upload...")
+                processImageWithMlKit(imageToUpload) { success, barcodeValue, barcodeType ->
+                    if (success) {
+                        addLog("ML Kit found barcode: $barcodeValue. Uploading with data.")
+                        performUpload(imageToUpload, deviceId, scanMode, "$barcodeType: $barcodeValue")
+                    } else {
+                        addLog("ML Kit found no barcode. Uploading image only.")
+                        performUpload(imageToUpload, deviceId, scanMode, null)
+                    }
+                }
+            } else {
+                performUpload(imageToUpload, deviceId, scanMode, null)
+            }
+        }
+    }
+
+    /**
+     * Performs the actual upload operation
+     */
+    private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?) {
+        viewModelScope.launch {
+            try {
+                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData)
+                when (result) {
+                    is ScanResult.Success -> {
+                        addLog("Upload successful. Server response: ${result.data}")
+                        _errorMessage.postValue("Image uploaded successfully.")
+                    }
+                    is ScanResult.Error -> {
+                        addLog("Upload failed: ${result.message}")
+                        _errorMessage.postValue("Upload failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                addLog("Exception during upload: ${e.message}")
+                _errorMessage.postValue("Upload failed due to an exception.")
+            }
+        }
+    }
+
     fun reset() {
         addLog("Resetting state to IDLE.")
         hardwareScanJob?.cancel()
