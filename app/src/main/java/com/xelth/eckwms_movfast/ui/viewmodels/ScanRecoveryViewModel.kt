@@ -21,6 +21,7 @@ import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -416,6 +417,16 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Debug panel ${if (enabled) "enabled" else "disabled"}")
     }
 
+    fun setUploadImageResolution(resolution: Int) {
+        SettingsManager.saveImageResolution(resolution)
+        addLog("Image resolution set to: $resolution")
+    }
+
+    fun setUploadImageQuality(quality: Int) {
+        SettingsManager.saveImageQuality(quality)
+        addLog("Image quality set to: $quality")
+    }
+
     /**
      * Sends a scanned barcode to the server and updates the scan history
      */
@@ -528,25 +539,78 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 processImageWithMlKit(imageToUpload) { success, barcodeValue, barcodeType ->
                     if (success) {
                         addLog("ML Kit found barcode: $barcodeValue. Uploading with data.")
-                        performUpload(imageToUpload, deviceId, scanMode, "$barcodeType: $barcodeValue")
+                        val quality = SettingsManager.getImageQuality()
+                        performUpload(imageToUpload, deviceId, scanMode, "$barcodeType: $barcodeValue", quality)
                     } else {
                         addLog("ML Kit found no barcode. Uploading image only.")
-                        performUpload(imageToUpload, deviceId, scanMode, null)
+                        val quality = SettingsManager.getImageQuality()
+                        performUpload(imageToUpload, deviceId, scanMode, null, quality)
                     }
                 }
             } else {
-                performUpload(imageToUpload, deviceId, scanMode, null)
+                val quality = SettingsManager.getImageQuality()
+                performUpload(imageToUpload, deviceId, scanMode, null, quality)
             }
         }
     }
 
     /**
+     * Direct capture and upload - simplified path for debugging
+     */
+    fun captureAndUploadImage(bitmap: Bitmap) {
+        addLog("Direct Upload: Starting direct image upload...")
+        val deviceId = android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown-android-id"
+
+        // Create a mutable copy to avoid "recycled bitmap" errors
+        val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
+        addLog("Direct Upload: Created bitmap copy (${bitmapCopy.width}x${bitmapCopy.height})")
+
+        // Resize to reduce file size and avoid SSL timeout
+        val maxResolution = SettingsManager.getImageResolution()
+        val resizedBitmap = resizeBitmap(bitmapCopy, maxResolution)
+        addLog("Direct Upload: Resized to (${resizedBitmap.width}x${resizedBitmap.height})")
+
+        val quality = SettingsManager.getImageQuality()
+        performUpload(resizedBitmap, deviceId, "direct_upload", null, quality)
+    }
+
+    /**
+     * Resize bitmap to fit within maxDimension while maintaining aspect ratio
+     */
+    private fun resizeBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        if (width <= maxDimension && height <= maxDimension) {
+            return bitmap
+        }
+
+        val scale = if (width > height) {
+            maxDimension.toFloat() / width
+        } else {
+            maxDimension.toFloat() / height
+        }
+
+        val newWidth = (width * scale).toInt()
+        val newHeight = (height * scale).toInt()
+
+        val resized = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+
+        // Recycle original if it's different from the resized one
+        if (resized != bitmap) {
+            bitmap.recycle()
+        }
+
+        return resized
+    }
+
+    /**
      * Performs the actual upload operation
      */
-    private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?) {
+    private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int) {
         viewModelScope.launch {
             try {
-                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData)
+                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality)
                 when (result) {
                     is ScanResult.Success -> {
                         addLog("Upload successful. Server response: ${result.data}")
@@ -560,6 +624,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             } catch (e: Exception) {
                 addLog("Exception during upload: ${e.message}")
                 _errorMessage.postValue("Upload failed due to an exception.")
+            } finally {
+                // Recycle bitmap copy to free memory
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                    addLog("Direct Upload: Recycled bitmap copy")
+                }
             }
         }
     }

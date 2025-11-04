@@ -38,6 +38,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -308,7 +309,10 @@ fun ScannerSettingsScreen(
             // 5. Image Upload Section
             ImageUploadSection(viewModel = viewModel)
 
-            // 6. Scanner Settings Card
+            // 6. Image Settings Section
+            ImageSettingsSection(viewModel = viewModel)
+
+            // 7. Scanner Settings Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
@@ -710,6 +714,48 @@ fun ImageUploadSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ImageSettingsSection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel) {
+    var resolution by remember { mutableStateOf(com.xelth.eckwms_movfast.utils.SettingsManager.getImageResolution().toFloat()) }
+    var quality by remember { mutableStateOf(com.xelth.eckwms_movfast.utils.SettingsManager.getImageQuality().toFloat()) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Image Upload Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+
+            // Resolution Slider
+            Column {
+                Text("Max Image Resolution: ${resolution.toInt()}px", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Slider(
+                    value = resolution,
+                    onValueChange = { resolution = it },
+                    valueRange = 800f..4032f,
+                    steps = 15,
+                    onValueChangeFinished = { viewModel.setUploadImageResolution(resolution.toInt()) }
+                )
+            }
+
+            // Quality Slider
+            Column {
+                Text("WEBP Compression Quality: ${quality.toInt()}%", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Slider(
+                    value = quality,
+                    onValueChange = { quality = it },
+                    valueRange = 10f..100f,
+                    steps = 8,
+                    onValueChangeFinished = { viewModel.setUploadImageQuality(quality.toInt()) }
                 )
             }
         }

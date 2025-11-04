@@ -256,6 +256,15 @@ fun ScanningStatusCard(
             ) {
                 Text("Scan with Camera")
             }
+            Button(
+                onClick = {
+                    navController.navigate("cameraScanScreen?scan_mode=direct_upload")
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            ) {
+                Text("Camera Upload")
+            }
         }
     }
 }

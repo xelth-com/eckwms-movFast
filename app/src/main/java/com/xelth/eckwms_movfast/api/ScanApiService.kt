@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import java.util.zip.CRC32
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 
 /**
@@ -64,10 +65,21 @@ class ScanApiService(private val context: Context) {
             connection.doOutput = true
 
             // Создаем JSON запрос в новом формате для buffer API
+            val payloadJson = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("payload", barcode)
+                put("type", barcodeType)
+            }
+            val payloadBytes = payloadJson.toString().toByteArray()
+            val crc = CRC32()
+            crc.update(payloadBytes)
+            val checksum = crc.value.toString(16).padStart(8, '0')
+
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
                 put("payload", barcode)
                 put("type", barcodeType)
+                put("checksum", checksum)
             }
 
             Log.d(TAG, "Sending request: $jsonRequest")
@@ -122,7 +134,7 @@ class ScanApiService(private val context: Context) {
      * @param barcodeData Optional barcode data from ML Kit analysis
      * @return Result of the upload operation
      */
-    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val url = URL("$BASE_URL/upload/image")
         val connection = url.openConnection() as HttpURLConnection
@@ -131,7 +143,7 @@ class ScanApiService(private val context: Context) {
 
         try {
             connection.requestMethod = "POST"
-            connection.setRequestProperty("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZWZhdWx0X3VzZXJfaWQiLCJyb2xlIjoidXNlciIsImlhdCI6MTcxNjM4ODgzMywiZXhwIjoxNzE2MzkyNDMzfQ.8G7Db-25I152G2ny9hYf842t-G9e-m4R2fP6a_o4J4Y")
+            // connection.setRequestProperty("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZWZhdWx0X3VzZXJfaWQiLCJyb2xlIjoidXNlciIsImlhdCI6MTcxNjM4ODgzMywiZXhwIjoxNzE2MzkyNDMzfQ.8G7Db-25I152G2ny9hYf842t-G9e-m4R2fP6a_o4J4Y") // Temporarily disabled for debugging
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             connection.doOutput = true
 
@@ -155,14 +167,27 @@ class ScanApiService(private val context: Context) {
                 writer.append("\r\n").append(it).append("\r\n").flush()
             }
 
+            // Compress image and calculate checksum
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
+            val imageBytes = stream.toByteArray()
+
+            val crc = CRC32()
+            crc.update(imageBytes)
+            val imageChecksum = crc.value.toString(16).padStart(8, '0')
+            Log.d(TAG, "Compressed image size: ${imageBytes.size} bytes, Checksum: $imageChecksum")
+
+            // Send imageChecksum
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"imageChecksum\"").append("\r\n")
+            writer.append("\r\n").append(imageChecksum).append("\r\n").flush()
+
             // Send image file
             writer.append("--$boundary").append("\r\n")
-            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.png\"").append("\r\n")
-            writer.append("Content-Type: image/png").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.webp\"").append("\r\n")
+            writer.append("Content-Type: image/webp").append("\r\n")
             writer.append("\r\n").flush()
-            val stream = java.io.ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-            outputStream.write(stream.toByteArray())
+            outputStream.write(imageBytes)
             outputStream.flush()
             writer.append("\r\n").flush()
 

@@ -133,8 +133,8 @@ fun CameraScanScreen(
                     )
                 }
 
-                "single_recovery", "multi_recovery", "multi_recovery_continue" -> {
-                    // Image capture mode for ML Kit recovery
+                "single_recovery", "multi_recovery", "multi_recovery_continue", "direct_upload" -> {
+                    // Image capture mode for ML Kit recovery and direct upload
                     AndroidView(
                         factory = { ctx ->
                             val previewView = PreviewView(ctx)
@@ -169,8 +169,8 @@ fun CameraScanScreen(
                 }
             }
 
-            // Capture button for recovery modes
-            if (scanMode in listOf("single_recovery", "multi_recovery", "multi_recovery_continue")) {
+            // Capture button for recovery modes and direct upload
+            if (scanMode in listOf("single_recovery", "multi_recovery", "multi_recovery_continue", "direct_upload")) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -207,6 +207,7 @@ fun CameraScanScreen(
                                                             val resultKey = when (scanMode) {
                                                                 "single_recovery" -> "captured_recovery_image"
                                                                 "multi_recovery", "multi_recovery_continue" -> "captured_session_image"
+                                                                "direct_upload" -> "captured_direct_upload_image"
                                                                 else -> "captured_recovery_image"
                                                             }
 

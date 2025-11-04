@@ -72,6 +72,18 @@ class MainActivity : ComponentActivity() {
                                 }
                                 savedStateHandle.remove<Boolean>("captured_session_image")
                             }
+
+                            // Handle direct upload image capture
+                            savedStateHandle.get<Boolean>("captured_direct_upload_image")?.let { success ->
+                                if (success) {
+                                    val bitmap = BitmapCache.getCapturedImage()
+                                    if (bitmap != null) {
+                                        viewModel.captureAndUploadImage(bitmap)
+                                        BitmapCache.clearCapturedImage()
+                                    }
+                                }
+                                savedStateHandle.remove<Boolean>("captured_direct_upload_image")
+                            }
                         }
 
                         ScanScreen(

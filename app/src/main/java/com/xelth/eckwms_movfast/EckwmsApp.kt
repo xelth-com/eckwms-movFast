@@ -6,6 +6,7 @@ import android.app.Application
 import android.util.Log
 import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
 import com.xelth.eckwms_movfast.scanners.ScannerManager
+import com.xelth.eckwms_movfast.utils.SettingsManager
 
 class EckwmsApp : Application() {
     private val TAG = "EckwmsApp"
@@ -17,6 +18,9 @@ class EckwmsApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Приложение запускается...")
+
+        // Initialize SettingsManager
+        SettingsManager.init(this)
 
         // Инициализация ScannerManager
         scannerManager = ScannerManager.getInstance(this)
