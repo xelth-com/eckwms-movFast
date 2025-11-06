@@ -44,7 +44,8 @@ class MainActivity : ComponentActivity() {
                             savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
                                 val barcode = data["barcode"] ?: return@let
                                 val type = data["type"] ?: "UNKNOWN"
-                                viewModel.handleScannedData(barcode, type)
+                                // Centralized scan handling in ViewModel
+                                viewModel.handleGeneralScanResult(barcode, type)
                                 // Clear the result after processing
                                 savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
                             }
@@ -83,6 +84,17 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 savedStateHandle.remove<Boolean>("captured_direct_upload_image")
+                            }
+
+                            savedStateHandle.get<Boolean>("captured_workflow_image")?.let { success ->
+                                if (success) {
+                                    val bitmap = BitmapCache.getCapturedImage()
+                                    if (bitmap != null) {
+                                        viewModel.onImageCapturedForWorkflow(bitmap)
+                                        BitmapCache.clearCapturedImage()
+                                    }
+                                }
+                                savedStateHandle.remove<Boolean>("captured_workflow_image")
                             }
                         }
 

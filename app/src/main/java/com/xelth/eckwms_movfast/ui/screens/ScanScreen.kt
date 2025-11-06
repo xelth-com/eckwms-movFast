@@ -68,6 +68,7 @@ fun ScanScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             ScanningStatusCard(viewModel = viewModel, navController = navController)
+            WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
             ScanHistorySection(viewModel = viewModel)
         }
     }
@@ -268,3 +269,99 @@ fun ScanningStatusCard(
         }
     }
 }
+
+@Composable
+fun WorkflowDrivenUI(
+    viewModel: ScanRecoveryViewModel,
+    onNavigateToCamera: () -> Unit
+) {
+    val workflowState by viewModel.workflowState.observeAsState()
+
+    if (workflowState?.isActive == true) {
+        val currentState = workflowState!!
+        val currentStep = currentState.currentStep!!
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(currentState.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(currentState.instruction, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+
+                when (currentStep.action) {
+                    "scanBarcode" -> Button(onClick = { viewModel.startWorkflowScan() }) { Text("Scan Barcode") }
+                    "captureImage" -> Button(onClick = onNavigateToCamera) { Text("Capture Photo") }
+                    "showUI" -> Button(onClick = { viewModel.endWorkflowLoop() }) { Text("OK") }
+                }
+
+                if (currentState.showEndSessionButton) {
+                    OutlinedButton(onClick = { viewModel.endWorkflowLoop() }) {
+                        Text(currentState.endSessionButtonLabel)
+                    }
+                }
+            }
+        }
+    } else {
+        Button(onClick = { viewModel.startWorkflow(DEVICE_RECEIVING_WORKFLOW_JSON) }) {
+            Text("Start Device Receiving Workflow")
+        }
+    }
+}
+
+// Hardcoded workflow for now. In the future, this will be fetched from the server.
+const val DEVICE_RECEIVING_WORKFLOW_JSON = """
+{
+  "workflowName": "DeviceReceiving",
+  "version": "1.0",
+  "steps": [
+    {
+      "stepId": "1",
+      "action": "scanBarcode",
+      "ui": {
+        "title": "Parcel Receiving",
+        "instruction": "Scan the tracking number on the parcel."
+      },
+      "variable": "parcelTrackingNumber"
+    },
+    {
+      "stepId": "2",
+      "action": "captureImage",
+      "ui": {
+        "title": "Parcel Photo",
+        "instruction": "Take a photo of the parcel's condition."
+      },
+      "upload": {
+        "reason": "parcel_condition",
+        "relatedTo": "parcelTrackingNumber"
+      }
+    },
+    {
+      "stepId": "3",
+      "action": "scanBarcode",
+      "ui": {
+        "title": "Scan Devices",
+        "instruction": "Scan the serial numbers of all devices inside the parcel. Press 'Finish' when done."
+      },
+      "variable": "deviceSerialNumbers",
+      "loop": {
+        "condition": "user_ends_session",
+        "endButtonLabel": "Finish Scanning Devices"
+      }
+    },
+    {
+      "stepId": "4",
+      "action": "showUI",
+      "ui": {
+        "title": "Finished",
+        "instruction": "Receiving complete for parcel {{parcelTrackingNumber}}. Scanned {{deviceSerialNumbers.size}} devices."
+      }
+    }
+  ]
+}
+"""

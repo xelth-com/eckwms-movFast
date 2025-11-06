@@ -26,6 +26,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.xelth.eckwms_movfast.ui.data.Workflow
+import kotlinx.serialization.json.Json
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -82,6 +84,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     val debugPanelEnabled: LiveData<Boolean> = _debugPanelEnabled
     // --- END DEBUG ---
 
+    // --- WORKFLOW ENGINE ---
+    private var workflowEngine: WorkflowEngine? = null
+    private val _workflowState = MutableLiveData<WorkflowState>()
+    val workflowState: LiveData<WorkflowState> = _workflowState
+
     private var hardwareScanJob: Job? = null
     private val recoveryImages = mutableListOf<Bitmap>()
     private val RECOVERY_IMAGE_COUNT = 3
@@ -92,9 +99,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     // Observer для scanResult - должен быть переменной для корректного удаления в onCleared()
     private val scanResultObserver = androidx.lifecycle.Observer<String> {
-        // Обрабатываем только в состояниях IDLE или HW_SCANNING
-        // И только если это новый штрих-код (не дубликат)
-        if (it != null && (_scanState.value == ScanState.HW_SCANNING || _scanState.value == ScanState.IDLE)) {
+        if (it != null) {
             val currentTime = System.currentTimeMillis()
 
             // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
@@ -106,23 +111,30 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             lastProcessedBarcode = it
             lastProcessedTime = currentTime
 
-            addLog("Hardware scan SUCCESS: $it (state: ${_scanState.value})")
-            hardwareScanJob?.cancel()
-            scannerManager.stopLoopScan()
-            _scannedBarcode.postValue(it)
-            _scanState.postValue(ScanState.SUCCESS)
-
-            // Send scan to server
             val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
-            addLog("Barcode type from scanner: $barcodeType")
-            sendScanToServer(it, barcodeType)
 
-            // Auto-reset to IDLE after a short delay to allow continuous scanning
-            viewModelScope.launch {
-                delay(1000) // 1 second delay
-                if (_scanState.value == ScanState.SUCCESS) {
-                    _scanState.postValue(ScanState.IDLE)
-                    addLog("Auto-reset to IDLE for continuous scanning")
+            // IRON FUNCTION: Hardware scanner ALWAYS works, regardless of UI state
+            addLog("Hardware scan SUCCESS: $it (type: $barcodeType, workflow: ${isWorkflowActive()}, state: ${_scanState.value})")
+
+            // Stop scanner and cancel any pending jobs
+            scannerManager.stopLoopScan()
+            hardwareScanJob?.cancel()
+
+            // Route to appropriate handler (workflow or normal)
+            handleGeneralScanResult(it, barcodeType)
+
+            // Update UI state if NOT in workflow mode (AFTER handleGeneralScanResult to avoid race)
+            if (!isWorkflowActive()) {
+                _scannedBarcode.postValue(it)
+                _scanState.postValue(ScanState.SUCCESS)
+
+                // Auto-reset to IDLE after a short delay
+                viewModelScope.launch {
+                    delay(1000)
+                    if (_scanState.value == ScanState.SUCCESS) {
+                        _scanState.postValue(ScanState.IDLE)
+                        addLog("Auto-reset to IDLE for continuous scanning")
+                    }
                 }
             }
         }
@@ -427,6 +439,81 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Image quality set to: $quality")
     }
 
+    // --- WORKFLOW METHODS ---
+    fun startWorkflow(workflowJson: String) {
+        try {
+            val workflow = Json.decodeFromString<Workflow>(workflowJson)
+            workflowEngine = WorkflowEngine(workflow) { logMessage -> addLog(logMessage) }
+            workflowEngine?.state?.observeForever { newState ->
+                addLog("[ViewModel] Observed new workflow state. Active: ${newState.isActive}, Step: ${newState.currentStep?.stepId}, Instruction: '${newState.instruction}'")
+                _workflowState.postValue(newState)
+            }
+            workflowEngine?.start()
+        } catch (e: Exception) {
+            addLog("❌ Failed to parse or start workflow: ${e.message}")
+            Log.e(TAG, "Workflow Error", e)
+        }
+    }
+
+    fun onBarcodeScannedForWorkflow(barcode: String) {
+        addLog("[ViewModel] onBarcodeScannedForWorkflow called with barcode: $barcode")
+        if (_workflowState.value?.isActive == true) {
+            // Send to workflow engine
+            workflowEngine?.onBarcodeScanned(barcode)
+
+            // ALSO send to server (important!)
+            val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
+            addLog("[ViewModel] Sending workflow barcode to server: $barcode ($barcodeType)")
+            sendScanToServer(barcode, barcodeType)
+        }
+    }
+
+    fun onImageCapturedForWorkflow(bitmap: Bitmap) {
+        if (_workflowState.value?.isActive == true) {
+            addLog("[ViewModel] Workflow image capture - uploading to server...")
+
+            // Signal workflow engine that image was captured
+            workflowEngine?.onImageCaptured()
+
+            // Upload to server
+            val deviceId = android.provider.Settings.Secure.getString(
+                getApplication<Application>().contentResolver,
+                android.provider.Settings.Secure.ANDROID_ID
+            ) ?: "unknown-android-id"
+
+            // Create a mutable copy to avoid "recycled bitmap" errors
+            val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
+            addLog("Workflow Upload: Created bitmap copy (${bitmapCopy.width}x${bitmapCopy.height})")
+
+            // Resize to reduce file size
+            val maxResolution = SettingsManager.getImageResolution()
+            val resizedBitmap = resizeBitmap(bitmapCopy, maxResolution)
+            addLog("Workflow Upload: Resized to (${resizedBitmap.width}x${resizedBitmap.height})")
+
+            val quality = SettingsManager.getImageQuality()
+
+            // Get current workflow step info for context
+            val currentStep = _workflowState.value?.currentStep
+            val uploadReason = currentStep?.upload?.reason ?: "workflow_image"
+
+            performUpload(resizedBitmap, deviceId, "workflow", uploadReason, quality)
+        }
+    }
+
+    fun endWorkflowLoop() {
+        workflowEngine?.endLoop()
+    }
+
+    fun isWorkflowActive(): Boolean = _workflowState.value?.isActive ?: false
+
+    /**
+     * Starts hardware scan specifically for workflow (does not change _scanState)
+     */
+    fun startWorkflowScan() {
+        addLog("[ViewModel] Starting workflow scan (hardware scanner activated)")
+        scannerManager.startLoopScan(500)
+    }
+
     /**
      * Sends a scanned barcode to the server and updates the scan history
      */
@@ -488,33 +575,27 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     /**
      * Handles scanned data from camera or other sources
      * This centralizes the processing of all scan results
+     * NOTE: UI state is updated by hardware scanner observer, not here!
      */
     fun handleScannedData(barcode: String, type: String) {
-        val currentTime = System.currentTimeMillis()
-
-        // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
-        if (barcode == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
-            addLog("Ignoring duplicate camera scan: $barcode")
-            return
-        }
-
-        lastProcessedBarcode = barcode
-        lastProcessedTime = currentTime
-
-        addLog("Camera scan SUCCESS: $barcode (type: $type)")
-        _scannedBarcode.postValue(barcode)
-        _scanState.postValue(ScanState.SUCCESS)
+        addLog("Processing scan for server: $barcode (type: $type)")
 
         // Send scan to server
         sendScanToServer(barcode, type)
+    }
 
-        // Auto-reset to IDLE after a short delay to allow continuous scanning
-        viewModelScope.launch {
-            delay(1000) // 1 second delay
-            if (_scanState.value == ScanState.SUCCESS) {
-                _scanState.postValue(ScanState.IDLE)
-                addLog("Auto-reset to IDLE for continuous scanning")
-            }
+    /**
+     * Central point for handling any scan result from any source (hardware or camera).
+     * It decides whether to route the data to the workflow engine or the standard process.
+     */
+    fun handleGeneralScanResult(barcode: String, type: String) {
+        addLog("[ViewModel] handleGeneralScanResult: Processing '$barcode' from source '$type'")
+        if (isWorkflowActive()) {
+            addLog("[ViewModel] Workflow is active - routing to workflow engine")
+            onBarcodeScannedForWorkflow(barcode)
+        } else {
+            addLog("[ViewModel] No workflow active - routing to standard scan handler")
+            handleScannedData(barcode, type)
         }
     }
 
