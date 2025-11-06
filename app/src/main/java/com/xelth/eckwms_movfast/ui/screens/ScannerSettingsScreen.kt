@@ -37,6 +37,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -81,6 +82,8 @@ import com.xelth.eckwms_movfast.diagnostics.FunctionTestResult
 import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
+import com.xelth.eckwms_movfast.utils.SettingsManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
@@ -299,6 +302,9 @@ fun ScannerSettingsScreen(
                     }
                 }
             }
+
+            // Server Settings Card
+            ServerSettingsSection()
 
             // 3. ML Kit Recovery Section
             MlKitRecoverySection(viewModel, onNavigateToCamera)
@@ -757,6 +763,67 @@ fun ImageSettingsSection(viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanR
                     steps = 8,
                     onValueChangeFinished = { viewModel.setUploadImageQuality(quality.toInt()) }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun ServerSettingsSection() {
+    var serverUrl by remember { mutableStateOf(SettingsManager.getServerUrl()) }
+    val coroutineScope = rememberCoroutineScope()
+    var showSavedMessage by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Server Settings",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = { serverUrl = it },
+                label = { Text("Server Address (e.g., http://192.168.0.1:3003)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (showSavedMessage) {
+                    Text(
+                        "Saved!",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+
+                Button(
+                    onClick = {
+                        SettingsManager.saveServerUrl(serverUrl)
+                        coroutineScope.launch {
+                            showSavedMessage = true
+                            delay(2000)
+                            showSavedMessage = false
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
             }
         }
     }

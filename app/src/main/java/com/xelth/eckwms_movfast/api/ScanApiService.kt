@@ -21,9 +21,6 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
-    // Базовый URL для API
-    private val BASE_URL = "https://pda.repair/eckwms/api"
-
     // API Key for authentication with the server buffer
     // Configured for public demo mode - scans will be visible on pda.repair/eckwms
     private val API_KEY = "public-demo-key-for-eckwms-app"
@@ -56,7 +53,8 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Processing scan: $barcode (type: $barcodeType)")
 
         try {
-            val url = URL("$BASE_URL/scan")
+            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            val url = URL("$baseUrl/eckwms/api/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -136,7 +134,8 @@ class ScanApiService(private val context: Context) {
      */
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
-        val url = URL("$BASE_URL/upload/image")
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+        val url = URL("$baseUrl/eckwms/api/upload/image")
         val connection = url.openConnection() as HttpURLConnection
         val outputStream: java.io.OutputStream
         val writer: java.io.PrintWriter
