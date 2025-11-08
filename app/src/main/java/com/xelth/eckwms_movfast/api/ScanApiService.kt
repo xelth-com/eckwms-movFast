@@ -49,7 +49,7 @@ class ScanApiService(private val context: Context) {
      * @param barcodeType Тип штрих-кода (QR_CODE, CODE_128, и т.д.)
      * @return Результат обработки штрих-кода
      */
-    suspend fun processScan(barcode: String, barcodeType: String): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun processScan(barcode: String, barcodeType: String, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         Log.d(TAG, "Processing scan: $barcode (type: $barcodeType)")
 
         try {
@@ -78,6 +78,7 @@ class ScanApiService(private val context: Context) {
                 put("payload", barcode)
                 put("type", barcodeType)
                 put("checksum", checksum)
+                orderId?.let { put("orderId", it) }
             }
 
             Log.d(TAG, "Sending request: $jsonRequest")
@@ -132,7 +133,7 @@ class ScanApiService(private val context: Context) {
      * @param barcodeData Optional barcode data from ML Kit analysis
      * @return Result of the upload operation
      */
-    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
         val url = URL("$baseUrl/eckwms/api/upload/image")
@@ -163,6 +164,13 @@ class ScanApiService(private val context: Context) {
             barcodeData?.let {
                 writer.append("--$boundary").append("\r\n")
                 writer.append("Content-Disposition: form-data; name=\"barcodeData\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Send orderId if available
+            orderId?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"orderId\"").append("\r\n")
                 writer.append("\r\n").append(it).append("\r\n").flush()
             }
 

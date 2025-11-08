@@ -133,12 +133,10 @@ fun ScannerSettingsScreen(
     }
 
     // Dropdown state
-    var selectedBarcodeType by remember { mutableStateOf("QR Code") }
     var selectedFlashMode by remember { mutableStateOf("Illuminate Only") }
     var selectedAimerMode by remember { mutableStateOf("On During Scan") }
 
     // Dropdown expanded state
-    var barcodeTypeExpanded by remember { mutableStateOf(false) }
     var flashModeExpanded by remember { mutableStateOf(false) }
     var aimerModeExpanded by remember { mutableStateOf(false) }
 
@@ -334,46 +332,53 @@ fun ScannerSettingsScreen(
                         fontWeight = FontWeight.Bold
                     )
 
-                    // Barcode Type Dropdown
+                    // Barcode Type Toggles
                     Column {
-                        Text("Barcode Type", fontWeight = FontWeight.Bold)
-                        Box {
-                            TextButton(
-                                onClick = { barcodeTypeExpanded = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = selectedBarcodeType,
-                                    modifier = Modifier.weight(1f),
-                                    textAlign = TextAlign.Start
+                        Text("Enabled Barcode Types", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        barcodeTypes.forEach { (name, type) ->
+                            var isEnabled by remember {
+                                mutableStateOf(
+                                    try {
+                                        XCScannerWrapper.isBarcodeTypeEnabled(type)
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Cannot check if $name is enabled, defaulting to true", e)
+                                        true // Default to enabled if we can't check
+                                    }
                                 )
-                                Text("▼")
                             }
-                            DropdownMenu(
-                                expanded = barcodeTypeExpanded,
-                                onDismissRequest = { barcodeTypeExpanded = false },
-                                modifier = Modifier.fillMaxWidth(0.9f)
-                            ) {
-                                barcodeTypes.forEach { (name, type) ->
-                                    DropdownMenuItem(
-                                        text = { Text(name) },
-                                        onClick = {
-                                            selectedBarcodeType = name
-                                            barcodeTypeExpanded = false
-
-                                            try {
-                                                // Включаем только выбранный тип штрих-кода
-                                                barcodeTypes.forEach { (_, barcodeType) ->
-                                                    scannerManager.enableBarcodeType(barcodeType, barcodeType == type)
-                                                }
-                                                Log.d(TAG, "Selected barcode type: $name")
-                                            } catch (e: Exception) {
-                                                Log.e(TAG, "Error setting barcode type", e)
-                                                errorMessages.add("Error setting barcode type: ${e.message}")
-                                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val newState = !isEnabled
+                                        isEnabled = newState
+                                        try {
+                                            scannerManager.enableBarcodeType(type, newState)
+                                            Log.d(TAG, "Set $name to ${if(newState) "enabled" else "disabled"}")
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error setting barcode type for $name", e)
+                                            errorMessages.add("Error for $name: ${e.message}")
                                         }
-                                    )
-                                }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(name, style = MaterialTheme.typography.bodyLarge)
+                                Switch(
+                                    checked = isEnabled,
+                                    onCheckedChange = { checked ->
+                                        isEnabled = checked
+                                        try {
+                                            scannerManager.enableBarcodeType(type, checked)
+                                            Log.d(TAG, "Set $name to ${if(checked) "enabled" else "disabled"}")
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error setting barcode type for $name", e)
+                                            errorMessages.add("Error for $name: ${e.message}")
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
@@ -464,10 +469,7 @@ fun ScannerSettingsScreen(
                 }
             }
 
-            // Show Debug Panel if enabled
-            if (debugPanelEnabled) {
-                com.xelth.eckwms_movfast.ui.screens.DebugInfoPanel(viewModel = viewModel)
-            }
+            // Debug Panel removed - all logs go to logcat
         }
     }
 }

@@ -99,16 +99,32 @@ class ScannerManager private constructor(private val application: Application) {
         // Настройка обработки текста
         XCScannerWrapper.setTextCase(TextCaseType.NONE)
 
-        // Включить распознавание всех основных типов штрих-кодов
+        // Включить распознавание ВСЕХ доступных типов штрих-кодов
+        // 2D коды
         XCScannerWrapper.enableBarcodeType(BarcodeType.QRCODE, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.DATAMATRIX, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.PDF417, true)
+
+        // 1D коды - семейство Code
         XCScannerWrapper.enableBarcodeType(BarcodeType.CODE128, true)
         XCScannerWrapper.enableBarcodeType(BarcodeType.CODE39, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.CODE93, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.CODE11, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.CODABAR, true)
+
+        // EAN/UPC семейство
         XCScannerWrapper.enableBarcodeType(BarcodeType.EAN13, true)
         XCScannerWrapper.enableBarcodeType(BarcodeType.EAN8, true)
         XCScannerWrapper.enableBarcodeType(BarcodeType.UPCA, true)
         XCScannerWrapper.enableBarcodeType(BarcodeType.UPCE, true)
-        XCScannerWrapper.enableBarcodeType(BarcodeType.DATAMATRIX, true)
-        XCScannerWrapper.enableBarcodeType(BarcodeType.PDF417, true)
+
+        // Другие промышленные коды (если поддерживаются)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.GS1_128, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.GS1_DATABAR, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.MSI, true)
+        XCScannerWrapper.enableBarcodeType(BarcodeType.AZTEC, true)
+
+        Log.d(TAG, "✓ Включены все доступные типы штрихкодов (2D: QR, DataMatrix, PDF417; 1D: Code128/93/39/11, Codabar, EAN, UPC, GS1, MSI, Aztec)")
 
         Log.d(TAG, "✓ Сканер настроен с оптимальными параметрами")
     }
@@ -174,8 +190,10 @@ class ScannerManager private constructor(private val application: Application) {
      */
     fun startLoopScan(intervalMs: Int = 500) {
         if (!isInitialized) initialize()
+        Log.d(TAG, ">>> startLoopScan called with interval=$intervalMs")
         XCScannerWrapper.setLoopScanInterval(intervalMs)
         XCScannerWrapper.startLoopScan()
+        Log.d(TAG, ">>> startLoopScan completed, isRunning=${XCScannerWrapper.isLoopScanRunning()}")
     }
 
     /**
@@ -183,7 +201,9 @@ class ScannerManager private constructor(private val application: Application) {
      */
     fun stopLoopScan() {
         if (!isInitialized) return
+        Log.d(TAG, ">>> stopLoopScan called, isRunning before stop=${XCScannerWrapper.isLoopScanRunning()}")
         XCScannerWrapper.stopLoopScan()
+        Log.d(TAG, ">>> stopLoopScan completed, isRunning after stop=${XCScannerWrapper.isLoopScanRunning()}")
     }
 
     /**

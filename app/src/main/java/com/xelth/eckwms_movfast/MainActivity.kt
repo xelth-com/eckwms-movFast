@@ -2,6 +2,7 @@ package com.xelth.eckwms_movfast
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             navController = navController,
                             onNavigateToSettings = {
+                                viewModel.addLog("!!! onNavigateToSettings called !!!")
                                 val intent = Intent(this@MainActivity, ScannerActivity::class.java)
                                 startActivity(intent)
                             }
@@ -125,6 +127,32 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Override key events to prevent hardware scanner button from triggering UI buttons
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // Log all key events for debugging
+        viewModel.addLog("KeyEvent: keyCode=$keyCode, action=${event?.action}, scanCode=${event?.scanCode}")
+
+        // Block common scanner trigger keys from propagating to UI
+        return when (keyCode) {
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_BUTTON_A,
+            KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_SPACE,
+            KeyEvent.KEYCODE_F1,
+            KeyEvent.KEYCODE_F2,
+            KeyEvent.KEYCODE_F3,
+            KeyEvent.KEYCODE_F4,
+            KeyEvent.KEYCODE_F5 -> {
+                viewModel.addLog("Scanner key blocked: $keyCode")
+                true // Consume the event - don't pass to UI
+            }
+            else -> super.onKeyDown(keyCode, event)
         }
     }
 }

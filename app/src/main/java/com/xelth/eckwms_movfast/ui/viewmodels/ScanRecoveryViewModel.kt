@@ -82,6 +82,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val _debugPanelEnabled = MutableLiveData<Boolean>(true)
     val debugPanelEnabled: LiveData<Boolean> = _debugPanelEnabled
+
+    private val _activeOrderId = MutableLiveData<String?>(null)
+    val activeOrderId: LiveData<String?> = _activeOrderId
     // --- END DEBUG ---
 
     // --- WORKFLOW ENGINE ---
@@ -99,12 +102,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     // Observer для scanResult - должен быть переменной для корректного удаления в onCleared()
     private val scanResultObserver = androidx.lifecycle.Observer<String> {
+        addLog(">>> scanResultObserver triggered: barcode=$it")
         if (it != null) {
             val currentTime = System.currentTimeMillis()
 
             // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
             if (it == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
-                addLog("Ignoring duplicate scan: $it")
+                addLog("Ignoring duplicate scan: $it (timeDiff=${currentTime - lastProcessedTime}ms)")
                 return@Observer
             }
 
@@ -116,15 +120,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             // IRON FUNCTION: Hardware scanner ALWAYS works, regardless of UI state
             addLog("Hardware scan SUCCESS: $it (type: $barcodeType, workflow: ${isWorkflowActive()}, state: ${_scanState.value})")
 
-            // Stop scanner and cancel any pending jobs
-            scannerManager.stopLoopScan()
-            hardwareScanJob?.cancel()
-
             // Route to appropriate handler (workflow or normal)
-            handleGeneralScanResult(it, barcodeType)
+            val wasSpecialCommand = handleGeneralScanResult(it, barcodeType)
 
             // Update UI state if NOT in workflow mode (AFTER handleGeneralScanResult to avoid race)
-            if (!isWorkflowActive()) {
+            // Only show in UI if it wasn't a special command (like order ID)
+            if (!isWorkflowActive() && !wasSpecialCommand) {
                 _scannedBarcode.postValue(it)
                 _scanState.postValue(ScanState.SUCCESS)
 
@@ -154,21 +155,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         _debugLog.postValue(currentLog + message)
     }
 
+    // Loop scan removed - hardware scanner works automatically with physical button
+    // No need for programmatic loop scan
+    @Deprecated("Hardware scanner works automatically")
     fun startHardwareScan() {
-        addLog("Attempting hardware scan...")
-        _scanState.value = ScanState.HW_SCANNING
-        _errorMessage.value = null
-        _scannedBarcode.value = null
-        scannerManager.startLoopScan(500)
-
-        hardwareScanJob = viewModelScope.launch {
-            delay(5000)
-            if (_scanState.value == ScanState.HW_SCANNING) {
-                addLog("Hardware scan TIMEOUT.")
-                scannerManager.stopLoopScan()
-                _scanState.postValue(ScanState.HW_SCAN_FAILED)
-            }
-        }
+        addLog("Hardware scanner is always ready - use physical button to scan")
     }
 
     /**
@@ -496,7 +487,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             val currentStep = _workflowState.value?.currentStep
             val uploadReason = currentStep?.upload?.reason ?: "workflow_image"
 
-            performUpload(resizedBitmap, deviceId, "workflow", uploadReason, quality)
+            performUpload(resizedBitmap, deviceId, "workflow", uploadReason, quality, _activeOrderId.value)
         }
     }
 
@@ -507,11 +498,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     fun isWorkflowActive(): Boolean = _workflowState.value?.isActive ?: false
 
     /**
-     * Starts hardware scan specifically for workflow (does not change _scanState)
+     * Workflow scan - hardware scanner works automatically
      */
+    @Deprecated("Hardware scanner works automatically")
     fun startWorkflowScan() {
-        addLog("[ViewModel] Starting workflow scan (hardware scanner activated)")
-        scannerManager.startLoopScan(500)
+        addLog("[ViewModel] Workflow scan ready - use physical button to scan")
     }
 
     /**
@@ -536,7 +527,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         // Send to server
         viewModelScope.launch {
             try {
-                val result = scanApiService.processScan(barcode, barcodeType)
+                val result = scanApiService.processScan(barcode, barcodeType, _activeOrderId.value)
 
                 // Update the status based on the result
                 val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
@@ -587,8 +578,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     /**
      * Central point for handling any scan result from any source (hardware or camera).
      * It decides whether to route the data to the workflow engine or the standard process.
+     * @return true if the barcode was handled as a special command (e.g., order ID), false otherwise
      */
-    fun handleGeneralScanResult(barcode: String, type: String) {
+    fun handleGeneralScanResult(barcode: String, type: String): Boolean {
+        // Check if the scanned barcode is an Order ID to activate the session
+        if (barcode.startsWith("CS-DE-") && barcode.length > 10) {
+            _activeOrderId.postValue(barcode)
+            addLog("ACTIVE ORDER SET: $barcode")
+            // Do not process as a regular scan, just set the state
+            return true // Indicate this was a special command
+        }
+
         addLog("[ViewModel] handleGeneralScanResult: Processing '$barcode' from source '$type'")
         if (isWorkflowActive()) {
             addLog("[ViewModel] Workflow is active - routing to workflow engine")
@@ -597,6 +597,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addLog("[ViewModel] No workflow active - routing to standard scan handler")
             handleScannedData(barcode, type)
         }
+        return false // Normal scan, should be displayed
     }
 
     /**
@@ -621,16 +622,16 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     if (success) {
                         addLog("ML Kit found barcode: $barcodeValue. Uploading with data.")
                         val quality = SettingsManager.getImageQuality()
-                        performUpload(imageToUpload, deviceId, scanMode, "$barcodeType: $barcodeValue", quality)
+                        performUpload(imageToUpload, deviceId, scanMode, "$barcodeType: $barcodeValue", quality, _activeOrderId.value)
                     } else {
                         addLog("ML Kit found no barcode. Uploading image only.")
                         val quality = SettingsManager.getImageQuality()
-                        performUpload(imageToUpload, deviceId, scanMode, null, quality)
+                        performUpload(imageToUpload, deviceId, scanMode, null, quality, _activeOrderId.value)
                     }
                 }
             } else {
                 val quality = SettingsManager.getImageQuality()
-                performUpload(imageToUpload, deviceId, scanMode, null, quality)
+                performUpload(imageToUpload, deviceId, scanMode, null, quality, _activeOrderId.value)
             }
         }
     }
@@ -652,7 +653,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Direct Upload: Resized to (${resizedBitmap.width}x${resizedBitmap.height})")
 
         val quality = SettingsManager.getImageQuality()
-        performUpload(resizedBitmap, deviceId, "direct_upload", null, quality)
+        performUpload(resizedBitmap, deviceId, "direct_upload", null, quality, _activeOrderId.value)
     }
 
     /**
@@ -688,10 +689,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     /**
      * Performs the actual upload operation
      */
-    private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int) {
+    private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null) {
         viewModelScope.launch {
             try {
-                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality)
+                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality, orderId)
                 when (result) {
                     is ScanResult.Success -> {
                         addLog("Upload successful. Server response: ${result.data}")
@@ -715,10 +716,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    fun endActiveOrderSession() {
+        _activeOrderId.postValue(null)
+        addLog("Active order session ended.")
+    }
+
     fun reset() {
         addLog("Resetting state to IDLE.")
-        hardwareScanJob?.cancel()
-        scannerManager.stopLoopScan()
         _scanState.postValue(ScanState.IDLE)
         _scannedBarcode.postValue(null)
         _errorMessage.postValue(null)

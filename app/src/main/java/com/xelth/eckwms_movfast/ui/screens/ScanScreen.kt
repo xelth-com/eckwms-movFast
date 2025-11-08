@@ -20,11 +20,13 @@ import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.size
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
@@ -46,11 +48,6 @@ fun ScanScreen(
         topBar = {
             TopAppBar(
                 title = { Text("eckWMS Scanner") },
-                actions = {
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -64,9 +61,22 @@ fun ScanScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .padding(16.dp)
-                .verticalScroll(scrollState),
+                .verticalScroll(scrollState)
+                .focusable(false),  // Disable focus for entire screen
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Dummy button to catch keyboard events from scanner - does nothing
+            Button(
+                onClick = {
+                    viewModel.addLog(">>> Dummy button clicked - keyboard event caught and ignored")
+                },
+                modifier = Modifier
+                    .size(0.dp)  // Invisible button
+                    .focusable(true),  // This one SHOULD be focusable to catch events
+                enabled = false  // Disabled so it looks invisible
+            ) { }
+
+            ActiveOrderCard(viewModel = viewModel)
             ScanningStatusCard(viewModel = viewModel, navController = navController)
             WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
             ScanHistorySection(viewModel = viewModel)
@@ -198,7 +208,6 @@ fun ScanningStatusCard(
     navController: androidx.navigation.NavController
 ) {
     val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
-    val scannedBarcode by viewModel.scannedBarcode.observeAsState()
     val errorMessage by viewModel.errorMessage.observeAsState()
 
     Card(
@@ -229,31 +238,16 @@ fun ScanningStatusCard(
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 }
             }
-            scannedBarcode?.let {
-                Text("Last Scan Result:", style = MaterialTheme.typography.titleSmall)
-                Text(it, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
-            }
             errorMessage?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
             }
             Button(
                 onClick = {
-                    if (scanState == ScanState.HW_SCANNING) {
-                        viewModel.reset()
-                    } else {
-                        viewModel.startHardwareScan()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (scanState == ScanState.HW_SCANNING) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors()
-            ) {
-                Text(if (scanState == ScanState.HW_SCANNING) "Cancel Scan" else "Start Hardware Scan")
-            }
-            Button(
-                onClick = {
                     navController.navigate("cameraScanScreen")
                 },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusable(false)  // Prevent hardware scanner key from triggering this button
             ) {
                 Text("Scan with Camera")
             }
@@ -261,7 +255,10 @@ fun ScanningStatusCard(
                 onClick = {
                     navController.navigate("cameraScanScreen?scan_mode=direct_upload")
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusable(false)  // Prevent hardware scanner key from triggering this button
+                ,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
                 Text("Camera Upload")
@@ -295,20 +292,32 @@ fun WorkflowDrivenUI(
                 Text(currentState.instruction, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
 
                 when (currentStep.action) {
-                    "scanBarcode" -> Button(onClick = { viewModel.startWorkflowScan() }) { Text("Scan Barcode") }
-                    "captureImage" -> Button(onClick = onNavigateToCamera) { Text("Capture Photo") }
-                    "showUI" -> Button(onClick = { viewModel.endWorkflowLoop() }) { Text("OK") }
+                    "scanBarcode" -> Text("Use hardware scanner button to scan", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+                    "captureImage" -> Button(
+                        onClick = onNavigateToCamera,
+                        modifier = Modifier.focusable(false)
+                    ) { Text("Capture Photo") }
+                    "showUI" -> Button(
+                        onClick = { viewModel.endWorkflowLoop() },
+                        modifier = Modifier.focusable(false)
+                    ) { Text("OK") }
                 }
 
                 if (currentState.showEndSessionButton) {
-                    OutlinedButton(onClick = { viewModel.endWorkflowLoop() }) {
+                    OutlinedButton(
+                        onClick = { viewModel.endWorkflowLoop() },
+                        modifier = Modifier.focusable(false)
+                    ) {
                         Text(currentState.endSessionButtonLabel)
                     }
                 }
             }
         }
     } else {
-        Button(onClick = { viewModel.startWorkflow(DEVICE_RECEIVING_WORKFLOW_JSON) }) {
+        Button(
+            onClick = { viewModel.startWorkflow(DEVICE_RECEIVING_WORKFLOW_JSON) },
+            modifier = Modifier.focusable(false)
+        ) {
             Text("Start Device Receiving Workflow")
         }
     }
@@ -365,3 +374,41 @@ const val DEVICE_RECEIVING_WORKFLOW_JSON = """
   ]
 }
 """
+
+@Composable
+fun ActiveOrderCard(viewModel: ScanRecoveryViewModel) {
+    val activeOrderId by viewModel.activeOrderId.observeAsState()
+
+    AnimatedVisibility(visible = activeOrderId != null) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Active Order:", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    Text(
+                        text = activeOrderId ?: "",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+                Button(
+                    onClick = { viewModel.endActiveOrderSession() },
+                    modifier = Modifier.focusable(false),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary, contentColor = MaterialTheme.colorScheme.onTertiary)
+                ) {
+                    Text("End")
+                }
+            }
+        }
+    }
+}
