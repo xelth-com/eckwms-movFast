@@ -14,6 +14,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
+import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
@@ -99,6 +100,16 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        // Handle pairing QR code scan on scanScreen (forwarded from pairingScreen)
+                        LaunchedEffect(Unit) {
+                            savedStateHandle.getLiveData<String>("pairing_qr_data").observeForever { qrData ->
+                                if (qrData != null) {
+                                    viewModel.handlePairingQrCode(qrData)
+                                    savedStateHandle.remove<String>("pairing_qr_data")
+                                }
+                            }
+                        }
+
                         ScanScreen(
                             viewModel = viewModel,
                             navController = navController,
@@ -120,9 +131,32 @@ class MainActivity : ComponentActivity() {
                         )
                     ) { backStackEntry ->
                         val scanMode = backStackEntry.arguments?.getString("scan_mode") ?: "barcode"
+                        val savedStateHandle = backStackEntry.savedStateHandle
+
+                        // Handle pairing mode result
+                        LaunchedEffect(savedStateHandle) {
+                            savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
+                                if (scanMode == "pairing") {
+                                    val barcode = data["barcode"] ?: return@let
+                                    // Process pairing QR code directly
+                                    viewModel.handlePairingQrCode(barcode)
+                                    savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
+                                    // Navigate back
+                                    navController.popBackStack()
+                                }
+                            }
+                        }
+
                         CameraScanScreen(
                             navController = navController,
                             scanMode = scanMode
+                        )
+                    }
+
+                    composable("pairingScreen") {
+                        PairingScreen(
+                            viewModel = viewModel,
+                            navController = navController
                         )
                     }
                 }

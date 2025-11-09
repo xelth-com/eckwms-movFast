@@ -219,6 +219,67 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    /**
+     * Registers the device with the server for secure pairing
+     * @param serverUrl The base URL of the eckWMS server
+     * @param publicKeyBase64 The device's Ed25519 public key in Base64 format
+     * @param signature The signature of the pairing request signed with the device's private key
+     * @param timestamp The timestamp used in the signature
+     * @return Result of the registration operation
+     */
+    suspend fun registerDevice(
+        serverUrl: String,
+        publicKeyBase64: String,
+        signature: String,
+        timestamp: Long
+    ): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Registering device with server: $serverUrl")
+
+        try {
+            val url = URL("$serverUrl/eckwms/api/device/register")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("publicKey", publicKeyBase64)
+                put("signature", signature)
+                put("timestamp", timestamp)
+            }
+
+            Log.d(TAG, "Sending registration request: $jsonRequest")
+
+            val outputStream = connection.outputStream
+            val writer = OutputStreamWriter(outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Device registration successful: $response")
+                return@withContext ScanResult.Success(
+                    type = "registration",
+                    message = "Device registered successfully",
+                    data = response
+                )
+            } else {
+                val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    ?: "Error code: $responseCode"
+                Log.e(TAG, "Device registration failed: $errorMessage")
+                return@withContext ScanResult.Error("Registration failed: $errorMessage")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering device: ${e.message}", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown registration error")
+        }
+    }
+
 }
 
 /**

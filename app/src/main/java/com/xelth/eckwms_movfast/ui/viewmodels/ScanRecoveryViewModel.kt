@@ -28,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
+import org.json.JSONObject
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -85,6 +86,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val _activeOrderId = MutableLiveData<String?>(null)
     val activeOrderId: LiveData<String?> = _activeOrderId
+
+    // --- DEVICE PAIRING ---
+    private val _pairingStatus = MutableLiveData<String>("Ready to pair device with server.")
+    val pairingStatus: LiveData<String> = _pairingStatus
+
+    private val _isPairing = MutableLiveData<Boolean>(false)
+    val isPairing: LiveData<Boolean> = _isPairing
     // --- END DEBUG ---
 
     // --- WORKFLOW ENGINE ---
@@ -730,6 +738,85 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         _singleRecoveryImage.postValue(null)
         _allDiagnosticImages.postValue(emptyList())
         recoveryImages.clear()
+    }
+
+    /**
+     * Handles the pairing QR code scanned from the server
+     * QR code contains JSON with server URL and other pairing information
+     */
+    fun handlePairingQrCode(qrData: String) {
+        addLog("Processing pairing QR code...")
+        _isPairing.postValue(true)
+        _pairingStatus.postValue("Processing pairing QR code...")
+
+        viewModelScope.launch {
+            try {
+                // Parse QR code JSON
+                val qrJson = JSONObject(qrData)
+                val serverUrl = qrJson.getString("serverUrl")
+                val pairingToken = qrJson.optString("pairingToken", "")
+
+                addLog("Server URL from QR: $serverUrl")
+                addLog("Pairing token: ${if (pairingToken.isNotEmpty()) "present" else "not present"}")
+
+                // Save server URL to settings
+                SettingsManager.saveServerUrl(serverUrl)
+                _pairingStatus.postValue("Server URL configured. Initializing crypto...")
+
+                // Initialize CryptoManager
+                com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
+                addLog("CryptoManager initialized")
+
+                // Generate or retrieve key pair
+                val keyPair = com.xelth.eckwms_movfast.utils.CryptoManager.getOrCreateKeyPair()
+                val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
+                addLog("Public key (Base64): $publicKeyBase64")
+
+                _pairingStatus.postValue("Generating signature...")
+
+                // Create signature data: deviceId + timestamp
+                val timestamp = System.currentTimeMillis()
+                val deviceId = android.provider.Settings.Secure.getString(
+                    getApplication<Application>().contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                ) ?: "unknown-android-id"
+
+                val signatureData = "$deviceId:$timestamp"
+                val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
+                val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
+                addLog("Signature created (Base64): ${signatureBase64.take(32)}...")
+
+                _pairingStatus.postValue("Registering device with server...")
+
+                // Register device with server
+                val result = scanApiService.registerDevice(
+                    serverUrl = serverUrl,
+                    publicKeyBase64 = publicKeyBase64,
+                    signature = signatureBase64,
+                    timestamp = timestamp
+                )
+
+                when (result) {
+                    is ScanResult.Success -> {
+                        addLog("Device pairing successful!")
+                        _pairingStatus.postValue("Success! Device paired with server.")
+                        _errorMessage.postValue("Device successfully paired with eckWMS server.")
+                    }
+                    is ScanResult.Error -> {
+                        addLog("Device pairing failed: ${result.message}")
+                        _pairingStatus.postValue("Error: ${result.message}")
+                        _errorMessage.postValue("Pairing failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                addLog("Error during pairing: ${e.message}")
+                _pairingStatus.postValue("Error: ${e.message}")
+                _errorMessage.postValue("Pairing error: ${e.message}")
+                Log.e(TAG, "Pairing error", e)
+            } finally {
+                _isPairing.postValue(false)
+            }
+        }
     }
 
     override fun onCleared() {

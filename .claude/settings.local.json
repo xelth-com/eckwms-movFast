@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew:*)",
+      "Read(//mnt/c/Users/xelth/AppData/Local/Android/Sdk/**)",
+      "Read(//mnt/c/Users/xelth/**)",
+      "Bash(export GRADLE_OPTS=\"-Xmx4g\")",
+      "Bash(cmd.exe:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(java:*)",
+      "Bash(JAVA_HOME=/home/xelth/.local/java/jdk-17.0.2 ./gradlew assembleDebug --no-daemon)",
+      "Bash(adb:*)",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe devices)",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe install -r \"/mnt/c/Users/xelth/eckwms-movFast/app/build/outputs/apk/debug/app-debug.apk\")",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat -d)",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat -d -s \"XCScannerWrapper,MLKitBarcodeScanner,MainActivity\")",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat -c)",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat -d -s \"ScanRecoveryVM\")",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat -s \"MainActivity,ScanRecoveryVM,MLKitBarcodeScanner\")",
+      "Bash(/mnt/c/Users/xelth/AppData/Local/Android/Sdk/platform-tools/adb.exe install -r \"C:\\Users\\xelth\\eckwms-movFast\\app\\build\\outputs\\apk\\debug\\app-debug.apk\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

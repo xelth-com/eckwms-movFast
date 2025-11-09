@@ -263,6 +263,16 @@ fun ScanningStatusCard(
             ) {
                 Text("Camera Upload")
             }
+            OutlinedButton(
+                onClick = {
+                    navController.navigate("pairingScreen")
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusable(false)  // Prevent hardware scanner key from triggering this button
+            ) {
+                Text("Connect to Server")
+            }
         }
     }
 }

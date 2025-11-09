@@ -92,4 +92,11 @@ dependencies {
 
     // Kotlinx Serialization
     implementation(libs.kotlinx.serialization.json)
+
+    // Cryptography - Lazysodium for secure pairing (Ed25519)
+    implementation("com.goterl:lazysodium-android:5.1.0@aar")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+
+    // Secure storage
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }
