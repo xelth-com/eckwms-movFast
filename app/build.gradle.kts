@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -99,4 +100,12 @@ dependencies {
 
     // Secure storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Room Database
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
+    // WorkManager for background sync
+    implementation(libs.work.runtime.ktx)
 }

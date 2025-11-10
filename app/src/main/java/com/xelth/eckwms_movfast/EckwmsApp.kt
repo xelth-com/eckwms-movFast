@@ -4,8 +4,10 @@ package com.xelth.eckwms_movfast
 
 import android.app.Application
 import android.util.Log
+import com.xelth.eckwms_movfast.data.WarehouseRepository
 import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
 import com.xelth.eckwms_movfast.scanners.ScannerManager
+import com.xelth.eckwms_movfast.sync.SyncManager
 import com.xelth.eckwms_movfast.utils.SettingsManager
 
 class EckwmsApp : Application() {
@@ -13,6 +15,10 @@ class EckwmsApp : Application() {
 
     // Ссылка на ScannerManager для удобного доступа
     lateinit var scannerManager: ScannerManager
+        private set
+
+    // Ссылка на WarehouseRepository для доступа к данным
+    lateinit var repository: WarehouseRepository
         private set
 
     override fun onCreate() {
@@ -25,6 +31,14 @@ class EckwmsApp : Application() {
         // Инициализация ScannerManager
         scannerManager = ScannerManager.getInstance(this)
         scannerManager.initialize()
+
+        // Initialize WarehouseRepository for offline-first data management
+        repository = WarehouseRepository.getInstance(this)
+        Log.d(TAG, "WarehouseRepository initialized")
+
+        // Schedule periodic sync to keep data in sync with server
+        SyncManager.schedulePeriodicSync(this)
+        Log.d(TAG, "Periodic sync scheduled")
 
         // Запуск автоматического тестирования API сканера при запуске
         // Log.d(TAG, "Запуск автоматического тестирования API сканера...")

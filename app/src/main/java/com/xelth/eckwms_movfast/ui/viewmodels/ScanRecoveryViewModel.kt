@@ -48,6 +48,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val TAG = "ScanRecoveryVM"
     private val scannerManager: ScannerManager = (application as EckwmsApp).scannerManager
+    private val repository: com.xelth.eckwms_movfast.data.WarehouseRepository = (application as EckwmsApp).repository
     private val scanApiService: ScanApiService = ScanApiService(application).apply {
         setScannerManager(scannerManager)
     }
@@ -152,6 +153,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     init {
         addLog("ViewModel Initialized.")
         scannerManager.scanResult.observeForever(scanResultObserver)
+
+        // Load scan history from local database
+        viewModelScope.launch {
+            loadScanHistory()
+        }
     }
 
     /**
@@ -514,10 +520,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     }
 
     /**
-     * Sends a scanned barcode to the server and updates the scan history
+     * Sends a scanned barcode to the repository (offline-first)
+     * The repository will save locally and queue for background sync
      */
     fun sendScanToServer(barcode: String, barcodeType: String) {
-        addLog("Sending scan to server: $barcode")
+        addLog("Saving scan for sync: $barcode")
 
         // Create a new scan history item with PENDING status
         val scanItem = ScanHistoryItem(
@@ -527,47 +534,32 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             type = barcodeType
         )
 
-        // Add to history list
-        val currentHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
-        currentHistory.add(0, scanItem) // Add to the beginning of the list
-        _scanHistory.postValue(currentHistory)
-
-        // Send to server
+        // Save to repository (offline-first)
         viewModelScope.launch {
             try {
-                val result = scanApiService.processScan(barcode, barcodeType, _activeOrderId.value)
+                // Repository will save locally and add to sync queue
+                val scanId = repository.saveAndSyncScan(scanItem, _activeOrderId.value)
+                addLog("Scan saved locally with ID: $scanId, queued for sync")
 
-                // Update the status based on the result
-                val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
-                val index = updatedHistory.indexOfFirst { it.id == scanItem.id }
-
-                if (index != -1) {
-                    when (result) {
-                        is ScanResult.Success -> {
-                            addLog("Server buffered scan: $barcode (checksum: ${result.checksum})")
-                            updatedHistory[index].status = ScanStatus.BUFFERED
-                            updatedHistory[index].checksum = result.checksum
-                        }
-                        is ScanResult.Error -> {
-                            addLog("Server rejected scan: ${result.message}")
-                            updatedHistory[index].status = ScanStatus.FAILED
-                            _errorMessage.postValue("Server error: ${result.message}")
-                        }
-                    }
-                    _scanHistory.postValue(updatedHistory)
-                }
+                // Update UI with scan from database
+                loadScanHistory()
             } catch (e: Exception) {
-                addLog("Error sending scan to server: ${e.message}")
-
-                // Update status to FAILED
-                val updatedHistory = _scanHistory.value?.toMutableList() ?: mutableListOf()
-                val index = updatedHistory.indexOfFirst { it.id == scanItem.id }
-                if (index != -1) {
-                    updatedHistory[index].status = ScanStatus.FAILED
-                    _scanHistory.postValue(updatedHistory)
-                }
-                _errorMessage.postValue("Network error: ${e.message}")
+                addLog("Error saving scan: ${e.message}")
+                _errorMessage.postValue("Failed to save scan: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Load scan history from local database
+     */
+    private suspend fun loadScanHistory() {
+        try {
+            val scans = repository.getAllScans()
+            _scanHistory.postValue(scans)
+            addLog("Loaded ${scans.size} scans from database")
+        } catch (e: Exception) {
+            addLog("Error loading scan history: ${e.message}")
         }
     }
 
