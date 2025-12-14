@@ -754,7 +754,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     /**
      * Handles the pairing QR code scanned from the server
-     * Supports both old format (local_server_urls) and new format (instance_id) for backward compatibility
+     * Supports:
+     * - ECK-P1-ALPHA format: ECK$1$UUID$HEX_KEY (new string-based format)
+     * - JSON format with instance_id (active discovery)
+     * - JSON format with local_server_urls (direct testing)
      */
     fun handlePairingQrCode(qrData: String) {
         _isPairing.postValue(true)
@@ -766,7 +769,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 addPairingLog("🔍 PAIRING STARTED")
                 addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
 
-                // STAGE 1: Parse QR code and detect format
+                // Check if this is the new ECK-P1-ALPHA format
+                if (qrData.startsWith("ECK$")) {
+                    addPairingLog("")
+                    addPairingLog("📋 STAGE 1: Analyzing QR code")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("✅ Format: ECK-P1-ALPHA (String Protocol)")
+                    handlePairingWithEckProtocol(qrData)
+                    return@launch
+                }
+
+                // STAGE 1: Parse QR code and detect format (JSON)
                 addPairingLog("")
                 addPairingLog("📋 STAGE 1: Analyzing QR code")
                 addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -809,6 +822,291 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 Log.e(TAG, "Pairing error", e)
             } finally {
                 _isPairing.postValue(false)
+            }
+        }
+    }
+
+    /**
+     * Handle pairing with ECK-P1-ALPHA protocol
+     * Format v1.0: ECK$VERSION$INSTANCE_ID_COMPACT$SERVER_PUBLIC_KEY_HEX_UPPERCASE
+     * Format v1.1: ECK$VERSION$INSTANCE_ID_COMPACT$SERVER_PUBLIC_KEY_HEX_UPPERCASE$GLOBAL_URL
+     *
+     * Optimized for QR Code Alphanumeric mode (45 chars/version, 77/version):
+     * - Allowed chars: 0-9, A-Z, space, $, %, *, +, -, ., /, :
+     * - UUID: Uppercase, no dashes (32 chars instead of 36)
+     * - Public Key: Uppercase HEX
+     * - Global URL: Optional (v1.1+), uses default if omitted
+     *
+     * Example v1.0: ECK$1$550E8400E29B41D4A716446655440000$A1B2C3D4E5F6...
+     * Example v1.1: ECK$1$550E8400E29B41D4A716446655440000$A1B2C3D4E5F6...$HTTPS://PDA.REPAIR
+     */
+    private suspend fun handlePairingWithEckProtocol(qrData: String) {
+        addPairingLog("")
+        addPairingLog("📋 STAGE 2: Parsing ECK Protocol")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        // Split the QR data by delimiter
+        val parts = qrData.split("$")
+
+        // Validate format: ECK$1$UUID_COMPACT$HEX_KEY or ECK$1$UUID_COMPACT$HEX_KEY$URL
+        if (parts.size < 4 || parts.size > 5) {
+            throw Exception("Invalid ECK protocol format. Expected 4-5 parts, got ${parts.size}")
+        }
+
+        val protocol = parts[0]
+        val version = parts[1]
+        val instanceIdCompact = parts[2]
+        val serverPublicKeyHex = parts[3]
+        val globalUrlFromQr = if (parts.size == 5) parts[4] else null
+
+        // Validate protocol identifier
+        if (protocol != "ECK") {
+            throw Exception("Invalid protocol identifier: $protocol (expected ECK)")
+        }
+
+        // Validate version
+        if (version != "1") {
+            addPairingLog("⚠️ Warning: Unknown protocol version: $version")
+        }
+
+        // Validate instance ID (compact UUID: 32 hex chars, uppercase)
+        if (instanceIdCompact.isBlank()) {
+            throw Exception("Instance ID is empty")
+        }
+
+        // Validate UUID format: 32 hex characters (compact, no dashes)
+        if (!instanceIdCompact.matches(Regex("^[0-9A-F]{32}$"))) {
+            throw Exception("Invalid UUID format. Expected 32 uppercase hex chars, got: $instanceIdCompact")
+        }
+
+        // Convert compact UUID to standard UUID format with dashes for API compatibility
+        val instanceId = "${instanceIdCompact.substring(0, 8)}-${instanceIdCompact.substring(8, 12)}-${instanceIdCompact.substring(12, 16)}-${instanceIdCompact.substring(16, 20)}-${instanceIdCompact.substring(20, 32)}".lowercase()
+
+        // Validate server public key
+        if (serverPublicKeyHex.isBlank()) {
+            throw Exception("Server public key is empty")
+        }
+
+        // Validate hex format (uppercase only for alphanumeric mode)
+        if (!serverPublicKeyHex.matches(Regex("^[0-9A-F]+$"))) {
+            throw Exception("Invalid server public key format. Expected uppercase HEX, got: ${serverPublicKeyHex.take(20)}...")
+        }
+
+        addPairingLog("✅ Protocol: $protocol")
+        addPairingLog("✅ Version: $version")
+        addPairingLog("✅ UUID (compact): $instanceIdCompact")
+        addPairingLog("✅ UUID (standard): $instanceId")
+        addPairingLog("✅ Server PubKey: ${serverPublicKeyHex.take(16)}...${serverPublicKeyHex.takeLast(8)}")
+        addPairingLog("   Length: ${serverPublicKeyHex.length} hex chars (${serverPublicKeyHex.length / 2} bytes)")
+
+        // Determine global server URL (from QR code or settings)
+        val globalServerUrl = if (globalUrlFromQr != null) {
+            // v1.1: Use URL from QR code (convert to lowercase for URL)
+            globalUrlFromQr.lowercase()
+        } else {
+            // v1.0: Use default from settings
+            SettingsManager.getGlobalServerUrl()
+        }
+
+        addPairingLog("")
+        addPairingLog("📊 QR Code Info:")
+        addPairingLog("   Protocol: ECK-P1-ALPHA v1.${if (globalUrlFromQr != null) "1" else "0"}")
+        addPairingLog("   Mode: Alphanumeric")
+        addPairingLog("   Total chars: ${qrData.length}")
+        addPairingLog("   UUID saved: 4 chars (no dashes)")
+        if (globalUrlFromQr != null) {
+            addPairingLog("   Dynamic URL: ✓ (embedded)")
+        } else {
+            addPairingLog("   Dynamic URL: ✗ (using default)")
+        }
+
+        // Store server public key (keep uppercase for consistency)
+        SettingsManager.saveServerPublicKey(serverPublicKeyHex)
+        addPairingLog("")
+        addPairingLog("✅ Server public key saved")
+
+        addPairingLog("")
+        addPairingLog("📡 Global Server:")
+        addPairingLog("   $globalServerUrl")
+        if (globalUrlFromQr != null) {
+            addPairingLog("   Source: QR code (v1.1)")
+        } else {
+            addPairingLog("   Source: Settings (v1.0 fallback)")
+        }
+
+        // STAGE 3: Collect client diagnostics
+        addPairingLog("")
+        addPairingLog("📍 STAGE 3: Network Diagnostics")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        val clientIp = com.xelth.eckwms_movfast.utils.NetworkUtils.getDeviceIpAddress(getApplication())
+        addPairingLog("Your device IP: ${clientIp ?: "unknown"}")
+        _pairingStatus.postValue("Step 2/5: Diagnostics collected\nYour device IP: ${clientIp ?: "unknown"}")
+
+        // STAGE 4: Query global server for connection candidates
+        addPairingLog("")
+        addPairingLog("🔍 STAGE 4: Discovering Server")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("Querying global server...")
+        addPairingLog("Instance: $instanceId")
+        _pairingStatus.postValue("Step 3/5: Contacting global server...\nServer: $globalServerUrl")
+
+        val instanceInfoResult = scanApiService.getInstanceInfo(
+            globalServerUrl = globalServerUrl,
+            instanceId = instanceId,
+            clientIp = clientIp
+        )
+
+        when (instanceInfoResult) {
+            is ScanResult.Error -> {
+                throw Exception("Failed to get instance info: ${instanceInfoResult.message}")
+            }
+            is ScanResult.Success -> {
+                val responseJson = JSONObject(instanceInfoResult.data)
+                val candidatesArray = responseJson.getJSONArray("candidates")
+                val candidates = (0 until candidatesArray.length()).map {
+                    candidatesArray.getString(it)
+                }
+
+                addPairingLog("")
+                addPairingLog("✅ Received ${candidates.size} candidates:")
+                candidates.forEach { addPairingLog("   → $it") }
+                _pairingStatus.postValue("Step 4/5: Testing connections...\nCandidates: ${candidates.size}")
+
+                // STAGE 5: Test connection candidates
+                addPairingLog("")
+                addPairingLog("🔌 STAGE 5: Testing Connections")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("Timeout: 2 seconds per server")
+                candidates.forEachIndexed { index, url ->
+                    addPairingLog("[${index + 1}/${candidates.size}] Testing $url...")
+                }
+                addPairingLog("")
+                addPairingLog("⏳ Please wait...")
+
+                val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(candidates)
+
+                if (reachableUrl == null) {
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("❌ CONNECTION FAILED")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("")
+                    addPairingLog("📱 Your device:")
+                    addPairingLog("   IP: ${clientIp ?: "unknown"}")
+                    addPairingLog("")
+                    addPairingLog("🖥️ Tested servers:")
+                    candidates.forEach { addPairingLog("   ✗ $it (no response)") }
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("💡 Troubleshooting:")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("  1. Same WiFi network?")
+                    addPairingLog("  2. Server running?")
+                    addPairingLog("  3. Firewall blocking?")
+                    throw Exception("No server reachable")
+                }
+
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("✅ SERVER FOUND!")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("")
+                addPairingLog("📱 Your device: ${clientIp ?: "unknown"}")
+                addPairingLog("🖥️ Server: $reachableUrl")
+                addPairingLog("")
+                _pairingStatus.postValue("Step 5/5: Server found!\nConnected to: $reachableUrl")
+
+                // Save server URLs to settings
+                SettingsManager.saveServerUrl(reachableUrl)
+                SettingsManager.saveGlobalServerUrl(globalServerUrl)
+                addPairingLog("✅ Configuration saved")
+
+                // STAGE 6: Perform cryptographic registration
+                addPairingLog("")
+                addPairingLog("🔐 STAGE 6: Secure Registration")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                _pairingStatus.postValue("Registering device securely...")
+
+                // Initialize CryptoManager
+                com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
+                addPairingLog("✅ Crypto initialized")
+
+                // Generate or retrieve key pair
+                val keyPair = com.xelth.eckwms_movfast.utils.CryptoManager.getOrCreateKeyPair()
+                val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
+                addPairingLog("✅ Client key pair ready")
+                addPairingLog("   Length: ${publicKeyBase64.length} chars (Base64)")
+
+                // Create signature data: deviceId + timestamp
+                val timestamp = System.currentTimeMillis()
+                val deviceId = android.provider.Settings.Secure.getString(
+                    getApplication<Application>().contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                ) ?: "unknown-android-id"
+
+                val signatureData = "$deviceId:$timestamp"
+                val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
+                val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
+                addPairingLog("✅ Signature created")
+
+                addPairingLog("")
+                addPairingLog("📤 Sending credentials to server...")
+                addPairingLog("   URL: $reachableUrl")
+                addPairingLog("   API: /api/device/register")
+                addPairingLog("   Device: ${deviceId.take(8)}...")
+                addPairingLog("")
+                addPairingLog("⏳ Waiting for response...")
+
+                // Register device with server
+                val result = scanApiService.registerDevice(
+                    publicKeyBase64 = publicKeyBase64,
+                    signature = signatureBase64,
+                    timestamp = timestamp
+                )
+
+                when (result) {
+                    is ScanResult.Success -> {
+                        addPairingLog("")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        addPairingLog("✅ PAIRING SUCCESSFUL!")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        addPairingLog("")
+                        addPairingLog("Protocol: ECK-P1-ALPHA")
+                        addPairingLog("Instance: $instanceId")
+                        addPairingLog("")
+                        addPairingLog("📱 Device ID:")
+                        addPairingLog("   ${deviceId.take(16)}...")
+                        addPairingLog("")
+                        addPairingLog("🖥️ Server:")
+                        addPairingLog("   $reachableUrl")
+                        addPairingLog("")
+                        addPairingLog("🔐 Cryptography:")
+                        addPairingLog("   ✓ Ed25519 keys generated")
+                        addPairingLog("   ✓ Server public key stored")
+                        addPairingLog("   ✓ Device registered")
+                        addPairingLog("")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        addPairingLog("✅ Ready to scan!")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        _pairingStatus.postValue("✅ Success! Device paired with server.")
+                        _errorMessage.postValue("✅ Device successfully paired using ECK-P1-ALPHA")
+                    }
+                    is ScanResult.Error -> {
+                        addPairingLog("")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        addPairingLog("❌ REGISTRATION FAILED")
+                        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                        addPairingLog("")
+                        addPairingLog("Server: $reachableUrl")
+                        addPairingLog("Error: ${result.message}")
+                        addPairingLog("")
+                        addPairingLog("💡 The server is reachable")
+                        addPairingLog("   but rejected registration.")
+                        addPairingLog("   Check server logs.")
+                        _pairingStatus.postValue("❌ Registration error: ${result.message}")
+                        _errorMessage.postValue("❌ Registration failed: ${result.message}")
+                    }
+                }
             }
         }
     }

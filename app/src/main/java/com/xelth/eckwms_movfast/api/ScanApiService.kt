@@ -294,7 +294,7 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Getting instance info from global server: $globalServerUrl")
 
         try {
-            val url = URL("$globalServerUrl/api/pairing/get-instance-info")
+            val url = URL("$globalServerUrl/ECK/API/INTERNAL/GET-INSTANCE-INFO")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")

@@ -25,8 +25,13 @@ object SettingsManager {
     fun getServerUrl(): String = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
     private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
-    private const val DEFAULT_GLOBAL_SERVER_URL = "http://your-public-domain.com:8080"
+    private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair"
 
     fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).apply()
     fun getGlobalServerUrl(): String = prefs.getString(KEY_GLOBAL_SERVER_URL, DEFAULT_GLOBAL_SERVER_URL) ?: DEFAULT_GLOBAL_SERVER_URL
+
+    private const val KEY_SERVER_PUBLIC_KEY = "server_public_key_hex"
+
+    fun saveServerPublicKey(keyHex: String) = prefs.edit().putString(KEY_SERVER_PUBLIC_KEY, keyHex.trim()).apply()
+    fun getServerPublicKey(): String? = prefs.getString(KEY_SERVER_PUBLIC_KEY, null)
 }
