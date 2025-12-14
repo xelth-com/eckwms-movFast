@@ -221,18 +221,17 @@ class ScanApiService(private val context: Context) {
 
     /**
      * Registers the device with the server for secure pairing
-     * @param serverUrl The base URL of the eckWMS server
      * @param publicKeyBase64 The device's Ed25519 public key in Base64 format
      * @param signature The signature of the pairing request signed with the device's private key
      * @param timestamp The timestamp used in the signature
      * @return Result of the registration operation
      */
     suspend fun registerDevice(
-        serverUrl: String,
         publicKeyBase64: String,
         signature: String,
         timestamp: Long
     ): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
@@ -277,6 +276,113 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error registering device: ${e.message}", e)
             return@withContext ScanResult.Error(e.message ?: "Unknown registration error")
+        }
+    }
+
+    /**
+     * Gets instance connection information from the global server
+     * @param globalServerUrl The global server URL
+     * @param instanceId The instance ID from the QR code
+     * @param clientIp The client's local IP address for diagnostics
+     * @return Result containing the list of connection candidates
+     */
+    suspend fun getInstanceInfo(
+        globalServerUrl: String,
+        instanceId: String,
+        clientIp: String?
+    ): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Getting instance info from global server: $globalServerUrl")
+
+        try {
+            val url = URL("$globalServerUrl/api/pairing/get-instance-info")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.doOutput = true
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+
+            val jsonRequest = JSONObject().apply {
+                put("instance_id", instanceId)
+                put("client_ip", clientIp ?: "unknown")
+            }
+
+            Log.d(TAG, "Sending instance info request: $jsonRequest")
+
+            val outputStream = connection.outputStream
+            val writer = OutputStreamWriter(outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Instance info response: $response")
+                return@withContext ScanResult.Success(
+                    type = "instance_info",
+                    message = "Instance info retrieved successfully",
+                    data = response
+                )
+            } else {
+                val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    ?: "Error code: $responseCode"
+                Log.e(TAG, "Get instance info failed: $errorMessage")
+                return@withContext ScanResult.Error("Failed to get instance info: $errorMessage")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting instance info: ${e.message}", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown error getting instance info")
+        }
+    }
+
+    /**
+     * Submits a generic document to the server
+     * @param type The type of document (e.g., "ManualRestockOrder")
+     * @param payload The document payload as a JSON string
+     * @param format The format of the document (e.g., "json")
+     * @return Result of the submission operation
+     */
+    suspend fun submitDocument(type: String, payload: String, format: String): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Submitting document of type '$type'")
+        try {
+            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            val url = URL("$baseUrl/api/documents")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-API-Key", API_KEY)
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                put("type", type)
+                put("payload", payload)
+                put("format", format)
+            }
+
+            Log.d(TAG, "Sending document: $jsonRequest")
+
+            val writer = OutputStreamWriter(connection.outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_CREATED || responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Document submitted successfully: $response")
+                ScanResult.Success("document_submit", "Document submitted successfully", response)
+            } else {
+                val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                Log.e(TAG, "Document submission failed: $error")
+                ScanResult.Error("Document submission failed: $error")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error submitting document: ${e.message}", e)
+            ScanResult.Error(e.message ?: "Unknown error during document submission")
         }
     }
 

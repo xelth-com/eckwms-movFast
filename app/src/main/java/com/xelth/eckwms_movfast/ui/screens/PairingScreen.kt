@@ -1,28 +1,70 @@
 package com.xelth.eckwms_movfast.ui.screens
 
+import android.util.Log
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
+
+private const val TAG = "PairingScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PairingScreen(viewModel: ScanRecoveryViewModel, navController: NavController) {
-    val pairingStatus by viewModel.pairingStatus.observeAsState("Ready to pair device with server.")
+    val pairingLog by viewModel.pairingLog.observeAsState(emptyList())
     val isPairing by viewModel.isPairing.observeAsState(false)
+    val listState = rememberLazyListState()
+
+    // Auto-scroll to bottom when new logs appear
+    LaunchedEffect(pairingLog.size) {
+        if (pairingLog.isNotEmpty()) {
+            listState.animateScrollToItem(pairingLog.size - 1)
+        }
+    }
+
+    // Observe scanned barcode data from camera
+    LaunchedEffect(navController) {
+        val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
+        savedStateHandle?.getLiveData<Map<String, String>>("scanned_barcode_data")?.observeForever { data ->
+            if (data != null) {
+                Log.d(TAG, "Received scanned barcode data: $data")
+                val barcode = data["barcode"] ?: ""
+                val scanMode = data["scanMode"] ?: ""
+
+                Log.d(TAG, "Barcode: $barcode, ScanMode: $scanMode")
+
+                if (scanMode == "pairing" && barcode.isNotEmpty()) {
+                    Log.d(TAG, "Processing pairing QR code...")
+                    viewModel.handlePairingQrCode(barcode)
+                    // Clear the data to prevent reprocessing
+                    savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
+                } else {
+                    Log.w(TAG, "Invalid pairing data - scanMode: $scanMode, barcode empty: ${barcode.isEmpty()}")
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Server Pairing") },
+                title = { Text("Device Pairing Console") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary
@@ -34,75 +76,60 @@ fun PairingScreen(viewModel: ScanRecoveryViewModel, navController: NavController
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
+            // Console area - takes all remaining space
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color(0xFF1E1E1E))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
+                items(pairingLog) { logLine ->
                     Text(
-                        text = "Connect to eckWMS Server",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Text(
-                        text = "To securely connect this device to your eckWMS server, scan the pairing QR code displayed on the server's admin panel.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (isPairing) {
-                        CircularProgressIndicator(modifier = Modifier.size(48.dp))
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-
-                    Text(
-                        text = pairingStatus,
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        fontWeight = if (isPairing) FontWeight.Bold else FontWeight.Normal,
+                        text = logLine,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
                         color = when {
-                            pairingStatus.contains("success", ignoreCase = true) ->
-                                MaterialTheme.colorScheme.primary
-                            pairingStatus.contains("error", ignoreCase = true) ||
-                            pairingStatus.contains("failed", ignoreCase = true) ->
-                                MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                            logLine.contains("❌") || logLine.contains("FAILED") -> Color(0xFFFF6B6B)
+                            logLine.contains("✅") || logLine.contains("SUCCESS") -> Color(0xFF51CF66)
+                            logLine.contains("⏳") || logLine.contains("Testing") -> Color(0xFFFECA57)
+                            logLine.contains("━━━") -> Color(0xFF4ECDC4)
+                            logLine.startsWith("  ") || logLine.startsWith("    ") -> Color(0xFFAAAAAA)
+                            else -> Color(0xFFE0E0E0)
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+            // Button area at bottom
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.clearPairingLog()
+                        navController.navigate("cameraScanScreen?scan_mode=pairing")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isPairing
+                ) {
+                    Text(if (isPairing) "Pairing in progress..." else "Scan Pairing QR Code")
+                }
 
-                    Button(
-                        onClick = { navController.navigate("cameraScanScreen?scan_mode=pairing") },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isPairing
-                    ) {
-                        Text("Scan Pairing QR Code")
-                    }
-
-                    OutlinedButton(
-                        onClick = { navController.popBackStack() },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isPairing
-                    ) {
-                        Text("Cancel")
-                    }
+                OutlinedButton(
+                    onClick = { navController.popBackStack() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isPairing
+                ) {
+                    Text("Cancel")
                 }
             }
         }

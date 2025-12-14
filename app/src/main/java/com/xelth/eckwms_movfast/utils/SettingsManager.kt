@@ -23,4 +23,10 @@ object SettingsManager {
 
     fun saveServerUrl(url: String) = prefs.edit().putString(KEY_SERVER_URL, url.trim()).apply()
     fun getServerUrl(): String = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+
+    private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
+    private const val DEFAULT_GLOBAL_SERVER_URL = "http://your-public-domain.com:8080"
+
+    fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).apply()
+    fun getGlobalServerUrl(): String = prefs.getString(KEY_GLOBAL_SERVER_URL, DEFAULT_GLOBAL_SERVER_URL) ?: DEFAULT_GLOBAL_SERVER_URL
 }

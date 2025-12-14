@@ -92,6 +92,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _pairingStatus = MutableLiveData<String>("Ready to pair device with server.")
     val pairingStatus: LiveData<String> = _pairingStatus
 
+    private val _pairingLog = MutableLiveData<List<String>>(listOf("📱 Ready to scan pairing QR code"))
+    val pairingLog: LiveData<List<String>> = _pairingLog
+
     private val _isPairing = MutableLiveData<Boolean>(false)
     val isPairing: LiveData<Boolean> = _isPairing
     // --- END DEBUG ---
@@ -721,6 +724,23 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Active order session ended.")
     }
 
+    /**
+     * Add a message to the pairing log console
+     */
+    private suspend fun addPairingLog(message: String) {
+        val currentLog = _pairingLog.value ?: emptyList()
+        _pairingLog.postValue(currentLog + message)
+        addLog(message) // Also add to debug log
+        kotlinx.coroutines.yield() // Let UI update
+    }
+
+    /**
+     * Clear the pairing log
+     */
+    fun clearPairingLog() {
+        _pairingLog.postValue(listOf("📱 Ready to scan pairing QR code"))
+    }
+
     fun reset() {
         addLog("Resetting state to IDLE.")
         _scanState.postValue(ScanState.IDLE)
@@ -734,79 +754,340 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     /**
      * Handles the pairing QR code scanned from the server
-     * QR code contains JSON with server URL and other pairing information
+     * Supports both old format (local_server_urls) and new format (instance_id) for backward compatibility
      */
     fun handlePairingQrCode(qrData: String) {
-        addLog("Processing pairing QR code...")
         _isPairing.postValue(true)
-        _pairingStatus.postValue("Processing pairing QR code...")
+        _pairingStatus.postValue("🔍 Analyzing QR code...")
 
         viewModelScope.launch {
             try {
-                // Parse QR code JSON
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("🔍 PAIRING STARTED")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+
+                // STAGE 1: Parse QR code and detect format
+                addPairingLog("")
+                addPairingLog("📋 STAGE 1: Analyzing QR code")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
                 val qrJson = JSONObject(qrData)
-                val serverUrl = qrJson.getString("serverUrl")
-                val pairingToken = qrJson.optString("pairingToken", "")
 
-                addLog("Server URL from QR: $serverUrl")
-                addLog("Pairing token: ${if (pairingToken.isNotEmpty()) "present" else "not present"}")
+                // Check if this is the new format (with instance_id) or old format (with local_server_urls)
+                val hasInstanceId = qrJson.has("instance_id")
+                val hasLocalServerUrls = qrJson.has("local_server_urls")
 
-                // Save server URL to settings
-                SettingsManager.saveServerUrl(serverUrl)
-                _pairingStatus.postValue("Server URL configured. Initializing crypto...")
+                addPairingLog("Format detection:")
+                addPairingLog("  instance_id: ${if (hasInstanceId) "✓ found" else "✗ not found"}")
+                addPairingLog("  local_server_urls: ${if (hasLocalServerUrls) "✓ found" else "✗ not found"}")
 
-                // Initialize CryptoManager
-                com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
-                addLog("CryptoManager initialized")
-
-                // Generate or retrieve key pair
-                val keyPair = com.xelth.eckwms_movfast.utils.CryptoManager.getOrCreateKeyPair()
-                val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
-                addLog("Public key (Base64): $publicKeyBase64")
-
-                _pairingStatus.postValue("Generating signature...")
-
-                // Create signature data: deviceId + timestamp
-                val timestamp = System.currentTimeMillis()
-                val deviceId = android.provider.Settings.Secure.getString(
-                    getApplication<Application>().contentResolver,
-                    android.provider.Settings.Secure.ANDROID_ID
-                ) ?: "unknown-android-id"
-
-                val signatureData = "$deviceId:$timestamp"
-                val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
-                val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
-                addLog("Signature created (Base64): ${signatureBase64.take(32)}...")
-
-                _pairingStatus.postValue("Registering device with server...")
-
-                // Register device with server
-                val result = scanApiService.registerDevice(
-                    serverUrl = serverUrl,
-                    publicKeyBase64 = publicKeyBase64,
-                    signature = signatureBase64,
-                    timestamp = timestamp
-                )
-
-                when (result) {
-                    is ScanResult.Success -> {
-                        addLog("Device pairing successful!")
-                        _pairingStatus.postValue("Success! Device paired with server.")
-                        _errorMessage.postValue("Device successfully paired with eckWMS server.")
-                    }
-                    is ScanResult.Error -> {
-                        addLog("Device pairing failed: ${result.message}")
-                        _pairingStatus.postValue("Error: ${result.message}")
-                        _errorMessage.postValue("Pairing failed: ${result.message}")
-                    }
+                if (hasInstanceId && !hasLocalServerUrls) {
+                    // NEW FORMAT: Use active discovery
+                    addPairingLog("")
+                    addPairingLog("✅ Format: Active Discovery")
+                    addPairingLog("Will contact global server...")
+                    _pairingStatus.postValue("📡 Active Discovery")
+                    handlePairingWithActiveDiscovery(qrJson)
+                } else if (hasLocalServerUrls) {
+                    // OLD FORMAT: Direct connection testing (prioritize this if both exist)
+                    addPairingLog("")
+                    addPairingLog("✅ Format: Direct Connection")
+                    addPairingLog("Will test local servers...")
+                    _pairingStatus.postValue("🔌 Direct Connection")
+                    handlePairingWithDirectTesting(qrJson)
+                } else {
+                    throw Exception("Invalid QR code format")
                 }
             } catch (e: Exception) {
-                addLog("Error during pairing: ${e.message}")
-                _pairingStatus.postValue("Error: ${e.message}")
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("❌ ERROR")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("")
+                addPairingLog("${e.message}")
+                _pairingStatus.postValue("❌ Error")
                 _errorMessage.postValue("Pairing error: ${e.message}")
                 Log.e(TAG, "Pairing error", e)
             } finally {
                 _isPairing.postValue(false)
+            }
+        }
+    }
+
+    /**
+     * Handle pairing with new active discovery format (instance_id)
+     */
+    private suspend fun handlePairingWithActiveDiscovery(qrJson: JSONObject) {
+        addLog("Using NEW format: Active discovery with instance_id")
+        val instanceId = qrJson.getString("instance_id")
+        val globalServerUrl = qrJson.getString("global_server_url")
+
+        addLog("Instance ID: $instanceId")
+        addLog("Global server URL: $globalServerUrl")
+        _pairingStatus.postValue("Step 1/5: QR code parsed\nInstance ID: $instanceId")
+
+        // STAGE 2: Collect client diagnostics
+                addLog("STAGE 2: Collecting client diagnostics...")
+                val clientIp = com.xelth.eckwms_movfast.utils.NetworkUtils.getDeviceIpAddress(getApplication())
+                addLog("Client IP address: ${clientIp ?: "unknown"}")
+                _pairingStatus.postValue("Step 2/5: Diagnostics collected\nYour device IP: ${clientIp ?: "unknown"}")
+
+                // STAGE 3: Query global server for connection candidates
+                addLog("STAGE 3: Querying global server for connection candidates...")
+                _pairingStatus.postValue("Step 3/5: Contacting global server...\nServer: $globalServerUrl")
+
+                val instanceInfoResult = scanApiService.getInstanceInfo(
+                    globalServerUrl = globalServerUrl,
+                    instanceId = instanceId,
+                    clientIp = clientIp
+                )
+
+                when (instanceInfoResult) {
+                    is ScanResult.Error -> {
+                        throw Exception("Failed to get instance info: ${instanceInfoResult.message}")
+                    }
+                    is ScanResult.Success -> {
+                        val responseJson = JSONObject(instanceInfoResult.data)
+                        val candidatesArray = responseJson.getJSONArray("candidates")
+                        val candidates = (0 until candidatesArray.length()).map {
+                            candidatesArray.getString(it)
+                        }
+
+                        addLog("Received ${candidates.size} connection candidates: $candidates")
+                        _pairingStatus.postValue("Step 4/5: Testing connections...\nCandidates: ${candidates.size}")
+
+                        // STAGE 4: Test connection candidates
+                        addLog("STAGE 4: Testing connection candidates...")
+                        val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(candidates)
+
+                        if (reachableUrl == null) {
+                            val errorMsg = """
+                                Connection failed!
+
+                                Your device IP: ${clientIp ?: "unknown"}
+                                Tested ${candidates.size} candidates: ${candidates.joinToString(", ")}
+
+                                Please ensure:
+                                1. Your device is on the same network as the server
+                                2. The server is running and accessible
+                                3. No firewall is blocking connections
+                            """.trimIndent()
+                            addLog(errorMsg)
+                            throw Exception(errorMsg)
+                        }
+
+                        addLog("Found reachable server: $reachableUrl")
+                        _pairingStatus.postValue("Step 5/5: Server found!\nConnected to: $reachableUrl")
+
+                        // Save server URLs to settings
+                        SettingsManager.saveServerUrl(reachableUrl)
+                        SettingsManager.saveGlobalServerUrl(globalServerUrl)
+                        addLog("Server URLs saved to settings")
+
+                        // STAGE 5: Perform cryptographic registration
+                        addLog("STAGE 5: Performing cryptographic registration...")
+                        _pairingStatus.postValue("Registering device securely...")
+
+                        // Initialize CryptoManager
+                        com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
+                        addLog("CryptoManager initialized")
+
+                        // Generate or retrieve key pair
+                        val keyPair = com.xelth.eckwms_movfast.utils.CryptoManager.getOrCreateKeyPair()
+                        val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
+                        addLog("Public key (Base64): $publicKeyBase64")
+
+                        // Create signature data: deviceId + timestamp
+                        val timestamp = System.currentTimeMillis()
+                        val deviceId = android.provider.Settings.Secure.getString(
+                            getApplication<Application>().contentResolver,
+                            android.provider.Settings.Secure.ANDROID_ID
+                        ) ?: "unknown-android-id"
+
+                        val signatureData = "$deviceId:$timestamp"
+                        val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
+                        val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
+                        addLog("Signature created (Base64): ${signatureBase64.take(32)}...")
+
+                        // Register device with server
+                        val result = scanApiService.registerDevice(
+                            publicKeyBase64 = publicKeyBase64,
+                            signature = signatureBase64,
+                            timestamp = timestamp
+                        )
+
+                        when (result) {
+                            is ScanResult.Success -> {
+                                addLog("✓ Device pairing successful!")
+                                _pairingStatus.postValue("✓ Success! Device paired with server.")
+                                _errorMessage.postValue("Device successfully paired with eckWMS server.")
+                            }
+                            is ScanResult.Error -> {
+                                addLog("✗ Device registration failed: ${result.message}")
+                                _pairingStatus.postValue("✗ Registration error: ${result.message}")
+                                _errorMessage.postValue("Registration failed: ${result.message}")
+                            }
+                        }
+                    }
+                }
+    }
+
+    /**
+     * Handle pairing with old direct testing format (local_server_urls)
+     */
+    private suspend fun handlePairingWithDirectTesting(qrJson: JSONObject) {
+        val serverUrlsJson = qrJson.getJSONArray("local_server_urls")
+        val serverUrls = (0 until serverUrlsJson.length()).map { serverUrlsJson.getString(it) }
+        val globalServerUrl = qrJson.optString("global_server_url", "")
+
+        // Get device's own IP address for diagnostics
+        val clientIp = com.xelth.eckwms_movfast.utils.NetworkUtils.getDeviceIpAddress(getApplication())
+
+        addPairingLog("")
+        addPairingLog("📍 STAGE 2: Network info")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("Your device: ${clientIp ?: "unknown"}")
+        addPairingLog("Server(s) to test: ${serverUrls.size}")
+        serverUrls.forEach { addPairingLog("  → $it") }
+        if (globalServerUrl.isNotEmpty()) {
+            addPairingLog("Global server: $globalServerUrl")
+        }
+
+        // STAGE: Test connection candidates directly
+        addPairingLog("")
+        addPairingLog("🔍 STAGE 3: Testing connections")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("Timeout: 2 seconds per server")
+        serverUrls.forEachIndexed { index, url ->
+            addPairingLog("[${ index + 1}/${serverUrls.size}] Testing $url...")
+        }
+        addPairingLog("")
+        addPairingLog("⏳ Please wait...")
+
+        val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(serverUrls)
+
+        if (reachableUrl == null) {
+            addPairingLog("")
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            addPairingLog("❌ CONNECTION FAILED")
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            addPairingLog("")
+            addPairingLog("📱 Your device:")
+            addPairingLog("  IP: ${clientIp ?: "unknown"}")
+            addPairingLog("")
+            addPairingLog("🖥️ Tested servers:")
+            serverUrls.forEach { addPairingLog("  ✗ $it (no response)") }
+            addPairingLog("")
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            addPairingLog("💡 Troubleshooting:")
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            addPairingLog("  1. Same WiFi network?")
+            addPairingLog("  2. Server running?")
+            addPairingLog("  3. Firewall blocking?")
+            addPairingLog("  4. Check server logs")
+            throw Exception("No server reachable")
+        }
+
+        addPairingLog("")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("✅ SERVER FOUND!")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("")
+        addPairingLog("📱 Your device: ${clientIp ?: "unknown"}")
+        addPairingLog("🖥️ Server: $reachableUrl")
+        addPairingLog("")
+        addPairingLog("Saving configuration...")
+
+        // Save server URLs to settings
+        SettingsManager.saveServerUrl(reachableUrl)
+        if (globalServerUrl.isNotEmpty()) {
+            SettingsManager.saveGlobalServerUrl(globalServerUrl)
+        }
+        addLog("Server URLs saved to settings")
+
+        // STAGE: Perform cryptographic registration
+        addPairingLog("")
+        addPairingLog("🔐 STAGE 4: Secure registration")
+        addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+        addPairingLog("Initializing crypto...")
+
+        // Initialize CryptoManager
+        com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
+        addPairingLog("✓ Crypto initialized")
+
+        // Generate or retrieve key pair
+        val keyPair = com.xelth.eckwms_movfast.utils.CryptoManager.getOrCreateKeyPair()
+        val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
+        addPairingLog("✓ Key pair ready")
+        addPairingLog("  Length: ${publicKeyBase64.length} chars")
+
+        // Create signature data: deviceId + timestamp
+        val timestamp = System.currentTimeMillis()
+        val deviceId = android.provider.Settings.Secure.getString(
+            getApplication<Application>().contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID
+        ) ?: "unknown-android-id"
+
+        val signatureData = "$deviceId:$timestamp"
+        val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
+        val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
+        addPairingLog("✓ Signature created")
+
+        addPairingLog("")
+        addPairingLog("📤 Sending credentials...")
+        addPairingLog("URL: $reachableUrl")
+        addPairingLog("API: /api/device/register")
+        addPairingLog("Device ID: ${deviceId.take(8)}...")
+        addPairingLog("")
+        addPairingLog("⏳ Waiting for server response...")
+
+        // Register device with server
+        val result = scanApiService.registerDevice(
+            publicKeyBase64 = publicKeyBase64,
+            signature = signatureBase64,
+            timestamp = timestamp
+        )
+
+        when (result) {
+            is ScanResult.Success -> {
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("✅ PAIRING SUCCESSFUL!")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("")
+                addPairingLog("Your device is now paired!")
+                addPairingLog("")
+                addPairingLog("📱 Device ID:")
+                addPairingLog("  ${deviceId.take(16)}...")
+                addPairingLog("")
+                addPairingLog("🖥️ Server:")
+                addPairingLog("  $reachableUrl")
+                addPairingLog("")
+                addPairingLog("🔐 API Endpoint:")
+                addPairingLog("  /api/device/register")
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("✅ Ready to use!")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                _errorMessage.postValue("✅ Device successfully paired")
+            }
+            is ScanResult.Error -> {
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("❌ REGISTRATION FAILED")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("")
+                addPairingLog("Server responded with error:")
+                addPairingLog("")
+                addPairingLog("🖥️ Server: $reachableUrl")
+                addPairingLog("📍 API: /api/device/register")
+                addPairingLog("❌ Error: ${result.message}")
+                addPairingLog("")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                addPairingLog("💡 The server is reachable")
+                addPairingLog("   but rejected registration.")
+                addPairingLog("   Check server logs for details.")
+                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                _errorMessage.postValue("❌ Registration failed: ${result.message}")
             }
         }
     }

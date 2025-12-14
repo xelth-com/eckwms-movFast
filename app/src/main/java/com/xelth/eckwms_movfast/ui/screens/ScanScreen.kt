@@ -52,7 +52,12 @@ fun ScanScreen(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
                     actionIconContentColor = MaterialTheme.colorScheme.onPrimary
-                )
+                ),
+                actions = {
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                }
             )
         }
     ) { paddingValues ->
@@ -78,6 +83,14 @@ fun ScanScreen(
 
             ActiveOrderCard(viewModel = viewModel)
             ScanningStatusCard(viewModel = viewModel, navController = navController)
+            Button(
+                onClick = { navController.navigate("restockScreen") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusable(false)
+            ) {
+                Text("Start Manual Restock Order")
+            }
             WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
             ScanHistorySection(viewModel = viewModel)
         }

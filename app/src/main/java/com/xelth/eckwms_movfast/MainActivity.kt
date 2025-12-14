@@ -15,6 +15,7 @@ import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
+import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
@@ -158,6 +159,10 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             navController = navController
                         )
+                    }
+
+                    composable("restockScreen") {
+                        RestockScreen(navController = navController)
                     }
                 }
             }
