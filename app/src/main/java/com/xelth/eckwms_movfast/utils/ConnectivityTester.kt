@@ -11,7 +11,7 @@ import java.net.URL
 
 object ConnectivityTester {
     private const val TAG = "ConnectivityTester"
-    private const val TIMEOUT_MS = 2000L // 2 seconds timeout for each health check
+    private const val TIMEOUT_MS = 30000L // 30 seconds timeout
 
     suspend fun findReachableUrl(urls: List<String>): String? = withContext(Dispatchers.IO) {
         if (urls.isEmpty()) {
@@ -19,47 +19,84 @@ object ConnectivityTester {
             return@withContext null
         }
 
-        Log.d(TAG, "Testing connectivity for URLs: $urls")
+        Log.d(TAG, "========================================")
+        Log.d(TAG, "Testing connectivity for ${urls.size} URLs")
+        Log.d(TAG, "Timeout: ${TIMEOUT_MS}ms (30 seconds)")
+        Log.d(TAG, "========================================")
+        urls.forEachIndexed { index, url ->
+            Log.d(TAG, "[${index + 1}/${urls.size}] $url")
+        }
+        Log.d(TAG, "========================================")
 
-        val deferredResults = urls.map {
+        // Create async tasks for all URLs
+        val deferreds = urls.map { url ->
             async {
-                withTimeoutOrNull(TIMEOUT_MS) {
-                    try {
-                        val url = URL("$it/health")
-                        val connection = url.openConnection() as HttpURLConnection
-                        connection.requestMethod = "GET"
-                        connection.connectTimeout = TIMEOUT_MS.toInt()
-                        connection.readTimeout = TIMEOUT_MS.toInt()
+                checkUrl(url)
+            }
+        }
 
-                        val responseCode = connection.responseCode
-                        connection.disconnect()
+        try {
+            // Wait for ALL tasks to complete and collect results
+            val results = deferreds.awaitAll()
 
-                        if (responseCode == HttpURLConnection.HTTP_OK) {
-                            Log.i(TAG, "Successfully connected to $it")
-                            it // Return the successful URL
-                        } else {
-                            Log.w(TAG, "Failed to connect to $it, status code: $responseCode")
-                            null
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Exception while testing $it: ${e.message}")
-                        null
-                    }
+            // Find the first non-null result
+            val winner = results.firstOrNull { it != null }
+
+            if (winner != null) {
+                Log.i(TAG, "========================================")
+                Log.i(TAG, "✅ SUCCESS: First reachable server found")
+                Log.i(TAG, "URL: $winner")
+                Log.i(TAG, "========================================")
+                return@withContext winner
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during parallel checks: ${e.message}", e)
+        }
+
+        Log.e(TAG, "========================================")
+        Log.e(TAG, "❌ NO REACHABLE SERVER FOUND")
+        Log.e(TAG, "All ${urls.size} URLs failed to respond")
+        Log.e(TAG, "========================================")
+        return@withContext null
+    }
+
+    private suspend fun checkUrl(urlStr: String): String? {
+        val start = System.currentTimeMillis()
+        return try {
+            withTimeoutOrNull(TIMEOUT_MS) {
+                Log.d(TAG, "🔍 Testing: $urlStr/health")
+
+                val url = URL("$urlStr/health")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = TIMEOUT_MS.toInt()
+                connection.readTimeout = TIMEOUT_MS.toInt()
+                connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("User-Agent", "eckWMS-Android/1.0")
+                // Prevent redirects to speed up failure on captive portals
+                connection.instanceFollowRedirects = false
+
+                val responseCode = connection.responseCode
+                val timeTaken = System.currentTimeMillis() - start
+                connection.disconnect()
+
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    Log.i(TAG, "✅ SUCCESS: $urlStr (${timeTaken}ms, HTTP $responseCode)")
+                    urlStr
+                } else {
+                    Log.w(TAG, "❌ FAILED: $urlStr (${timeTaken}ms, HTTP $responseCode)")
+                    null
                 }
+            } ?: run {
+                // Timeout occurred
+                val timeTaken = System.currentTimeMillis() - start
+                Log.w(TAG, "⏱️ TIMEOUT: $urlStr (${timeTaken}ms)")
+                null
             }
+        } catch (e: Exception) {
+            val timeTaken = System.currentTimeMillis() - start
+            Log.w(TAG, "❌ ERROR: $urlStr (${timeTaken}ms) - ${e.javaClass.simpleName}: ${e.message}")
+            null
         }
-
-        // This will await all checks, but we can iterate to find the first success
-        for (deferred in deferredResults) {
-            val result = deferred.await()
-            if (result != null) {
-                // Found a reachable URL, cancel others and return it
-                deferredResults.forEach { if (!it.isCompleted) it.cancel() }
-                return@withContext result
-            }
-        }
-
-        Log.e(TAG, "No reachable URL found in the provided list.")
-        return@withContext null // No URL was reachable
     }
 }

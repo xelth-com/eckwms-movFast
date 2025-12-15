@@ -235,7 +235,7 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
-            val url = URL("$serverUrl/API/DEVICE/REGISTER")
+            val url = URL("$serverUrl/ECK/API/DEVICE/REGISTER")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
