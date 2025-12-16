@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -29,7 +30,16 @@ private const val TAG = "PairingScreen"
 fun PairingScreen(viewModel: ScanRecoveryViewModel, navController: NavController) {
     val pairingLog by viewModel.pairingLog.observeAsState(emptyList())
     val isPairing by viewModel.isPairing.observeAsState(false)
+    val pairingSuccess by viewModel.pairingSuccess.observeAsState(false)
     val listState = rememberLazyListState()
+
+    // Track screen visibility for ViewModel
+    DisposableEffect(Unit) {
+        viewModel.setPairingScreenActive(true)
+        onDispose {
+            viewModel.setPairingScreenActive(false)
+        }
+    }
 
     // Auto-scroll to bottom when new logs appear
     LaunchedEffect(pairingLog.size) {
@@ -113,23 +123,45 @@ fun PairingScreen(viewModel: ScanRecoveryViewModel, navController: NavController
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Button(
-                    onClick = {
-                        viewModel.clearPairingLog()
-                        navController.navigate("cameraScanScreen?scan_mode=pairing")
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isPairing
-                ) {
-                    Text(if (isPairing) "Pairing in progress..." else "Scan Pairing QR Code")
-                }
+                if (pairingSuccess) {
+                    // Success State: "Start Scanning" is primary
+                    Button(
+                        onClick = { navController.popBackStack() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF51CF66)) // Green for success
+                    ) {
+                        Text("Start Scanning")
+                    }
 
-                OutlinedButton(
-                    onClick = { navController.popBackStack() },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isPairing
-                ) {
-                    Text("Cancel")
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.clearPairingLog()
+                            navController.navigate("cameraScanScreen?scan_mode=pairing")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pair Again")
+                    }
+                } else {
+                    // Default State
+                    Button(
+                        onClick = {
+                            viewModel.clearPairingLog()
+                            navController.navigate("cameraScanScreen?scan_mode=pairing")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isPairing
+                    ) {
+                        Text(if (isPairing) "Pairing in progress..." else "Scan Pairing QR Code")
+                    }
+
+                    OutlinedButton(
+                        onClick = { navController.popBackStack() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isPairing
+                    ) {
+                        Text("Cancel")
+                    }
                 }
             }
         }

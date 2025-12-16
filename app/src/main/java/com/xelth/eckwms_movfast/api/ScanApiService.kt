@@ -54,7 +54,7 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            val url = URL("$baseUrl/API/SCAN")
+            val url = URL("$baseUrl/ECK/API/SCAN")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -136,7 +136,7 @@ class ScanApiService(private val context: Context) {
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-        val url = URL("$baseUrl/API/UPLOAD/IMAGE")
+        val url = URL("$baseUrl/ECK/API/UPLOAD/IMAGE")
         val connection = url.openConnection() as HttpURLConnection
         val outputStream: java.io.OutputStream
         val writer: java.io.PrintWriter
@@ -244,7 +244,7 @@ class ScanApiService(private val context: Context) {
 
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("publicKey", publicKeyBase64)
+                put("devicePublicKey", publicKeyBase64)
                 put("signature", signature)
                 put("timestamp", timestamp)
             }

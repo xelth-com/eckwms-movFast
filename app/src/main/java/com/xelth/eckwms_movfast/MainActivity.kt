@@ -8,6 +8,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -34,6 +36,34 @@ class MainActivity : ComponentActivity() {
         setContent {
             EckwmsmovFastTheme {
                 val navController = rememberNavController()
+
+                // Global navigation command observer - works on all screens
+                val navCommand by viewModel.navigationCommand.observeAsState(com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.NONE)
+                LaunchedEffect(navCommand) {
+                    android.util.Log.e("AUTO_PAIR", "=== GLOBAL LaunchedEffect triggered ===")
+                    android.util.Log.e("AUTO_PAIR", "navCommand: $navCommand")
+                    when (navCommand) {
+                        com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.TO_PAIRING -> {
+                            android.util.Log.e("AUTO_PAIR", "Executing TO_PAIRING - navigating to pairingScreen")
+                            navController.navigate("pairingScreen")
+                            android.util.Log.e("AUTO_PAIR", "Navigation to pairingScreen completed")
+                            viewModel.resetNavigationCommand()
+                            android.util.Log.e("AUTO_PAIR", "Navigation command reset")
+                        }
+                        com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.BACK -> {
+                            android.util.Log.e("AUTO_PAIR", "Executing BACK - calling popBackStack()")
+                            android.util.Log.e("AUTO_PAIR", "Current backstack: ${navController.currentBackStackEntry?.destination?.route}")
+                            val result = navController.popBackStack()
+                            android.util.Log.e("AUTO_PAIR", "popBackStack result: $result")
+                            android.util.Log.e("AUTO_PAIR", "New destination: ${navController.currentBackStackEntry?.destination?.route}")
+                            viewModel.resetNavigationCommand()
+                            android.util.Log.e("AUTO_PAIR", "Navigation command reset")
+                        }
+                        else -> {
+                            android.util.Log.e("AUTO_PAIR", "Command is NONE - no action")
+                        }
+                    }
+                }
 
                 NavHost(
                     navController = navController,

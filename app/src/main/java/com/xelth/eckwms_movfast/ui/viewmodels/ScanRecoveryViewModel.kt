@@ -30,6 +30,8 @@ import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 
+enum class NavigationCommand { NONE, TO_PAIRING, BACK }
+
 enum class ScanState {
     IDLE, // Waiting for user action
     HW_SCANNING, // Hardware scanner is active
@@ -97,6 +99,31 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val _isPairing = MutableLiveData<Boolean>(false)
     val isPairing: LiveData<Boolean> = _isPairing
+
+    private val _pairingSuccess = MutableLiveData<Boolean>(false)
+    val pairingSuccess: LiveData<Boolean> = _pairingSuccess
+
+    private val _navigationCommand = MutableLiveData(NavigationCommand.NONE)
+    val navigationCommand: LiveData<NavigationCommand> = _navigationCommand
+
+    var isAutoPairing = false
+    var isOnPairingScreen = false
+
+    fun setPairingScreenActive(active: Boolean) {
+        android.util.Log.e("AUTO_PAIR", "=== setPairingScreenActive called ===")
+        android.util.Log.e("AUTO_PAIR", "active: $active, was: $isOnPairingScreen")
+        android.util.Log.e("AUTO_PAIR", "isAutoPairing before: $isAutoPairing")
+        isOnPairingScreen = active
+        if (!active) {
+            android.util.Log.e("AUTO_PAIR", "Leaving PairingScreen - resetting isAutoPairing")
+            isAutoPairing = false // Reset auto mode when leaving
+        }
+        android.util.Log.e("AUTO_PAIR", "isAutoPairing after: $isAutoPairing")
+    }
+
+    fun resetNavigationCommand() {
+        _navigationCommand.value = NavigationCommand.NONE
+    }
     // --- END DEBUG ---
 
     // --- WORKFLOW ENGINE ---
@@ -584,6 +611,29 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      * @return true if the barcode was handled as a special command (e.g., order ID), false otherwise
      */
     fun handleGeneralScanResult(barcode: String, type: String): Boolean {
+        // 1. Check for ECK Pairing Protocol (Auto-Pairing Trigger)
+        if (barcode.startsWith("ECK")) {
+            android.util.Log.e("AUTO_PAIR", "=== ECK CODE DETECTED ===")
+            android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
+            addLog("⚡ ECK Pairing Code detected via global scan")
+
+            if (!isOnPairingScreen) {
+                android.util.Log.e("AUTO_PAIR", "Starting AUTO-PAIRING mode")
+                addLog("🚀 Auto-Pairing triggered! Navigating to console...")
+                isAutoPairing = true
+                android.util.Log.e("AUTO_PAIR", "isAutoPairing set to: $isAutoPairing")
+                _navigationCommand.postValue(NavigationCommand.TO_PAIRING)
+                android.util.Log.e("AUTO_PAIR", "Navigation command TO_PAIRING sent")
+            } else {
+                android.util.Log.e("AUTO_PAIR", "Already on PairingScreen - MANUAL mode")
+                addLog("ℹ️ Already on Pairing Screen - treating as manual scan")
+                isAutoPairing = false
+            }
+
+            handlePairingQrCode(barcode)
+            return true // Handled special command
+        }
+
         // Check if the scanned barcode is an Order ID to activate the session
         if (barcode.startsWith("CS-DE-") && barcode.length > 10) {
             _activeOrderId.postValue(barcode)
@@ -738,6 +788,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      * Clear the pairing log
      */
     fun clearPairingLog() {
+        _pairingSuccess.postValue(false)
         _pairingLog.postValue(listOf("📱 Ready to scan pairing QR code"))
     }
 
@@ -1054,7 +1105,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             android.provider.Settings.Secure.ANDROID_ID
         ) ?: "unknown-android-id"
 
-        val signatureData = "$deviceId:$timestamp"
+        val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
         val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
         val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
         addPairingLog("✅ Signature created")
@@ -1100,6 +1151,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
                 _pairingStatus.postValue("✅ Success! Device paired with server.")
                 _errorMessage.postValue("✅ Device successfully paired using ECK-P1-ALPHA")
+                handlePairingSuccess()
             }
             is ScanResult.Error -> {
                 addPairingLog("")
@@ -1210,7 +1262,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                             android.provider.Settings.Secure.ANDROID_ID
                         ) ?: "unknown-android-id"
 
-                        val signatureData = "$deviceId:$timestamp"
+                        val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
                         val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
                         val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
                         addLog("Signature created (Base64): ${signatureBase64.take(32)}...")
@@ -1227,6 +1279,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                                 addLog("✓ Device pairing successful!")
                                 _pairingStatus.postValue("✓ Success! Device paired with server.")
                                 _errorMessage.postValue("Device successfully paired with eckWMS server.")
+                                handlePairingSuccess()
                             }
                             is ScanResult.Error -> {
                                 addLog("✗ Device registration failed: ${result.message}")
@@ -1334,7 +1387,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             android.provider.Settings.Secure.ANDROID_ID
         ) ?: "unknown-android-id"
 
-        val signatureData = "$deviceId:$timestamp"
+        val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
         val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
         val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
         addPairingLog("✓ Signature created")
@@ -1376,6 +1429,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 addPairingLog("✅ Ready to use!")
                 addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
                 _errorMessage.postValue("✅ Device successfully paired")
+                handlePairingSuccess()
             }
             is ScanResult.Error -> {
                 addPairingLog("")
@@ -1408,6 +1462,29 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         // Удаляем тот же самый observer, который был добавлен в init
         // scannerManager.scanResult.removeObserver(scanResultObserver)
         // reset()
+    }
+
+    private fun handlePairingSuccess() {
+        android.util.Log.e("AUTO_PAIR", "=== handlePairingSuccess called ===")
+        android.util.Log.e("AUTO_PAIR", "isAutoPairing: $isAutoPairing")
+        android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
+        _pairingSuccess.postValue(true)
+        if (isAutoPairing) {
+            android.util.Log.e("AUTO_PAIR", "AUTO mode detected - scheduling return in 2s")
+            addLog("✨ Auto-Pairing successful! Returning in 2s...")
+            viewModelScope.launch {
+                android.util.Log.e("AUTO_PAIR", "Starting 2 second delay...")
+                delay(2000)
+                android.util.Log.e("AUTO_PAIR", "Delay complete - checking state before BACK")
+                android.util.Log.e("AUTO_PAIR", "isAutoPairing still: $isAutoPairing")
+                android.util.Log.e("AUTO_PAIR", "Sending NavigationCommand.BACK")
+                _navigationCommand.postValue(NavigationCommand.BACK)
+                isAutoPairing = false
+                android.util.Log.e("AUTO_PAIR", "isAutoPairing reset to false")
+            }
+        } else {
+            android.util.Log.e("AUTO_PAIR", "MANUAL mode - no auto-return")
+        }
     }
 
     companion object {

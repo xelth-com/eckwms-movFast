@@ -64,9 +64,10 @@ object ConnectivityTester {
         val start = System.currentTimeMillis()
         return try {
             withTimeoutOrNull(TIMEOUT_MS) {
-                Log.d(TAG, "🔍 Testing: $urlStr/health")
+                val healthPath = if (urlStr.contains("PROXY", ignoreCase = true)) "/HEALTH" else "/health"
+                Log.d(TAG, "🔍 Testing: $urlStr$healthPath")
 
-                val url = URL("$urlStr/health")
+                val url = URL("$urlStr$healthPath")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = TIMEOUT_MS.toInt()
