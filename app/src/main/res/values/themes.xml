@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.EckwmsmovFast" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.EckwmsmovFast" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Custom splash screen with black background and gray logo -->
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <!-- Disable default window content transitions for instant display -->
+        <item name="android:windowDisablePreview">false</item>
+    </style>
 </resources>
