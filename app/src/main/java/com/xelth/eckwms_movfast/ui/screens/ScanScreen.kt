@@ -44,6 +44,12 @@ fun ScanScreen(
 ) {
     val scrollState = rememberScrollState()
 
+    // Trigger ViewModel initialization AFTER first composition
+    // This prevents white screen by rendering UI first
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        viewModel.onViewModelReady()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -222,6 +228,7 @@ fun ScanningStatusCard(
 ) {
     val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
     val errorMessage by viewModel.errorMessage.observeAsState()
+    val networkHealthState by viewModel.networkHealthState.observeAsState(com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -245,6 +252,51 @@ fun ScanningStatusCard(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
+
+            // Network Health Status Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = networkHealthState.color.copy(alpha = 0.2f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .clickable { viewModel.triggerManualHealthCheck() },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = networkHealthState.icon,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text(
+                                text = networkHealthState.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = networkHealthState.color
+                            )
+                        }
+                        Text(
+                            text = networkHealthState.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = networkHealthState.color
+                        )
+                    }
+                }
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Status: ${scanState.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 if (scanState == ScanState.HW_SCANNING) {

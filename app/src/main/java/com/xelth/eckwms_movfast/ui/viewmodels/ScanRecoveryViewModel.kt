@@ -21,11 +21,14 @@ import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
+import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import com.xelth.eckwms_movfast.utils.SettingsManager
+import com.xelth.eckwms_movfast.utils.NetworkHealthMonitor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
@@ -106,6 +109,29 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _navigationCommand = MutableLiveData(NavigationCommand.NONE)
     val navigationCommand: LiveData<NavigationCommand> = _navigationCommand
 
+    // --- NETWORK HEALTH MONITORING ---
+    // Start with cached state for instant UI, will update after health check
+    private val _networkHealthState = MutableLiveData<NetworkHealthState>(getInitialHealthState())
+    val networkHealthState: LiveData<NetworkHealthState> = _networkHealthState
+
+    private var healthCheckJob: Job? = null
+    private val HEALTH_CHECK_INTERVAL_MS = 30000L // 30 seconds
+
+    /**
+     * Gets the initial health state from cache for instant UI display
+     */
+    private fun getInitialHealthState(): NetworkHealthState {
+        val lastState = SettingsManager.getLastHealthState()
+        return when (lastState) {
+            "Direct Local" -> NetworkHealthState.DirectLocal
+            "Proxy Global" -> NetworkHealthState.ProxyGlobal
+            "Local Only" -> NetworkHealthState.LocalOnlyNoInternet
+            "Global Only" -> NetworkHealthState.GlobalOnlyCacheMode
+            "Offline" -> NetworkHealthState.Offline
+            else -> NetworkHealthState.Checking
+        }
+    }
+
     var isAutoPairing = false
     var isOnPairingScreen = false
 
@@ -180,13 +206,34 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    private var isInitialized = false
+
     init {
         addLog("ViewModel Initialized.")
         scannerManager.scanResult.observeForever(scanResultObserver)
 
+        // DO NOT load data here - let the UI trigger it with onViewModelReady()
+        // This allows the UI to render first, preventing white screen
+    }
+
+    /**
+     * Called by the UI after first composition to trigger data loading
+     * This ensures UI renders before any heavy operations
+     */
+    fun onViewModelReady() {
+        if (isInitialized) return
+        isInitialized = true
+
+        addLog("UI ready - starting background initialization...")
+
         // Load scan history from local database
         viewModelScope.launch {
             loadScanHistory()
+        }
+
+        // Initialize network health monitoring
+        viewModelScope.launch {
+            initializeNetworkHealthMonitoring()
         }
     }
 
@@ -197,6 +244,114 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         Log.d(TAG, message)
         val currentLog = _debugLog.value ?: emptyList()
         _debugLog.postValue(currentLog + message)
+    }
+
+    // --- NETWORK HEALTH MONITORING METHODS ---
+
+    /**
+     * Initializes network health monitoring
+     * Loads saved server URLs and starts periodic health checks
+     * Uses smart recovery to restore connection from history if needed
+     */
+    private fun initializeNetworkHealthMonitoring() {
+        addLog("Initializing network health monitoring...")
+
+        // Load saved server URLs (already done by SettingsManager)
+        val localUrl = SettingsManager.getServerUrl()
+        val globalUrl = SettingsManager.getGlobalServerUrl()
+        addLog("Loaded server URLs - Local: $localUrl, Global: $globalUrl")
+
+        // Check if we have previously saved health state
+        val lastHealthState = SettingsManager.getLastHealthState()
+        if (lastHealthState != null) {
+            addLog("Last known health state: $lastHealthState")
+        }
+
+        // Check connection history
+        val history = SettingsManager.getConnectionHistory()
+        if (history.isNotEmpty()) {
+            addLog("Connection history available: ${history.size} URLs")
+        }
+
+        // Perform initial smart recovery immediately
+        viewModelScope.launch {
+            performSmartRecovery()
+        }
+
+        // Start periodic health check polling
+        startHealthCheckPolling()
+    }
+
+    /**
+     * Performs a network health check on both local and global servers
+     */
+    private suspend fun performHealthCheck() {
+        addLog("Performing network health check...")
+        _networkHealthState.postValue(NetworkHealthState.Checking)
+
+        val localUrl = SettingsManager.getServerUrl()
+        val globalUrl = SettingsManager.getGlobalServerUrl()
+
+        // Perform health check using NetworkHealthMonitor
+        val healthState = NetworkHealthMonitor.checkNetworkHealth(localUrl, globalUrl)
+
+        // Update state
+        _networkHealthState.postValue(healthState)
+        addLog("Network health: ${healthState.displayName} - ${healthState.description}")
+    }
+
+    /**
+     * Starts the periodic health check polling job
+     */
+    private fun startHealthCheckPolling() {
+        // Cancel any existing job
+        healthCheckJob?.cancel()
+
+        addLog("Starting health check polling (every ${HEALTH_CHECK_INTERVAL_MS / 1000}s)")
+
+        healthCheckJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(HEALTH_CHECK_INTERVAL_MS)
+                performHealthCheck()
+            }
+        }
+    }
+
+    /**
+     * Stops the periodic health check polling
+     */
+    fun stopHealthCheckPolling() {
+        addLog("Stopping health check polling")
+        healthCheckJob?.cancel()
+        healthCheckJob = null
+    }
+
+    /**
+     * Manually triggers a health check (can be called from UI)
+     */
+    fun triggerManualHealthCheck() {
+        addLog("Manual health check triggered")
+        viewModelScope.launch {
+            performHealthCheck()
+        }
+    }
+
+    /**
+     * Performs smart recovery: tries current config, then falls back to history
+     * This is called on app startup to restore connection
+     */
+    private suspend fun performSmartRecovery() {
+        addLog("Starting smart connection recovery...")
+
+        val healthState = NetworkHealthMonitor.performSmartRecovery { state ->
+            // Update UI with intermediate states (Checking, Restoring)
+            _networkHealthState.postValue(state)
+            addLog("Recovery state: ${state.displayName}")
+        }
+
+        // Update final state
+        _networkHealthState.postValue(healthState)
+        addLog("Smart recovery complete: ${healthState.displayName} - ${healthState.description}")
     }
 
     // Loop scan removed - hardware scanner works automatically with physical button
