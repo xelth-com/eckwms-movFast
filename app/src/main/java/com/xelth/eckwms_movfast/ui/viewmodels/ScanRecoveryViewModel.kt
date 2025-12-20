@@ -1054,16 +1054,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         // Split the QR data by delimiter
         val parts = qrData.split("$")
 
-        // Validate format: ECK$1$UUID_COMPACT$HEX_KEY or ECK$1$UUID_COMPACT$HEX_KEY$URL
-        if (parts.size < 4 || parts.size > 5) {
-            throw Exception("Invalid ECK protocol format. Expected 4-5 parts, got ${parts.size}")
+        // Validate format: ECK$1$UUID_COMPACT$HEX_KEY or ECK$1$UUID_COMPACT$HEX_KEY$URL or ECK$1$UUID_COMPACT$HEX_KEY$URL$TOKEN
+        if (parts.size < 4 || parts.size > 6) {
+            throw Exception("Invalid ECK protocol format. Expected 4-6 parts, got ${parts.size}")
         }
 
         val protocol = parts[0]
         val version = parts[1]
         val instanceIdCompact = parts[2]
         val serverPublicKeyHex = parts[3]
-        val globalUrlFromQr = if (parts.size == 5) parts[4] else null
+        val globalUrlFromQr = if (parts.size >= 5) parts[4] else null
+        val inviteToken = if (parts.size == 6) parts[5] else null
 
         // Validate protocol identifier
         if (protocol != "ECK") {
@@ -1124,6 +1125,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addPairingLog("   Dynamic URL: ✓ (embedded)")
         } else {
             addPairingLog("   Dynamic URL: ✗ (using default)")
+        }
+
+        if (inviteToken != null) {
+            addPairingLog("   Invite Token: ✓ (found)")
+        } else {
+            addPairingLog("   Invite Token: ✗ (none)")
         }
 
         // Store server public key (keep uppercase for consistency)
@@ -1277,36 +1284,79 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val result = scanApiService.registerDevice(
             publicKeyBase64 = publicKeyBase64,
             signature = signatureBase64,
-            timestamp = timestamp
+            timestamp = timestamp,
+            inviteToken = inviteToken
         )
 
         when (result) {
             is ScanResult.Success -> {
-                addPairingLog("")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("✅ PAIRING SUCCESSFUL!")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("")
-                addPairingLog("Protocol: ECK-P1-ALPHA")
-                addPairingLog("Instance: $instanceId")
-                addPairingLog("")
-                addPairingLog("📱 Device ID:")
-                addPairingLog("   ${deviceId.take(16)}...")
-                addPairingLog("")
-                addPairingLog("🖥️ Server:")
-                addPairingLog("   $reachableUrl")
-                addPairingLog("")
-                addPairingLog("🔐 Cryptography:")
-                addPairingLog("   ✓ Ed25519 keys generated")
-                addPairingLog("   ✓ Server public key stored")
-                addPairingLog("   ✓ Device registered")
-                addPairingLog("")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("✅ Ready to scan!")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                _pairingStatus.postValue("✅ Success! Device paired with server.")
-                _errorMessage.postValue("✅ Device successfully paired using ECK-P1-ALPHA")
-                handlePairingSuccess()
+                try {
+                    val jsonResponse = JSONObject(result.data)
+                    val status = jsonResponse.optString("status", "active")
+                    SettingsManager.saveDeviceStatus(status)
+
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    if (status == "pending") {
+                        addPairingLog("⚠️ PAIRING REGISTERED!")
+                        addPairingLog("   (PENDING APPROVAL)")
+                    } else {
+                        addPairingLog("✅ PAIRING SUCCESSFUL!")
+                    }
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("")
+                    addPairingLog("Protocol: ECK-P1-ALPHA")
+                    addPairingLog("Instance: $instanceId")
+                    addPairingLog("")
+                    addPairingLog("📱 Device ID:")
+                    addPairingLog("   ${deviceId.take(16)}...")
+                    addPairingLog("")
+                    addPairingLog("🖥️ Server:")
+                    addPairingLog("   $reachableUrl")
+                    addPairingLog("")
+                    addPairingLog("🔐 Cryptography:")
+                    addPairingLog("   ✓ Ed25519 keys generated")
+                    addPairingLog("   ✓ Server public key stored")
+                    addPairingLog("   ✓ Device registered")
+                    addPairingLog("")
+                    addPairingLog("📊 Status: $status")
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    if (status == "pending") {
+                        addPairingLog("⚠️ Awaiting admin approval")
+                    } else {
+                        addPairingLog("✅ Ready to scan!")
+                    }
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+
+                    if (status == "pending") {
+                        _pairingStatus.postValue("⚠️ Registered, but PENDING APPROVAL from admin.")
+                        _errorMessage.postValue("⚠️ Device registered. Waiting for admin approval.")
+                    } else {
+                        _pairingStatus.postValue("✅ Success! Device paired with server.")
+                        _errorMessage.postValue("✅ Device successfully paired using ECK-P1-ALPHA")
+                    }
+                    handlePairingSuccess()
+                } catch (e: Exception) {
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("✅ PAIRING SUCCESSFUL!")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("")
+                    addPairingLog("Warning: Could not parse status from response")
+                    addPairingLog("Assuming device is active")
+                    addPairingLog("")
+                    addPairingLog("Protocol: ECK-P1-ALPHA")
+                    addPairingLog("Instance: $instanceId")
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("✅ Ready to scan!")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    SettingsManager.saveDeviceStatus("active")
+                    _pairingStatus.postValue("✅ Success! Device paired with server.")
+                    _errorMessage.postValue("✅ Device successfully paired using ECK-P1-ALPHA")
+                    handlePairingSuccess()
+                }
             }
             is ScanResult.Error -> {
                 addPairingLog("")
@@ -1431,10 +1481,27 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
                         when (result) {
                             is ScanResult.Success -> {
-                                addLog("✓ Device pairing successful!")
-                                _pairingStatus.postValue("✓ Success! Device paired with server.")
-                                _errorMessage.postValue("Device successfully paired with eckWMS server.")
-                                handlePairingSuccess()
+                                try {
+                                    val jsonResponse = JSONObject(result.data)
+                                    val status = jsonResponse.optString("status", "active")
+                                    SettingsManager.saveDeviceStatus(status)
+
+                                    addLog("✓ Device registered. Status: $status")
+
+                                    if (status == "pending") {
+                                        _pairingStatus.postValue("⚠️ Registered, but PENDING APPROVAL from admin.")
+                                        _errorMessage.postValue("Waiting for admin approval.")
+                                    } else {
+                                        _pairingStatus.postValue("✓ Success! Device active and paired.")
+                                        _errorMessage.postValue("Device successfully paired and active.")
+                                    }
+                                    handlePairingSuccess()
+                                } catch (e: Exception) {
+                                    addLog("Warning: Could not parse status from response, assuming active")
+                                    SettingsManager.saveDeviceStatus("active")
+                                    _pairingStatus.postValue("✓ Success! Device paired.")
+                                    handlePairingSuccess()
+                                }
                             }
                             is ScanResult.Error -> {
                                 addLog("✗ Device registration failed: ${result.message}")
@@ -1564,27 +1631,64 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         when (result) {
             is ScanResult.Success -> {
-                addPairingLog("")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("✅ PAIRING SUCCESSFUL!")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("")
-                addPairingLog("Your device is now paired!")
-                addPairingLog("")
-                addPairingLog("📱 Device ID:")
-                addPairingLog("  ${deviceId.take(16)}...")
-                addPairingLog("")
-                addPairingLog("🖥️ Server:")
-                addPairingLog("  $reachableUrl")
-                addPairingLog("")
-                addPairingLog("🔐 API Endpoint:")
-                addPairingLog("  /api/device/register")
-                addPairingLog("")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                addPairingLog("✅ Ready to use!")
-                addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
-                _errorMessage.postValue("✅ Device successfully paired")
-                handlePairingSuccess()
+                try {
+                    val jsonResponse = JSONObject(result.data)
+                    val status = jsonResponse.optString("status", "active")
+                    SettingsManager.saveDeviceStatus(status)
+
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    if (status == "pending") {
+                        addPairingLog("⚠️ PAIRING REGISTERED!")
+                        addPairingLog("   (PENDING APPROVAL)")
+                    } else {
+                        addPairingLog("✅ PAIRING SUCCESSFUL!")
+                    }
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("")
+                    addPairingLog("Your device is now paired!")
+                    addPairingLog("")
+                    addPairingLog("📱 Device ID:")
+                    addPairingLog("  ${deviceId.take(16)}...")
+                    addPairingLog("")
+                    addPairingLog("🖥️ Server:")
+                    addPairingLog("  $reachableUrl")
+                    addPairingLog("")
+                    addPairingLog("🔐 API Endpoint:")
+                    addPairingLog("  /api/device/register")
+                    addPairingLog("")
+                    addPairingLog("📊 Status: $status")
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    if (status == "pending") {
+                        addPairingLog("⚠️ Awaiting admin approval")
+                    } else {
+                        addPairingLog("✅ Ready to use!")
+                    }
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+
+                    if (status == "pending") {
+                        _errorMessage.postValue("⚠️ Device registered. Waiting for admin approval.")
+                    } else {
+                        _errorMessage.postValue("✅ Device successfully paired")
+                    }
+                    handlePairingSuccess()
+                } catch (e: Exception) {
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("✅ PAIRING SUCCESSFUL!")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("")
+                    addPairingLog("Warning: Could not parse status from response")
+                    addPairingLog("Assuming device is active")
+                    addPairingLog("")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    addPairingLog("✅ Ready to use!")
+                    addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+                    SettingsManager.saveDeviceStatus("active")
+                    _errorMessage.postValue("✅ Device successfully paired")
+                    handlePairingSuccess()
+                }
             }
             is ScanResult.Error -> {
                 addPairingLog("")

@@ -229,7 +229,8 @@ class ScanApiService(private val context: Context) {
     suspend fun registerDevice(
         publicKeyBase64: String,
         signature: String,
-        timestamp: Long
+        timestamp: Long,
+        inviteToken: String? = null
     ): ScanResult = withContext(Dispatchers.IO) {
         val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
         Log.d(TAG, "Registering device with server: $serverUrl")
@@ -247,6 +248,9 @@ class ScanApiService(private val context: Context) {
                 put("devicePublicKey", publicKeyBase64)
                 put("signature", signature)
                 put("timestamp", timestamp)
+                if (inviteToken != null) {
+                    put("inviteToken", inviteToken)
+                }
             }
 
             Log.d(TAG, "Sending registration request: $jsonRequest")

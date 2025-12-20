@@ -65,6 +65,10 @@ object SettingsManager {
     fun saveGlobalServerReachable(reachable: Boolean) = prefs.edit().putBoolean(KEY_GLOBAL_SERVER_REACHABLE, reachable).apply()
     fun isGlobalServerReachable(): Boolean = prefs.getBoolean(KEY_GLOBAL_SERVER_REACHABLE, false)
 
+    private const val KEY_DEVICE_STATUS = "device_status"
+    fun saveDeviceStatus(status: String) = prefs.edit().putString(KEY_DEVICE_STATUS, status).apply()
+    fun getDeviceStatus(): String = prefs.getString(KEY_DEVICE_STATUS, "unknown") ?: "unknown"
+
     // Connection history for smart recovery (circular buffer of last 5 successful URLs)
     private const val KEY_CONNECTION_HISTORY = "connection_history"
     private const val MAX_HISTORY_SIZE = 5
