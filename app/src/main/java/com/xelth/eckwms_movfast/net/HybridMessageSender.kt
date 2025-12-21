@@ -1,5 +1,6 @@
 package com.xelth.eckwms_movfast.net
 
+import android.content.Context
 import android.util.Log
 import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
@@ -18,9 +19,18 @@ object HybridMessageSender {
     private var webSocket: WebSocketClient? = null
     private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var deviceId: String = "unknown"
+    private var statusListener: ((String) -> Unit)? = null
 
-    fun init() {
+    fun init(context: Context) {
+        deviceId = SettingsManager.getDeviceId(context)
+        Log.d(TAG, "Initializing with deviceId: $deviceId")
         connectWebSocket()
+    }
+
+    fun setStatusListener(listener: (String) -> Unit) {
+        statusListener = listener
+        Log.d(TAG, "Status listener registered")
     }
 
     private fun connectWebSocket() {
@@ -32,6 +42,14 @@ object HybridMessageSender {
             webSocket = object : WebSocketClient(uri) {
                 override fun onOpen(handshakedata: ServerHandshake?) {
                     Log.i(TAG, "WS Connected")
+                    // --- HANDSHAKE: Identify Device ---
+                    val identityMsg = JSONObject().apply {
+                        put("type", "DEVICE_IDENTIFY")
+                        put("deviceId", deviceId)
+                        put("timestamp", System.currentTimeMillis())
+                    }
+                    send(identityMsg.toString())
+                    Log.d(TAG, "Sent DEVICE_IDENTIFY for $deviceId")
                 }
 
                 override fun onMessage(message: String?) {
@@ -56,12 +74,24 @@ object HybridMessageSender {
     private fun handleMessage(msg: String) {
         try {
             val json = JSONObject(msg)
+
+            // 1. Handle ACKs (Response to our scans)
             if (json.has("ack")) {
                 val msgId = json.getString("ack")
                 pendingAcks[msgId]?.complete(true)
                 pendingAcks.remove(msgId)
                 Log.d(TAG, "Received ACK for $msgId")
+                return
             }
+
+            // 2. Handle PUSH Commands from Server
+            val type = json.optString("type")
+            if (type == "STATUS_UPDATE") {
+                val newStatus = json.getString("status")
+                Log.i(TAG, "⚡ Received PUSH STATUS_UPDATE: $newStatus")
+                statusListener?.invoke(newStatus)
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing WS message", e)
         }

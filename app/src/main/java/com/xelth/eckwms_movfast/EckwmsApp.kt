@@ -35,7 +35,7 @@ class EckwmsApp : Application() {
         Log.d(TAG, "CryptoManager initialized")
 
         // Initialize HybridMessageSender for WebSocket+HTTP transport
-        HybridMessageSender.init()
+        HybridMessageSender.init(this)
         Log.d(TAG, "HybridMessageSender initialized")
 
         // Инициализация ScannerManager

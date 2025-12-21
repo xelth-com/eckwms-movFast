@@ -247,6 +247,15 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         viewModelScope.launch {
             initializeNetworkHealthMonitoring()
         }
+
+        // --- REAL-TIME LISTENER ---
+        // Hook up WebSocket push notifications for instant status updates
+        com.xelth.eckwms_movfast.net.HybridMessageSender.setStatusListener { newStatus ->
+            // Update LiveData on Main Thread
+            _deviceRegistrationStatus.postValue(newStatus)
+            SettingsManager.saveDeviceStatus(newStatus)
+            addLog("⚡ Push Notification: Status changed to $newStatus")
+        }
     }
 
     /**
