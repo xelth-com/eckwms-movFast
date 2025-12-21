@@ -117,6 +117,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private var healthCheckJob: Job? = null
     private val HEALTH_CHECK_INTERVAL_MS = 30000L // 30 seconds
 
+    // --- DEVICE REGISTRATION STATUS ---
+    private val _deviceRegistrationStatus = MutableLiveData<String>("unknown")
+    val deviceRegistrationStatus: LiveData<String> = _deviceRegistrationStatus
+
+    private var statusMonitoringJob: Job? = null
+    private val STATUS_CHECK_INTERVAL_MS = 30000L // 30 seconds
+
     /**
      * Gets the initial health state from cache for instant UI display
      */
@@ -226,6 +233,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         addLog("UI ready - starting background initialization...")
 
+        // Load device registration status
+        val deviceStatus = SettingsManager.getDeviceStatus()
+        _deviceRegistrationStatus.postValue(deviceStatus)
+        addLog("Device registration status: $deviceStatus")
+
         // Load scan history from local database
         viewModelScope.launch {
             loadScanHistory()
@@ -333,6 +345,74 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Manual health check triggered")
         viewModelScope.launch {
             performHealthCheck()
+        }
+    }
+
+    // --- DEVICE STATUS MONITORING (SMART POLLING) ---
+
+    /**
+     * Starts smart status monitoring - polls device status every 30 seconds
+     * Only runs when app is in foreground (called from onResume)
+     */
+    fun startStatusMonitoring() {
+        // Cancel any existing job first
+        statusMonitoringJob?.cancel()
+
+        addLog("Starting device status monitoring (every ${STATUS_CHECK_INTERVAL_MS / 1000}s)")
+
+        statusMonitoringJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(STATUS_CHECK_INTERVAL_MS)
+                checkDeviceStatus()
+            }
+        }
+    }
+
+    /**
+     * Stops device status monitoring
+     * Called from onPause to save battery and network
+     */
+    fun stopStatusMonitoring() {
+        addLog("Stopping device status monitoring")
+        statusMonitoringJob?.cancel()
+        statusMonitoringJob = null
+    }
+
+    /**
+     * Checks device status with the server and updates LiveData
+     */
+    private suspend fun checkDeviceStatus() {
+        val deviceId = android.provider.Settings.Secure.getString(
+            getApplication<Application>().contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID
+        ) ?: "unknown-android-id"
+
+        val result = scanApiService.checkDeviceStatus(deviceId)
+
+        when (result) {
+            is ScanResult.Success -> {
+                try {
+                    val jsonResponse = JSONObject(result.data)
+                    val status = jsonResponse.optString("status", "unknown")
+
+                    // Only update if status changed
+                    if (_deviceRegistrationStatus.value != status) {
+                        _deviceRegistrationStatus.postValue(status)
+                        SettingsManager.saveDeviceStatus(status)
+                        addLog("Device status updated: $status")
+                    }
+                } catch (e: Exception) {
+                    addLog("Warning: Could not parse status from server response")
+                }
+            }
+            is ScanResult.Error -> {
+                if (result.message.contains("blocked", ignoreCase = true)) {
+                    // Server returned 403 Forbidden - device is blocked
+                    _deviceRegistrationStatus.postValue("blocked")
+                    SettingsManager.saveDeviceStatus("blocked")
+                    addLog("⚠️ Device status: BLOCKED by server")
+                }
+            }
         }
     }
 
@@ -709,28 +789,78 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      * The repository will save locally and queue for background sync
      */
     fun sendScanToServer(barcode: String, barcodeType: String) {
+        // Check device registration status before allowing scans
+        val currentStatus = SettingsManager.getDeviceStatus()
+        if (currentStatus == "pending") {
+            addLog("⚠️ Scan blocked: Device is pending approval")
+            _errorMessage.postValue("❌ Device is pending admin approval. Cannot scan until activated.")
+            return
+        }
+
+        if (currentStatus == "unknown") {
+            addLog("⚠️ Warning: Device registration status is unknown")
+            // Allow scan but log warning
+        }
+
         addLog("Saving scan for sync: $barcode")
 
-        // Create a new scan history item with PENDING status
-        val scanItem = ScanHistoryItem(
-            barcode = barcode,
-            timestamp = System.currentTimeMillis(),
-            status = ScanStatus.PENDING,
-            type = barcodeType
-        )
-
-        // Save to repository (offline-first)
+        // Save to repository (offline-first) AND send immediately via hybrid transport
         viewModelScope.launch {
             try {
-                // Repository will save locally and add to sync queue
-                val scanId = repository.saveAndSyncScan(scanItem, _activeOrderId.value)
-                addLog("Scan saved locally with ID: $scanId, queued for sync")
+                // 1. Immediate delivery via HybridMessageSender (WebSocket + HTTP hedge)
+                addLog("Sending scan via hybrid transport (WS+HTTP): $barcode")
+                val hybridResult = com.xelth.eckwms_movfast.net.HybridMessageSender.sendScan(
+                    scanApiService,
+                    barcode,
+                    barcodeType
+                )
+
+                when (hybridResult) {
+                    is ScanResult.Success -> {
+                        addLog("✓ Scan delivered successfully via hybrid transport")
+                        // Create scan item with CONFIRMED status since it was delivered
+                        val scanItem = ScanHistoryItem(
+                            barcode = barcode,
+                            timestamp = System.currentTimeMillis(),
+                            status = ScanStatus.CONFIRMED,
+                            type = barcodeType
+                        )
+                        // Save to local database for history
+                        repository.saveAndSyncScan(scanItem, _activeOrderId.value)
+                    }
+                    is ScanResult.Error -> {
+                        addLog("⚠️ Hybrid delivery failed: ${hybridResult.message}, saving for retry")
+                        // Create scan item with PENDING status for background sync retry
+                        val scanItem = ScanHistoryItem(
+                            barcode = barcode,
+                            timestamp = System.currentTimeMillis(),
+                            status = ScanStatus.PENDING,
+                            type = barcodeType
+                        )
+                        // Repository will retry in background
+                        repository.saveAndSyncScan(scanItem, _activeOrderId.value)
+                    }
+                }
 
                 // Update UI with scan from database
                 loadScanHistory()
             } catch (e: Exception) {
-                addLog("Error saving scan: ${e.message}")
-                _errorMessage.postValue("Failed to save scan: ${e.message}")
+                addLog("Error in hybrid send: ${e.message}")
+                _errorMessage.postValue("Failed to send scan: ${e.message}")
+
+                // Fallback: save with PENDING status for background retry
+                try {
+                    val scanItem = ScanHistoryItem(
+                        barcode = barcode,
+                        timestamp = System.currentTimeMillis(),
+                        status = ScanStatus.PENDING,
+                        type = barcodeType
+                    )
+                    repository.saveAndSyncScan(scanItem, _activeOrderId.value)
+                    loadScanHistory()
+                } catch (e2: Exception) {
+                    addLog("Error saving scan for retry: ${e2.message}")
+                }
             }
         }
     }

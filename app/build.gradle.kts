@@ -108,4 +108,7 @@ dependencies {
 
     // WorkManager for background sync
     implementation(libs.work.runtime.ktx)
+
+    // WebSocket for hybrid transport
+    implementation("org.java-websocket:Java-WebSocket:1.5.4")
 }

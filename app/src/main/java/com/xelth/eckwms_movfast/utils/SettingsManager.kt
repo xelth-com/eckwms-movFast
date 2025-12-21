@@ -69,6 +69,10 @@ object SettingsManager {
     fun saveDeviceStatus(status: String) = prefs.edit().putString(KEY_DEVICE_STATUS, status).apply()
     fun getDeviceStatus(): String = prefs.getString(KEY_DEVICE_STATUS, "unknown") ?: "unknown"
 
+    fun getDeviceId(context: Context): String {
+        return android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
+    }
+
     // Connection history for smart recovery (circular buffer of last 5 successful URLs)
     private const val KEY_CONNECTION_HISTORY = "connection_history"
     private const val MAX_HISTORY_SIZE = 5

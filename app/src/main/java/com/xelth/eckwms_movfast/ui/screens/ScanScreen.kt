@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.size
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
@@ -50,16 +51,48 @@ fun ScanScreen(
         viewModel.onViewModelReady()
     }
 
+    val networkHealthState by viewModel.networkHealthState.observeAsState(com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking)
+    val deviceRegistrationStatus by viewModel.deviceRegistrationStatus.observeAsState("unknown")
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("eckWMS Scanner") },
+                title = { Text("eckWMS") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
                     actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                 ),
                 actions = {
+                    // Network Health Indicator (Circle with state color)
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 8.dp)
+                            .size(12.dp)
+                            .background(networkHealthState.color, shape = androidx.compose.foundation.shape.CircleShape)
+                    )
+
+                    // Auth/Device Status Indicator Icon
+                    val authIcon = when (deviceRegistrationStatus) {
+                        "active" -> "✓"
+                        "pending" -> "⏳"
+                        "blocked" -> "✗"
+                        else -> "?"
+                    }
+                    val authColor = when (deviceRegistrationStatus) {
+                        "active" -> Color(0xFF4CAF50) // Green
+                        "pending" -> Color(0xFFFF9800) // Orange
+                        "blocked" -> Color(0xFFF44336) // Red
+                        else -> Color(0xFF9E9E9E) // Gray
+                    }
+                    Text(
+                        text = authIcon,
+                        color = authColor,
+                        fontSize = 20.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+
+                    // Settings Button
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -229,6 +262,7 @@ fun ScanningStatusCard(
     val scanState by viewModel.scanState.observeAsState(ScanState.IDLE)
     val errorMessage by viewModel.errorMessage.observeAsState()
     val networkHealthState by viewModel.networkHealthState.observeAsState(com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking)
+    val deviceRegistrationStatus by viewModel.deviceRegistrationStatus.observeAsState("unknown")
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -292,6 +326,63 @@ fun ScanningStatusCard(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
                             color = networkHealthState.color
+                        )
+                    }
+                }
+            }
+
+            // Device Registration Status Card
+            val statusColor = when (deviceRegistrationStatus) {
+                "active" -> Color(0xFF4CAF50) // Green
+                "pending" -> Color(0xFFFF9800) // Orange
+                else -> Color(0xFF9E9E9E) // Gray
+            }
+            val statusIcon = when (deviceRegistrationStatus) {
+                "active" -> "✅"
+                "pending" -> "⚠️"
+                else -> "❓"
+            }
+            val statusText = when (deviceRegistrationStatus) {
+                "active" -> "Active"
+                "pending" -> "Pending Approval"
+                else -> "Unknown"
+            }
+            val statusDescription = when (deviceRegistrationStatus) {
+                "active" -> "Device is authorized and ready to scan"
+                "pending" -> "Waiting for administrator approval - scanning is blocked"
+                else -> "Device registration status not determined"
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.2f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = statusIcon,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text(
+                                text = "Device: $statusText",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = statusColor
+                            )
+                        }
+                        Text(
+                            text = statusDescription,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

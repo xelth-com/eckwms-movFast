@@ -115,6 +115,30 @@ fun PairingScreen(viewModel: ScanRecoveryViewModel, navController: NavController
                 }
             }
 
+            // Status Information Card (Only if Pending)
+            val deviceStatus = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceStatus()
+            if (deviceStatus == "pending") {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF3E2723)), // Dark Orange/Brown
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            "⚠️ Waiting for Approval",
+                            color = Color(0xFFFFCC80),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Your device is paired but in quarantine. Please ask your administrator to approve device ID: ${com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(androidx.compose.ui.platform.LocalContext.current).takeLast(6)}",
+                            color = Color.White,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+
             // Button area at bottom
             Column(
                 modifier = Modifier

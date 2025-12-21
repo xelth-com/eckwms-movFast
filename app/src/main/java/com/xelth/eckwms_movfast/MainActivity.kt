@@ -224,4 +224,20 @@ class MainActivity : ComponentActivity() {
             else -> super.onKeyDown(keyCode, event)
         }
     }
+
+    /**
+     * Start smart status monitoring when app comes to foreground
+     */
+    override fun onResume() {
+        super.onResume()
+        viewModel.startStatusMonitoring()
+    }
+
+    /**
+     * Stop status monitoring when app goes to background to save battery
+     */
+    override fun onPause() {
+        super.onPause()
+        viewModel.stopStatusMonitoring()
+    }
 }

@@ -126,6 +126,87 @@ class ScanApiService(private val context: Context) {
     }
 
     /**
+     * Process scan with message ID for deduplication (used by HybridMessageSender)
+     * @param barcode The barcode value
+     * @param barcodeType The type of barcode
+     * @param msgId The unique message ID for deduplication
+     * @return Result of the scan operation
+     */
+    suspend fun processScanWithId(barcode: String, barcodeType: String, msgId: String): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Processing scan with ID: $barcode (type: $barcodeType, msgId: $msgId)")
+
+        try {
+            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            val url = URL("$baseUrl/ECK/API/SCAN")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-API-Key", API_KEY)
+            connection.doOutput = true
+
+            // Create JSON request with msgId for deduplication
+            val payloadJson = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("payload", barcode)
+                put("type", barcodeType)
+                put("msgId", msgId)
+            }
+            val payloadBytes = payloadJson.toString().toByteArray()
+            val crc = CRC32()
+            crc.update(payloadBytes)
+            val checksum = crc.value.toString(16).padStart(8, '0')
+
+            val jsonRequest = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("payload", barcode)
+                put("type", barcodeType)
+                put("checksum", checksum)
+                put("msgId", msgId)
+            }
+
+            Log.d(TAG, "Sending request with msgId: $jsonRequest")
+
+            // Send request
+            val outputStream = connection.outputStream
+            val writer = OutputStreamWriter(outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            // Get response
+            val responseCode = connection.responseCode
+
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Server response (msgId=$msgId): $response")
+
+                val responseJson = JSONObject(response)
+                val responseChecksum = responseJson.optString("checksum", "")
+                val message = responseJson.optString("message", "Scan buffered successfully")
+
+                Log.d(TAG, "Extracted checksum (msgId=$msgId): $responseChecksum")
+
+                return@withContext ScanResult.Success(
+                    type = "scan",
+                    message = message,
+                    data = response,
+                    checksum = responseChecksum
+                )
+            } else {
+                val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    ?: "Error code: $responseCode"
+
+                Log.e(TAG, "Server error (msgId=$msgId): $errorMessage")
+                return@withContext ScanResult.Error(errorMessage)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing scan with ID (msgId=$msgId): ${e.message}", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
      * Uploads an image to the server with optional barcode data
      * @param bitmap The image to upload
      * @param deviceId The device identifier
@@ -280,6 +361,52 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error registering device: ${e.message}", e)
             return@withContext ScanResult.Error(e.message ?: "Unknown registration error")
+        }
+    }
+
+    /**
+     * Checks the current status of a device with the server
+     * @param deviceId The device identifier
+     * @return Result containing the device status information
+     */
+    suspend fun checkDeviceStatus(deviceId: String): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+        Log.d(TAG, "Checking device status with server: $serverUrl")
+
+        try {
+            val url = URL("$serverUrl/ECK/API/DEVICE/$deviceId/STATUS")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/json")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+
+            val responseCode = connection.responseCode
+
+            when (responseCode) {
+                HttpURLConnection.HTTP_OK -> {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    Log.d(TAG, "Device status check successful: $response")
+                    return@withContext ScanResult.Success(
+                        type = "device_status",
+                        message = "Device status retrieved successfully",
+                        data = response
+                    )
+                }
+                HttpURLConnection.HTTP_FORBIDDEN -> {
+                    Log.w(TAG, "Device status check: 403 Forbidden - device is blocked")
+                    return@withContext ScanResult.Error("Device is blocked by server")
+                }
+                else -> {
+                    val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                        ?: "Error code: $responseCode"
+                    Log.e(TAG, "Device status check failed: $errorMessage")
+                    return@withContext ScanResult.Error("Status check failed: $errorMessage")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking device status: ${e.message}", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown error checking device status")
         }
     }
 

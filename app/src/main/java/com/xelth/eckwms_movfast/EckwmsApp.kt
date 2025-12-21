@@ -6,6 +6,7 @@ import android.app.Application
 import android.util.Log
 import com.xelth.eckwms_movfast.data.WarehouseRepository
 import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
+import com.xelth.eckwms_movfast.net.HybridMessageSender
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.sync.SyncManager
 import com.xelth.eckwms_movfast.utils.SettingsManager
@@ -27,6 +28,10 @@ class EckwmsApp : Application() {
 
         // Initialize SettingsManager
         SettingsManager.init(this)
+
+        // Initialize HybridMessageSender for WebSocket+HTTP transport
+        HybridMessageSender.init()
+        Log.d(TAG, "HybridMessageSender initialized")
 
         // Инициализация ScannerManager
         scannerManager = ScannerManager.getInstance(this)
