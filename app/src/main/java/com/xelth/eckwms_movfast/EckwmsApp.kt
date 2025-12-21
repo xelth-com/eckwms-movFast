@@ -9,6 +9,7 @@ import com.xelth.eckwms_movfast.diagnostics.ScannerApiTester
 import com.xelth.eckwms_movfast.net.HybridMessageSender
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.sync.SyncManager
+import com.xelth.eckwms_movfast.utils.CryptoManager
 import com.xelth.eckwms_movfast.utils.SettingsManager
 
 class EckwmsApp : Application() {
@@ -28,6 +29,10 @@ class EckwmsApp : Application() {
 
         // Initialize SettingsManager
         SettingsManager.init(this)
+
+        // Initialize CryptoManager for secure key storage
+        CryptoManager.initialize(this)
+        Log.d(TAG, "CryptoManager initialized")
 
         // Initialize HybridMessageSender for WebSocket+HTTP transport
         HybridMessageSender.init()

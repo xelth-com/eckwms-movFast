@@ -395,6 +395,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     val jsonResponse = JSONObject(result.data)
                     val status = jsonResponse.optString("status", "unknown")
 
+                    // SELF-HEALING: If server says we are unregistered, try to register again immediately
+                    if (status == "unregistered") {
+                        addLog("⚠️ Server reports device unregistered. Attempting silent re-registration...")
+                        performSilentReRegistration(deviceId)
+                        return
+                    }
+
                     // Only update if status changed
                     if (_deviceRegistrationStatus.value != status) {
                         _deviceRegistrationStatus.postValue(status)
@@ -413,6 +420,49 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     addLog("⚠️ Device status: BLOCKED by server")
                 }
             }
+        }
+    }
+
+    /**
+     * Automatically re-registers the device using stored credentials
+     */
+    private suspend fun performSilentReRegistration(deviceId: String) {
+        try {
+            // Use fully qualified names to avoid import issues if imports are missing
+            val crypto = com.xelth.eckwms_movfast.utils.CryptoManager
+
+            // Ensure keys exist
+            val keyPair = crypto.getOrCreateKeyPair()
+            val publicKeyBase64 = crypto.getPublicKeyBase64()
+            val timestamp = System.currentTimeMillis()
+
+            // Create signature for auth
+            val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
+            val signature = android.util.Base64.encodeToString(
+                crypto.sign(signatureData.toByteArray()),
+                android.util.Base64.NO_WRAP
+            )
+
+            addLog("Sending silent registration request...")
+
+            val result = scanApiService.registerDevice(
+                publicKeyBase64 = publicKeyBase64,
+                signature = signature,
+                timestamp = timestamp
+            )
+
+            when (result) {
+                is ScanResult.Success -> {
+                    addLog("✅ Silent re-registration successful!")
+                    // Force immediate status re-check to update UI
+                    checkDeviceStatus()
+                }
+                is ScanResult.Error -> {
+                    addLog("❌ Silent re-registration failed: ${result.message}")
+                }
+            }
+        } catch (e: Exception) {
+            addLog("❌ Error during silent re-registration: ${e.message}")
         }
     }
 
