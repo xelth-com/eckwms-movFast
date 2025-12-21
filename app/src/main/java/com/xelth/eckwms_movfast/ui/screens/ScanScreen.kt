@@ -53,11 +53,21 @@ fun ScanScreen(
 
     val networkHealthState by viewModel.networkHealthState.observeAsState(com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking)
     val deviceRegistrationStatus by viewModel.deviceRegistrationStatus.observeAsState("unknown")
+    val uiMode by viewModel.uiMode.observeAsState("DEBUG")
+    val currentLayout by viewModel.currentLayout.observeAsState("{}")
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("eckWMS") },
+                title = {
+                    Column {
+                        Text("eckWMS")
+                        Text(
+                            if(uiMode=="DEBUG") "🔧 Debug Console" else "✨ AI Interface",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -92,46 +102,73 @@ fun ScanScreen(
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
 
-                    // Settings Button
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    // Mode Toggle Button (Temporary for dev)
+                    IconButton(onClick = { viewModel.toggleUiMode() }) {
+                        Text(
+                            text = if (uiMode == "DEBUG") "UI" else "LOG",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+
+                    // Settings Button (RBAC Protected)
+                    if (viewModel.hasPermission("settings.view")) {
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
                 }
             )
         }
     ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp)
-                .verticalScroll(scrollState)
-                .focusable(false),  // Disable focus for entire screen
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Dummy button to catch keyboard events from scanner - does nothing
-            Button(
-                onClick = {
-                    viewModel.addLog(">>> Dummy button clicked - keyboard event caught and ignored")
-                },
-                modifier = Modifier
-                    .size(0.dp)  // Invisible button
-                    .focusable(true),  // This one SHOULD be focusable to catch events
-                enabled = false  // Disabled so it looks invisible
-            ) { }
+        Box(modifier = Modifier.padding(paddingValues)) {
+            if (uiMode == "DEBUG") {
+                // === LEGACY DEBUG CONSOLE ===
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                        .verticalScroll(scrollState)
+                        .focusable(false),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Dummy button to catch keyboard events from scanner - does nothing
+                    Button(
+                        onClick = {
+                            viewModel.addLog(">>> Dummy button clicked - keyboard event caught and ignored")
+                        },
+                        modifier = Modifier
+                            .size(0.dp)  // Invisible button
+                            .focusable(true),  // This one SHOULD be focusable to catch events
+                        enabled = false  // Disabled so it looks invisible
+                    ) { }
 
-            ActiveOrderCard(viewModel = viewModel)
-            ScanningStatusCard(viewModel = viewModel, navController = navController)
-            Button(
-                onClick = { navController.navigate("restockScreen") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusable(false)
-            ) {
-                Text("Start Manual Restock Order")
+                    ActiveOrderCard(viewModel = viewModel)
+                    ScanningStatusCard(viewModel = viewModel, navController = navController)
+                    if (viewModel.hasPermission("inventory.adjust")) {
+                        Button(
+                            onClick = { navController.navigate("restockScreen") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusable(false)
+                        ) {
+                            Text("Start Manual Restock Order")
+                        }
+                    }
+                    WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
+                    ScanHistorySection(viewModel = viewModel)
+                }
+            } else {
+                // === DYNAMIC AI LAYOUT ===
+                com.xelth.eckwms_movfast.ui.dynamic.DynamicUiRenderer(
+                    layoutJson = currentLayout,
+                    onAction = { action, params ->
+                        viewModel.addLog("Dynamic Action: $action")
+                        // Handle actions (e.g., start scan, open workflow)
+                        if (action == "start_scan") navController.navigate("cameraScanScreen")
+                    }
+                )
             }
-            WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
-            ScanHistorySection(viewModel = viewModel)
         }
     }
 }

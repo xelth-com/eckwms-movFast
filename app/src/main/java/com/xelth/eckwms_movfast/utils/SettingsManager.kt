@@ -69,6 +69,21 @@ object SettingsManager {
     fun saveDeviceStatus(status: String) = prefs.edit().putString(KEY_DEVICE_STATUS, status).apply()
     fun getDeviceStatus(): String = prefs.getString(KEY_DEVICE_STATUS, "unknown") ?: "unknown"
 
+    private const val KEY_USER_ROLE = "user_role"
+    private const val KEY_PERMISSIONS = "user_permissions"
+
+    fun saveUserRole(role: String) = prefs.edit().putString(KEY_USER_ROLE, role).apply()
+    fun getUserRole(): String = prefs.getString(KEY_USER_ROLE, "Unknown") ?: "Unknown"
+
+    fun savePermissions(permissions: Set<String>) = prefs.edit().putStringSet(KEY_PERMISSIONS, permissions).apply()
+    fun getPermissions(): Set<String> = prefs.getStringSet(KEY_PERMISSIONS, emptySet()) ?: emptySet()
+
+    fun hasPermission(permission: String): Boolean {
+        // Admin role implies all permissions (failsafe)
+        if (getUserRole() == "SUPER_ADMIN") return true
+        return getPermissions().contains(permission)
+    }
+
     fun getDeviceId(context: Context): String {
         return android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
     }

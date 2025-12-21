@@ -21,6 +21,12 @@ object HybridMessageSender {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var deviceId: String = "unknown"
     private var statusListener: ((String) -> Unit)? = null
+    private var layoutListener: ((String) -> Unit)? = null
+
+    fun setLayoutListener(listener: (String) -> Unit) {
+        layoutListener = listener
+        Log.d(TAG, "Layout listener registered")
+    }
 
     fun init(context: Context) {
         deviceId = SettingsManager.getDeviceId(context)
@@ -90,6 +96,26 @@ object HybridMessageSender {
                 val newStatus = json.getString("status")
                 Log.i(TAG, "⚡ Received PUSH STATUS_UPDATE: $newStatus")
                 statusListener?.invoke(newStatus)
+            } else if (type == "ROLE_UPDATE") {
+                val role = json.getString("role")
+                val permissionsJson = json.getJSONArray("permissions")
+                val permissions = mutableSetOf<String>()
+                for (i in 0 until permissionsJson.length()) {
+                    permissions.add(permissionsJson.getString(i))
+                }
+
+                Log.i(TAG, "⚡ Received PUSH ROLE_UPDATE: $role with ${permissions.size} permissions")
+
+                // Save immediately
+                SettingsManager.saveUserRole(role)
+                SettingsManager.savePermissions(permissions)
+
+                // Notify listener (we reuse the status listener for now, or could add a dedicated one)
+                // Ideally, ViewModel observes SettingsManager or a new LiveData
+            } else if (type == "LAYOUT_UPDATE") {
+                val layoutJson = json.getJSONObject("layout").toString()
+                Log.i(TAG, "⚡ Received PUSH LAYOUT_UPDATE")
+                layoutListener?.invoke(layoutJson)
             }
 
         } catch (e: Exception) {

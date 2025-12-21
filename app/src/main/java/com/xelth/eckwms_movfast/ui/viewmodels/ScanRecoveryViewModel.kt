@@ -121,6 +121,35 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _deviceRegistrationStatus = MutableLiveData<String>("unknown")
     val deviceRegistrationStatus: LiveData<String> = _deviceRegistrationStatus
 
+    // UI MODE: 'DEBUG' or 'DYNAMIC'
+    private val _uiMode = MutableLiveData<String>("DEBUG")
+    val uiMode: LiveData<String> = _uiMode
+
+    // Current Dynamic Layout JSON
+    private val _currentLayout = MutableLiveData<String>("{ \"components\": [ { \"type\": \"text\", \"content\": \"Waiting for AI Agent...\", \"style\": \"h2\" } ] }")
+    val currentLayout: LiveData<String> = _currentLayout
+
+    fun toggleUiMode() {
+        _uiMode.value = if (_uiMode.value == "DEBUG") "DYNAMIC" else "DEBUG"
+        addLog("UI Mode switched to: ${_uiMode.value}")
+    }
+
+    fun updateLayout(json: String) {
+        _currentLayout.postValue(json)
+        _uiMode.postValue("DYNAMIC") // Auto-switch to dynamic when layout arrives
+    }
+
+    private val _permissions = MutableLiveData<Set<String>>(emptySet())
+    val permissions: LiveData<Set<String>> = _permissions
+
+    fun hasPermission(permission: String): Boolean {
+        return SettingsManager.hasPermission(permission)
+    }
+
+    fun refreshPermissions() {
+        _permissions.postValue(SettingsManager.getPermissions())
+    }
+
     private var statusMonitoringJob: Job? = null
     private val STATUS_CHECK_INTERVAL_MS = 30000L // 30 seconds
 
@@ -250,11 +279,18 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         // --- REAL-TIME LISTENER ---
         // Hook up WebSocket push notifications for instant status updates
+        com.xelth.eckwms_movfast.net.HybridMessageSender.setLayoutListener { json ->
+            addLog("⚡ Push Notification: Received new UI Layout")
+            updateLayout(json)
+        }
+
         com.xelth.eckwms_movfast.net.HybridMessageSender.setStatusListener { newStatus ->
             // Update LiveData on Main Thread
             _deviceRegistrationStatus.postValue(newStatus)
             SettingsManager.saveDeviceStatus(newStatus)
             addLog("⚡ Push Notification: Status changed to $newStatus")
+            // Also refresh permissions in case they changed
+            refreshPermissions()
         }
     }
 
