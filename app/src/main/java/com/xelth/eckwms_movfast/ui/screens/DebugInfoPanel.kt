@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -133,6 +134,86 @@ fun DebugInfoPanel(viewModel: ScanRecoveryViewModel, modifier: Modifier = Modifi
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // AI UI Simulation Section
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Text(
+                    "🧪 AI UI Simulation",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                // Row 1: Dialogs
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("question") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Question", fontSize = 10.sp)
+                    }
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("confirmation") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Confirm", fontSize = 10.sp)
+                    }
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("multi_option") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Multi", fontSize = 10.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Row 2: Banners
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("info") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Info", fontSize = 10.sp)
+                    }
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("warning") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Warning", fontSize = 10.sp)
+                    }
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("error") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Error", fontSize = 10.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Row 3: Success
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.debugTriggerAiEvent("success") },
+                        modifier = Modifier.weight(1f).height(32.dp)
+                    ) {
+                        Text("Success", fontSize = 10.sp)
+                    }
+                    Spacer(modifier = Modifier.weight(2f))
+                }
             }
 
             // Event Log

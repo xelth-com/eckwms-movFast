@@ -98,18 +98,54 @@ class ScanApiService(private val context: Context) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Server response: $response")
 
-                // Parse the JSON response to extract checksum
+                // Parse the JSON response to extract checksum and ai_interaction
                 val responseJson = JSONObject(response)
                 val checksum = responseJson.optString("checksum", "")
                 val message = responseJson.optString("message", "Scan buffered successfully")
 
                 Log.d(TAG, "Extracted checksum: $checksum")
 
+                // Parse AI interaction if present
+                val aiInteraction = if (responseJson.has("ai_interaction")) {
+                    try {
+                        val aiJson = responseJson.getJSONObject("ai_interaction")
+                        val id = aiJson.optString("id", null)
+                        val type = aiJson.optString("type", "info")
+                        val aiMessage = aiJson.optString("message", "")
+                        val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+                        val options = if (aiJson.has("options")) {
+                            val optionsArray = aiJson.getJSONArray("options")
+                            (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                        } else null
+                        val data = if (aiJson.has("data")) {
+                            val dataJson = aiJson.getJSONObject("data")
+                            dataJson.keys().asSequence().associateWith { dataJson.get(it) }
+                        } else null
+
+                        com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                            id = id,
+                            type = type,
+                            message = aiMessage,
+                            options = options,
+                            data = data,
+                            barcode = aiBarcode
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse ai_interaction: ${e.message}")
+                        null
+                    }
+                } else null
+
+                if (aiInteraction != null) {
+                    Log.d(TAG, "AI Interaction detected: ${aiInteraction.type} - ${aiInteraction.message}")
+                }
+
                 return@withContext ScanResult.Success(
                     type = "scan",
                     message = message,
                     data = response,
-                    checksum = checksum
+                    checksum = checksum,
+                    aiInteraction = aiInteraction
                 )
             } else {
                 // Обрабатываем ошибку
@@ -187,11 +223,47 @@ class ScanApiService(private val context: Context) {
 
                 Log.d(TAG, "Extracted checksum (msgId=$msgId): $responseChecksum")
 
+                // Parse AI interaction if present
+                val aiInteraction = if (responseJson.has("ai_interaction")) {
+                    try {
+                        val aiJson = responseJson.getJSONObject("ai_interaction")
+                        val id = aiJson.optString("id", null)
+                        val type = aiJson.optString("type", "info")
+                        val aiMessage = aiJson.optString("message", "")
+                        val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+                        val options = if (aiJson.has("options")) {
+                            val optionsArray = aiJson.getJSONArray("options")
+                            (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                        } else null
+                        val data = if (aiJson.has("data")) {
+                            val dataJson = aiJson.getJSONObject("data")
+                            dataJson.keys().asSequence().associateWith { dataJson.get(it) }
+                        } else null
+
+                        com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                            id = id,
+                            type = type,
+                            message = aiMessage,
+                            options = options,
+                            data = data,
+                            barcode = aiBarcode
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse ai_interaction (msgId=$msgId): ${e.message}")
+                        null
+                    }
+                } else null
+
+                if (aiInteraction != null) {
+                    Log.d(TAG, "AI Interaction detected (msgId=$msgId): ${aiInteraction.type} - ${aiInteraction.message}")
+                }
+
                 return@withContext ScanResult.Success(
                     type = "scan",
                     message = message,
                     data = response,
-                    checksum = responseChecksum
+                    checksum = responseChecksum,
+                    aiInteraction = aiInteraction
                 )
             } else {
                 val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
@@ -517,6 +589,61 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    /**
+     * Sends user's response to an AI interaction back to the server
+     * @param interactionId The unique ID of the interaction being responded to
+     * @param response The user's chosen response/option
+     * @param barcode The barcode context for this interaction
+     * @return Result of the response submission
+     */
+    suspend fun sendAiResponse(interactionId: String?, response: String, barcode: String?): ScanResult = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Sending AI response: interactionId=$interactionId, response=$response, barcode=$barcode")
+
+        try {
+            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            val url = URL("$baseUrl/ECK/API/AI/RESPOND")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-API-Key", API_KEY)
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                put("deviceId", deviceId)
+                if (interactionId != null) {
+                    put("interactionId", interactionId)
+                }
+                put("response", response)
+                if (barcode != null) {
+                    put("barcode", barcode)
+                }
+                put("timestamp", System.currentTimeMillis())
+            }
+
+            Log.d(TAG, "Sending AI response request: $jsonRequest")
+
+            val writer = OutputStreamWriter(connection.outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "AI response sent successfully: $responseText")
+                ScanResult.Success("ai_response", "AI response sent successfully", responseText)
+            } else {
+                val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                Log.e(TAG, "AI response submission failed: $error")
+                ScanResult.Error("AI response failed: $error")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending AI response: ${e.message}", e)
+            ScanResult.Error(e.message ?: "Unknown error sending AI response")
+        }
+    }
+
 }
 
 /**
@@ -531,7 +658,8 @@ sealed class ScanResult {
         val message: String,
         val data: String,
         val checksum: String = "", // Checksum returned by the server buffer
-        val imageUrls: List<String> = emptyList()
+        val imageUrls: List<String> = emptyList(),
+        val aiInteraction: com.xelth.eckwms_movfast.ui.data.AiInteraction? = null
     ) : ScanResult()
 
     /**

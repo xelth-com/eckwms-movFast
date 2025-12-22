@@ -55,6 +55,7 @@ fun ScanScreen(
     val deviceRegistrationStatus by viewModel.deviceRegistrationStatus.observeAsState("unknown")
     val uiMode by viewModel.uiMode.observeAsState("DEBUG")
     val currentLayout by viewModel.currentLayout.observeAsState("{}")
+    val aiInteraction by viewModel.aiInteraction.observeAsState(null)
 
     Scaffold(
         topBar = {
@@ -169,6 +170,14 @@ fun ScanScreen(
                     }
                 )
             }
+
+            // === AI INTERACTION OVERLAY ===
+            // This overlay renders on top of all content (both DEBUG and DYNAMIC modes)
+            AiInteractionOverlay(
+                aiInteraction = aiInteraction,
+                onDismiss = { viewModel.clearAiInteraction() },
+                onResponse = { response -> viewModel.respondToAiInteraction(response) }
+            )
         }
     }
 }

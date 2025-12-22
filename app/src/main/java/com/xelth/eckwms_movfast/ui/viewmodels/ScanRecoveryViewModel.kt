@@ -129,6 +129,123 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _currentLayout = MutableLiveData<String>("{ \"components\": [ { \"type\": \"text\", \"content\": \"Waiting for AI Agent...\", \"style\": \"h2\" } ] }")
     val currentLayout: LiveData<String> = _currentLayout
 
+    // AI Interaction from server
+    private val _aiInteraction = MutableLiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?>(null)
+    val aiInteraction: LiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?> = _aiInteraction
+
+    /**
+     * Clear the current AI interaction (dismiss dialog/banner)
+     */
+    fun clearAiInteraction() {
+        addLog("Clearing AI interaction")
+        _aiInteraction.postValue(null)
+    }
+
+    /**
+     * Handle user response to AI interaction
+     * @param response The user's selected option/response
+     */
+    fun respondToAiInteraction(response: String) {
+        val currentInteraction = _aiInteraction.value
+        if (currentInteraction != null) {
+            addLog("User responded to AI ${currentInteraction.type}: $response")
+
+            // Send response back to server via hybrid transport
+            viewModelScope.launch {
+                try {
+                    val result = com.xelth.eckwms_movfast.net.HybridMessageSender.sendAiResponse(
+                        apiService = scanApiService,
+                        interactionId = currentInteraction.id,
+                        response = response,
+                        barcode = currentInteraction.barcode
+                    )
+
+                    when (result) {
+                        is ScanResult.Success -> {
+                            addLog("✓ AI response sent successfully via hybrid transport")
+                        }
+                        is ScanResult.Error -> {
+                            addLog("⚠️ Failed to send AI response: ${result.message}")
+                            _errorMessage.postValue("Failed to send response: ${result.message}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    addLog("❌ Exception sending AI response: ${e.message}")
+                    _errorMessage.postValue("Error sending response: ${e.message}")
+                }
+            }
+
+            // Clear interaction immediately (optimistic UI - don't wait for server)
+            clearAiInteraction()
+        } else {
+            addLog("Warning: Attempted to respond to null AI interaction")
+        }
+    }
+
+    /**
+     * DEBUG ONLY: Manually trigger an AI interaction for testing UI components
+     * @param type The type of interaction to trigger (question, confirmation, info, warning, error, success)
+     */
+    fun debugTriggerAiEvent(type: String) {
+        addLog("🧪 DEBUG: Triggering AI event type: $type")
+
+        val interaction = when (type.lowercase()) {
+            "question" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "question",
+                message = "Do you want to adjust the inventory count for item SKU-12345?",
+                options = listOf("Yes, adjust", "No, cancel"),
+                data = mapOf("item_sku" to "SKU-12345", "current_count" to 42)
+            )
+            "confirmation" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "confirmation",
+                message = "This action will update 15 items. Are you sure you want to continue?",
+                options = listOf("Confirm", "Cancel"),
+                data = mapOf("item_count" to 15)
+            )
+            "info" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "info",
+                message = "Item successfully scanned and added to order #CS-DE-2024-001",
+                options = null,
+                data = mapOf("order_id" to "CS-DE-2024-001")
+            )
+            "warning" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "warning",
+                message = "Low stock alert: Only 3 units remaining for this item",
+                options = listOf("View Details", "Dismiss"),
+                data = mapOf("remaining_stock" to 3)
+            )
+            "error" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "error",
+                message = "Failed to process scan: Item not found in inventory database",
+                options = listOf("Retry", "Report Issue"),
+                data = mapOf("error_code" to "ITEM_NOT_FOUND")
+            )
+            "success" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "success",
+                message = "Order completed successfully! 47 items processed.",
+                options = listOf("View Order", "Start New"),
+                data = mapOf("items_processed" to 47)
+            )
+            "multi_option" -> com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                type = "question",
+                message = "Select the location for this item:",
+                options = listOf("Warehouse A", "Warehouse B", "Warehouse C", "Storage D"),
+                data = null
+            )
+            else -> {
+                addLog("⚠️ Unknown AI event type: $type. Using default info.")
+                com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                    type = "info",
+                    message = "This is a test AI interaction of type: $type",
+                    options = null,
+                    data = null
+                )
+            }
+        }
+
+        _aiInteraction.postValue(interaction)
+    }
+
     fun toggleUiMode() {
         _uiMode.value = if (_uiMode.value == "DEBUG") "DYNAMIC" else "DEBUG"
         addLog("UI Mode switched to: ${_uiMode.value}")
@@ -291,6 +408,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addLog("⚡ Push Notification: Status changed to $newStatus")
             // Also refresh permissions in case they changed
             refreshPermissions()
+        }
+
+        com.xelth.eckwms_movfast.net.HybridMessageSender.setAiInteractionListener { aiInteraction ->
+            addLog("⚡ AI Interaction: ${aiInteraction.type} - ${aiInteraction.message}")
+            _aiInteraction.postValue(aiInteraction)
         }
     }
 
@@ -913,6 +1035,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 when (hybridResult) {
                     is ScanResult.Success -> {
                         addLog("✓ Scan delivered successfully via hybrid transport")
+
+                        // Handle AI interaction if present
+                        hybridResult.aiInteraction?.let { aiInteraction ->
+                            addLog("⚡ AI Interaction from HTTP: ${aiInteraction.type} - ${aiInteraction.message}")
+                            _aiInteraction.postValue(aiInteraction)
+                        }
+
                         // Create scan item with CONFIRMED status since it was delivered
                         val scanItem = ScanHistoryItem(
                             barcode = barcode,
