@@ -794,7 +794,7 @@ fun ServerSettingsSection() {
             OutlinedTextField(
                 value = serverUrl,
                 onValueChange = { serverUrl = it },
-                label = { Text("Server Address (e.g., http://192.168.0.1:3003)") },
+                label = { Text("Server Address (e.g., http://192.168.0.1:3100)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
