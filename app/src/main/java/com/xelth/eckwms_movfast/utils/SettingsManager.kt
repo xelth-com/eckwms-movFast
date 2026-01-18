@@ -69,6 +69,12 @@ object SettingsManager {
     fun saveDeviceStatus(status: String) = prefs.edit().putString(KEY_DEVICE_STATUS, status).apply()
     fun getDeviceStatus(): String = prefs.getString(KEY_DEVICE_STATUS, "unknown") ?: "unknown"
 
+    // Authentication token for API requests
+    private const val KEY_AUTH_TOKEN = "auth_token"
+    fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
+    fun getAuthToken(): String = prefs.getString(KEY_AUTH_TOKEN, "") ?: ""
+    fun clearAuthToken() = prefs.edit().remove(KEY_AUTH_TOKEN).commit()
+
     private const val KEY_USER_ROLE = "user_role"
     private const val KEY_PERMISSIONS = "user_permissions"
 

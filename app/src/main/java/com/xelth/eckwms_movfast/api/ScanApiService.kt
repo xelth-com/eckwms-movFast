@@ -17,6 +17,7 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 
 /**
  * Сервис для взаимодействия с API сканирования штрих-кодов
+ * Updated for Go Server structure (endpoints: /E/api/... for subdirectory deployment)
  */
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
@@ -54,18 +55,21 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            val url = URL("$baseUrl/ECK/API/SCAN")
+            // Updated: Go server at /E/ subdirectory
+            val url = URL("$baseUrl/E/api/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
+            // Add auth token for protected endpoint
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
-            // Создаем JSON запрос в новом формате для buffer API
+            // Create JSON request - Go server expects 'barcode' field
             val payloadJson = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("payload", barcode)
+                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
                 put("type", barcodeType)
             }
             val payloadBytes = payloadJson.toString().toByteArray()
@@ -75,13 +79,13 @@ class ScanApiService(private val context: Context) {
 
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("payload", barcode)
+                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
                 put("type", barcodeType)
                 put("checksum", checksum)
                 orderId?.let { put("orderId", it) }
             }
 
-            Log.d(TAG, "Sending request: $jsonRequest")
+            Log.d(TAG, "Sending request to $url: $jsonRequest")
 
             // Отправляем запрос
             val outputStream = connection.outputStream
@@ -173,18 +177,21 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            val url = URL("$baseUrl/ECK/API/SCAN")
+            // Updated: Go server at /E/ subdirectory
+            val url = URL("$baseUrl/E/api/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
+            // Add auth token for protected endpoint
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
-            // Create JSON request with msgId for deduplication
+            // Create JSON request with msgId for deduplication - Go server expects 'barcode'
             val payloadJson = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("payload", barcode)
+                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
                 put("type", barcodeType)
                 put("msgId", msgId)
             }
@@ -195,13 +202,13 @@ class ScanApiService(private val context: Context) {
 
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("payload", barcode)
+                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
                 put("type", barcodeType)
                 put("checksum", checksum)
                 put("msgId", msgId)
             }
 
-            Log.d(TAG, "Sending request with msgId: $jsonRequest")
+            Log.d(TAG, "Sending request with msgId to $url: $jsonRequest")
 
             // Send request
             val outputStream = connection.outputStream
@@ -289,14 +296,16 @@ class ScanApiService(private val context: Context) {
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-        val url = URL("$baseUrl/ECK/API/UPLOAD/IMAGE")
+        // Updated: Go server at /E/ subdirectory
+        val url = URL("$baseUrl/E/api/upload/image")
         val connection = url.openConnection() as HttpURLConnection
         val outputStream: java.io.OutputStream
         val writer: java.io.PrintWriter
 
         try {
             connection.requestMethod = "POST"
-            // connection.setRequestProperty("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZWZhdWx0X3VzZXJfaWQiLCJyb2xlIjoidXNlciIsImlhdCI6MTcxNjM4ODgzMywiZXhwIjoxNzE2MzkyNDMzfQ.8G7Db-25I152G2ny9hYf842t-G9e-m4R2fP6a_o4J4Y") // Temporarily disabled for debugging
+            // Add auth token for protected endpoint
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             connection.doOutput = true
 
@@ -389,24 +398,28 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
-            val url = URL("$serverUrl/ECK/API/DEVICE/REGISTER")
+            // Updated: Go server at /E/ subdirectory
+            val url = URL("$serverUrl/E/api/internal/register-device")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.doOutput = true
 
+            // Go server expects: deviceId, deviceName, devicePublicKey, signature
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
+                put("deviceName", android.os.Build.MODEL)  // Added: device model name
                 put("devicePublicKey", publicKeyBase64)
                 put("signature", signature)
+                // Note: timestamp not used by Go server, but included for compatibility
                 put("timestamp", timestamp)
                 if (inviteToken != null) {
                     put("inviteToken", inviteToken)
                 }
             }
 
-            Log.d(TAG, "Sending registration request: $jsonRequest")
+            Log.d(TAG, "Sending registration request to $url: $jsonRequest")
 
             val outputStream = connection.outputStream
             val writer = OutputStreamWriter(outputStream, "UTF-8")
@@ -446,10 +459,13 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Checking device status with server: $serverUrl")
 
         try {
-            val url = URL("$serverUrl/ECK/API/DEVICE/$deviceId/STATUS")
+            // Updated: Go server at /E/ subdirectory
+            val url = URL("$serverUrl/E/api/status")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/json")
+            // Add auth token for protected endpoint
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.connectTimeout = 5000
             connection.readTimeout = 5000
 
@@ -459,11 +475,16 @@ class ScanApiService(private val context: Context) {
                 HttpURLConnection.HTTP_OK -> {
                     val response = connection.inputStream.bufferedReader().use { it.readText() }
                     Log.d(TAG, "Device status check successful: $response")
+                    // Go server returns {"status":"running","version":"1.0.0"}
                     return@withContext ScanResult.Success(
                         type = "device_status",
-                        message = "Device status retrieved successfully",
+                        message = "Server is running",
                         data = response
                     )
+                }
+                HttpURLConnection.HTTP_UNAUTHORIZED -> {
+                    Log.w(TAG, "Device status check: 401 Unauthorized - need authentication")
+                    return@withContext ScanResult.Error("Authentication required")
                 }
                 HttpURLConnection.HTTP_FORBIDDEN -> {
                     Log.w(TAG, "Device status check: 403 Forbidden - device is blocked")
@@ -497,7 +518,9 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Getting instance info from global server: $globalServerUrl")
 
         try {
-            val url = URL("$globalServerUrl/ECK/API/INTERNAL/GET-INSTANCE-INFO")
+            // Note: This endpoint is on the Global Server (Node.js) which uses /ECK/ prefix
+            // Do NOT change to /api/ - global server runs on different architecture
+            val url = URL("$globalServerUrl/ECK/api/internal/get-instance-info")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -601,12 +624,15 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            val url = URL("$baseUrl/ECK/API/AI/RESPOND")
+            // Updated: Go server at /E/ subdirectory
+            val url = URL("$baseUrl/E/api/ai/execute")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
+            // Add auth token for protected endpoint
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
             val jsonRequest = JSONObject().apply {
