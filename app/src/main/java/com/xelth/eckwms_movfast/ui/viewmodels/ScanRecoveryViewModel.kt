@@ -621,6 +621,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             when (result) {
                 is ScanResult.Success -> {
                     addLog("✅ Silent re-registration successful!")
+                    // Extract and save JWT token for authenticated API calls
+                    try {
+                        val jsonResponse = JSONObject(result.data)
+                        val token = jsonResponse.optString("token", "")
+                        if (token.isNotEmpty()) {
+                            SettingsManager.saveAuthToken(token)
+                            addLog("🔑 Security token refreshed")
+                        }
+                    } catch (e: Exception) {
+                        addLog("Warning: Could not parse token from re-registration response")
+                    }
                     // Force immediate status re-check to update UI
                     checkDeviceStatus()
                 }
@@ -1649,6 +1660,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     val status = jsonResponse.optString("status", "active")
                     SettingsManager.saveDeviceStatus(status)
 
+                    // Extract and save JWT token for authenticated API calls
+                    val token = jsonResponse.optString("token", "")
+                    if (token.isNotEmpty()) {
+                        SettingsManager.saveAuthToken(token)
+                        addPairingLog("🔑 Security token saved")
+                    }
+
                     addPairingLog("")
                     addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
                     if (status == "pending") {
@@ -1840,6 +1858,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                                     val status = jsonResponse.optString("status", "active")
                                     SettingsManager.saveDeviceStatus(status)
 
+                                    // Extract and save JWT token for authenticated API calls
+                                    val token = jsonResponse.optString("token", "")
+                                    if (token.isNotEmpty()) {
+                                        SettingsManager.saveAuthToken(token)
+                                        addLog("🔑 Security token saved")
+                                    }
+
                                     addLog("✓ Device registered. Status: $status")
 
                                     if (status == "pending") {
@@ -1989,6 +2014,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     val jsonResponse = JSONObject(result.data)
                     val status = jsonResponse.optString("status", "active")
                     SettingsManager.saveDeviceStatus(status)
+
+                    // Extract and save JWT token for authenticated API calls
+                    val token = jsonResponse.optString("token", "")
+                    if (token.isNotEmpty()) {
+                        SettingsManager.saveAuthToken(token)
+                        addPairingLog("🔑 Security token saved")
+                    }
 
                     addPairingLog("")
                     addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
