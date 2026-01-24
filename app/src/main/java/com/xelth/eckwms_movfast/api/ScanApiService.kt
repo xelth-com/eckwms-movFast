@@ -624,8 +624,8 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Updated: Go server at /E/ subdirectory
-            val url = URL("$baseUrl/E/api/ai/execute")
+            // Updated: Go backend endpoint for AI response
+            val url = URL("$baseUrl/E/api/ai/respond")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
