@@ -6,7 +6,26 @@
 
 ## Quick Start
 
-Если Android Studio уже установлена, можно сразу собрать APK:
+### Способ 1: Через Android Studio (Рекомендуется)
+
+**Для чистой Windows с нуля:**
+
+1. **Установить Android Studio** с https://developer.android.com/studio
+2. **Открыть проект:** File → Open → выбрать папку `eckwms-movFast`
+3. **Дождаться Gradle Sync** (первый раз ~5-10 минут, скачивает зависимости)
+4. **Установить SDK:** Tools → SDK Manager → поставить галочки на:
+   - Android 15.0 (API 35) - для compileSdk
+   - Android 13.0 (API 33) - для minSdk
+5. **Собрать:** Build → Make Project (Ctrl+F9)
+6. **Установить на устройство:**
+   - Подключить Android-устройство по USB (включить USB Debugging)
+   - Нажать зеленую кнопку ▶️ Run (Shift+F10)
+
+APK будет автоматически собран и установлен.
+
+### Способ 2: Командная строка
+
+Если Android Studio уже установлена:
 
 ```batch
 :: Из корня проекта
@@ -91,6 +110,108 @@ sdk.dir=C\:\\Users\\<USERNAME>\\AppData\\Local\\Android\\Sdk
 ```properties
 sdk.dir=C:/Users/<USERNAME>/AppData/Local/Android/Sdk
 ```
+
+---
+
+## Android Studio Guide (GUI)
+
+### Первый запуск проекта
+
+1. **Открыть проект:**
+   - File → Open
+   - Выбрать папку `C:\Users\<USERNAME>\eckwms-movFast`
+   - Нажать OK
+
+2. **Gradle Sync:**
+   - Автоматически запустится синхронизация
+   - Статус видно внизу справа: "Gradle Build Running"
+   - Первая синхронизация ~5-10 минут (загрузка зависимостей)
+   - Если ошибки - смотри секцию Troubleshooting
+
+3. **Проверить SDK:**
+   - File → Settings → Appearance & Behavior → System Settings → Android SDK
+   - Вкладка "SDK Platforms": убедитесь что установлены API 33 и API 35
+   - Вкладка "SDK Tools": убедитесь что установлены Build-Tools 34+
+   - Если чего-то нет - поставьте галочки и нажмите Apply
+
+### Сборка проекта
+
+**Вариант 1: Build Project (вся сборка)**
+- Menu: Build → Make Project
+- Горячая клавиша: **Ctrl+F9**
+- Результат: собирает проект, но не создаёт APK
+
+**Вариант 2: Build APK**
+- Menu: Build → Build Bundle(s) / APK(s) → Build APK(s)
+- Результат: создаёт `app-debug.apk`
+- Notification покажет ссылку "locate" для открытия папки с APK
+
+**Вариант 3: Clean + Rebuild**
+- Menu: Build → Clean Project (удаляет старые артефакты)
+- Menu: Build → Rebuild Project (полная пересборка)
+
+### Запуск на устройстве
+
+1. **Подключить устройство:**
+   - Подключить Android-телефон по USB
+   - На телефоне включить: Settings → About Phone → тапнуть 7 раз на "Build number"
+   - Settings → Developer Options → USB Debugging → ON
+   - Разрешить подключение на телефоне (окно "Allow USB debugging?")
+
+2. **Выбрать устройство:**
+   - В тулбаре сверху появится dropdown с устройствами
+   - Выбрать ваше устройство (например "MT15AEM24120007")
+
+3. **Запустить приложение:**
+   - Нажать зелёную кнопку ▶️ **Run** (или Shift+F10)
+   - Android Studio соберёт APK, установит и запустит на устройстве
+
+### Использование эмулятора
+
+Если нет физического устройства:
+
+1. **Создать эмулятор:**
+   - Tools → Device Manager
+   - Нажать "Create Device"
+   - Выбрать Phone → Pixel 8 (или любой с API 33+)
+   - Выбрать System Image: Android 13 (API 33) или выше
+   - Нажать Next → Finish
+
+2. **Запустить эмулятор:**
+   - В Device Manager нажать ▶️ рядом с эмулятором
+   - Подождать загрузки (~1-2 минуты)
+
+3. **Запустить приложение:**
+   - Выбрать эмулятор в dropdown
+   - Нажать ▶️ Run
+
+### Логи в Android Studio
+
+**Вариант 1: Logcat (встроенный)**
+- View → Tool Windows → Logcat (или Alt+6)
+- Фильтровать по тегу: `eckwms` или `ScanRecovery`
+
+**Вариант 2: Run Window**
+- После запуска приложения появится вкладка "Run"
+- Показывает логи установки и запуска
+
+### Build Variants
+
+В Android Studio можно переключаться между debug/release:
+
+1. View → Tool Windows → Build Variants
+2. Выбрать "debug" или "release"
+3. Пересобрать проект
+
+**Debug:**
+- Подписывается автоматически debug-ключом
+- Включены логи и отладка
+- Быстрая сборка
+
+**Release:**
+- Требует keystore из `gradle.properties`
+- Оптимизирован (R8/ProGuard)
+- Готов для продакшена
 
 ---
 
@@ -206,13 +327,16 @@ minSdk = 33          (Android 13)
 ```
 JDK Target: 11
 Kotlin: 2.0.21
+KSP: 2.0.21-1.0.28
 ```
 
 ### Build System
 ```
 Gradle: 8.13
-Android Gradle Plugin: 8.13.0
+Android Gradle Plugin (AGP): 8.7.3
 ```
+
+**⚠️ Важно:** Не используйте AGP 9.0+ - несовместимо с KSP и Room в текущей конфигурации.
 
 ### App Package
 ```
@@ -299,6 +423,34 @@ rmdir /s /q %USERPROFILE%\.gradle\caches
 gradlew.bat clean build
 ```
 
+### KSP Error: "unexpected jvm signature V"
+Это означает несовместимость версий Kotlin/KSP/AGP. Проверьте `gradle/libs.versions.toml`:
+
+```toml
+[versions]
+agp = "8.7.3"        # НЕ 9.0+
+kotlin = "2.0.21"
+ksp = "2.0.21-1.0.28"  # Должна соответствовать версии Kotlin
+```
+
+После изменения версий:
+```batch
+gradlew.bat clean
+rmdir /s /q .gradle
+rmdir /s /q app\build
+gradlew.bat assembleDebug
+```
+
+### "INSTALL_FAILED_UPDATE_INCOMPATIBLE"
+Старая версия приложения с другой подписью. Удалить и переустановить:
+```batch
+adb uninstall com.xelth.eckwms_movfast
+adb install app\build\outputs\apk\debug\app-debug.apk
+```
+
+### Device "unauthorized" в adb devices
+На телефоне появится окно "Allow USB debugging?" - нажмите OK/Allow.
+
 ---
 
 ## Verification Checklist
@@ -357,5 +509,6 @@ gradlew.bat assembleDebug
 
 ---
 
-**Last Updated:** 2026-01-15
-**Tested on:** Windows 10/11 with Android Studio
+**Last Updated:** 2026-01-24
+**Tested on:** Windows 10/11 with Android Studio Ladybug
+**Tested Versions:** AGP 8.7.3, Gradle 8.13, Kotlin 2.0.21, KSP 2.0.21-1.0.28
