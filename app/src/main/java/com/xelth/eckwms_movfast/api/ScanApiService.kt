@@ -117,10 +117,16 @@ class ScanApiService(private val context: Context) {
                         val type = aiJson.optString("type", "info")
                         val aiMessage = aiJson.optString("message", "")
                         val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+
+                        // Support both "options" (Standard) and "suggestedActions" (Gemini AI)
                         val options = if (aiJson.has("options")) {
                             val optionsArray = aiJson.getJSONArray("options")
                             (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                        } else if (aiJson.has("suggestedActions")) {
+                            val optionsArray = aiJson.getJSONArray("suggestedActions")
+                            (0 until optionsArray.length()).map { optionsArray.getString(it) }
                         } else null
+
                         val data = if (aiJson.has("data")) {
                             val dataJson = aiJson.getJSONObject("data")
                             dataJson.keys().asSequence().associateWith { dataJson.get(it) }
@@ -238,10 +244,16 @@ class ScanApiService(private val context: Context) {
                         val type = aiJson.optString("type", "info")
                         val aiMessage = aiJson.optString("message", "")
                         val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+
+                        // Support both "options" (Standard) and "suggestedActions" (Gemini AI)
                         val options = if (aiJson.has("options")) {
                             val optionsArray = aiJson.getJSONArray("options")
                             (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                        } else if (aiJson.has("suggestedActions")) {
+                            val optionsArray = aiJson.getJSONArray("suggestedActions")
+                            (0 until optionsArray.length()).map { optionsArray.getString(it) }
                         } else null
+
                         val data = if (aiJson.has("data")) {
                             val dataJson = aiJson.getJSONObject("data")
                             dataJson.keys().asSequence().associateWith { dataJson.get(it) }

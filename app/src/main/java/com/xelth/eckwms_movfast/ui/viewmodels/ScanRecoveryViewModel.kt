@@ -150,13 +150,21 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         if (currentInteraction != null) {
             addLog("User responded to AI ${currentInteraction.type}: $response")
 
+            // Normalize response for backend compatibility (Gemini expects "yes")
+            val normalizedResponse = if (
+                response.equals("yes", ignoreCase = true) ||
+                response.equals("confirm", ignoreCase = true) ||
+                response.equals("save", ignoreCase = true) ||
+                response.equals("да", ignoreCase = true)
+            ) "yes" else response.lowercase()
+
             // Send response back to server via hybrid transport
             viewModelScope.launch {
                 try {
                     val result = com.xelth.eckwms_movfast.net.HybridMessageSender.sendAiResponse(
                         apiService = scanApiService,
                         interactionId = currentInteraction.id,
-                        response = response,
+                        response = normalizedResponse,
                         barcode = currentInteraction.barcode
                     )
 

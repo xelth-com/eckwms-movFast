@@ -162,10 +162,16 @@ object HybridMessageSender {
             val type = json.optString("type", "info")
             val message = json.optString("message", "")
             val barcode = json.optString("barcode", null)
+
+            // Support both "options" (Standard) and "suggestedActions" (Gemini AI)
             val options = if (json.has("options")) {
                 val optionsArray = json.getJSONArray("options")
                 (0 until optionsArray.length()).map { optionsArray.getString(it) }
+            } else if (json.has("suggestedActions")) {
+                val optionsArray = json.getJSONArray("suggestedActions")
+                (0 until optionsArray.length()).map { optionsArray.getString(it) }
             } else null
+
             val data = if (json.has("data")) {
                 val dataJson = json.getJSONObject("data")
                 dataJson.keys().asSequence().associateWith { dataJson.get(it) }
