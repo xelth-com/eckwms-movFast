@@ -2,6 +2,8 @@
 
 Quick reference for development scripts in this project.
 
+> **Note:** These scripts follow conventions from `.eck/WINDOWS_BUILD_SETUP.md`
+
 ## 🚀 All-in-One Deploy
 
 **Windows:**
@@ -15,11 +17,11 @@ dev-deploy.bat
 ```
 
 **What it does:**
-1. 🧹 Clean build cache
+1. 🧹 Clean build cache (`gradlew clean assembleDebug`)
 2. 🔨 Build debug APK
-3. 📲 Install on connected device
-4. 🚀 Launch the app
-5. 👀 Watch filtered logs
+3. 📲 Install on device (`gradlew installDebug` - recommended method)
+4. 🚀 Launch the app (`adb shell am start`)
+5. 👀 Watch filtered logs (simple filter by keywords)
 
 ## 👀 Log Monitoring Only
 
@@ -57,6 +59,10 @@ gradlew.bat assembleDebug
 
 ### Install Only
 ```bash
+# Recommended: Using Gradle (handles reinstall automatically)
+gradlew.bat installDebug
+
+# Alternative: Manual ADB install
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -106,3 +112,11 @@ gradlew.bat assembleDebug
 - **Release APK:** `app/build/outputs/apk/release/app-release.apk`
 - **Build logs:** Check console output
 - **Logcat:** Real-time via `adb logcat`
+
+---
+
+## 📚 See Also
+
+- **Full setup guide:** `.eck/WINDOWS_BUILD_SETUP.md`
+- **Quick operations:** `.eck/OPERATIONS.md`
+- **Build troubleshooting:** `.eck/WINDOWS_BUILD_SETUP.md` → Troubleshooting section

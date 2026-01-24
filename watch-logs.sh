@@ -2,6 +2,7 @@
 # ========================================
 # Watch Android App Logs (Linux/Mac)
 # Monitors app-specific logs only
+# Follows: .eck/WINDOWS_BUILD_SETUP.md ADB Commands
 # ========================================
 
 # Colors for output
@@ -17,13 +18,5 @@ echo -e "${YELLOW}Press Ctrl+C to stop${NC}\n"
 # Clear logcat buffer
 adb logcat -c
 
-# Watch filtered logs with color
-adb logcat -v color -s \
-    "ScanRecoveryVM" \
-    "ScanApiService" \
-    "HybridSender" \
-    "ScannerManager" \
-    "XCScannerWrapper" \
-    "AUTO_PAIR" \
-    "System.out" \
-    "AndroidRuntime"
+# Filter logs (simple grep approach)
+adb logcat | grep -E "eckwms|ScanRecoveryVM|ScanApiService|HybridSender|AndroidRuntime"

@@ -2,16 +2,14 @@
 REM ========================================
 REM Android Dev Deployment Script (Windows)
 REM Builds, installs, and monitors the app
+REM See: .eck/WINDOWS_BUILD_SETUP.md for details
 REM ========================================
 
 setlocal
 
-REM Set Java path for Gradle
+REM Set Java path for Gradle (as per WINDOWS_BUILD_SETUP.md)
 set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
 set PATH=%JAVA_HOME%\bin;%PATH%
-
-REM Set ADB path
-set ADB=C:\Users\Dmytro\AppData\Local\Android\Sdk\platform-tools\adb.exe
 
 echo.
 echo ============================================
@@ -28,11 +26,12 @@ echo.
 echo ============================================
 echo 📲 Step 2/4: Installing on device...
 echo ============================================
-"%ADB%" install -r app\build\outputs\apk\debug\app-debug.apk
+REM Using gradlew installDebug (as per WINDOWS_BUILD_SETUP.md Device Operations)
+call gradlew.bat installDebug
 if %errorlevel% neq 0 (
     echo ⚠️ Install failed. Trying to uninstall first...
-    "%ADB%" uninstall com.xelth.eckwms_movfast
-    "%ADB%" install app\build\outputs\apk\debug\app-debug.apk
+    call gradlew.bat uninstallDebug
+    call gradlew.bat installDebug
     if %errorlevel% neq 0 (
         echo ❌ Installation failed!
         pause
@@ -44,7 +43,8 @@ echo.
 echo ============================================
 echo 🚀 Step 3/4: Launching app...
 echo ============================================
-"%ADB%" shell am start -n com.xelth.eckwms_movfast/.MainActivity
+REM Using adb from PATH (as per WINDOWS_BUILD_SETUP.md ADB Commands)
+adb shell am start -n com.xelth.eckwms_movfast/.MainActivity
 
 echo.
 echo ============================================
@@ -54,17 +54,9 @@ echo Press Ctrl+C to stop watching logs
 echo.
 
 REM Clear logcat buffer
-"%ADB%" logcat -c
+adb logcat -c
 
-REM Watch filtered logs
-"%ADB%" logcat -s ^
-    ScanRecoveryVM:* ^
-    ScanApiService:* ^
-    HybridSender:* ^
-    ScannerManager:* ^
-    XCScannerWrapper:* ^
-    AUTO_PAIR:* ^
-    System.out:I ^
-    AndroidRuntime:E
+REM Filter logs by app (as per WINDOWS_BUILD_SETUP.md - simple filter)
+adb logcat | findstr "eckwms ScanRecoveryVM ScanApiService HybridSender AndroidRuntime"
 
 endlocal

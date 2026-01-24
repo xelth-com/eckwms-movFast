@@ -2,6 +2,7 @@
 # ========================================
 # Android Dev Deployment Script (Linux/Mac)
 # Builds, installs, and monitors the app
+# Follows: .eck/WINDOWS_BUILD_SETUP.md conventions
 # ========================================
 
 set -e  # Exit on error
@@ -22,11 +23,11 @@ echo -e "\n${BLUE}============================================${NC}"
 echo -e "${BLUE}📲 Step 2/4: Installing on device...${NC}"
 echo -e "${BLUE}============================================${NC}"
 
-# Try install with -r flag (reinstall preserving data)
-if ! adb install -r app/build/outputs/apk/debug/app-debug.apk; then
+# Using gradlew installDebug (matches Windows OPERATIONS.md)
+if ! ./gradlew installDebug; then
     echo -e "${YELLOW}⚠️ Install failed. Trying to uninstall first...${NC}"
-    adb uninstall com.xelth.eckwms_movfast
-    adb install app/build/outputs/apk/debug/app-debug.apk
+    ./gradlew uninstallDebug || true
+    ./gradlew installDebug
 fi
 
 echo -e "\n${BLUE}============================================${NC}"
@@ -42,13 +43,5 @@ echo -e "${YELLOW}Press Ctrl+C to stop watching logs${NC}\n"
 # Clear logcat buffer
 adb logcat -c
 
-# Watch filtered logs with color
-adb logcat -v color -s \
-    "ScanRecoveryVM" \
-    "ScanApiService" \
-    "HybridSender" \
-    "ScannerManager" \
-    "XCScannerWrapper" \
-    "AUTO_PAIR" \
-    "System.out" \
-    "AndroidRuntime"
+# Filter logs (simple grep approach)
+adb logcat | grep -E "eckwms|ScanRecoveryVM|ScanApiService|HybridSender|AndroidRuntime"

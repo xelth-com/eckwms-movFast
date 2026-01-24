@@ -2,12 +2,10 @@
 REM ========================================
 REM Watch Android App Logs (Windows)
 REM Monitors app-specific logs only
+REM See: .eck/WINDOWS_BUILD_SETUP.md ADB Commands
 REM ========================================
 
 setlocal
-
-REM Set ADB path
-set ADB=C:\Users\Dmytro\AppData\Local\Android\Sdk\platform-tools\adb.exe
 
 echo ============================================
 echo 👀 Watching ECKWMS MovFast Logs
@@ -16,17 +14,9 @@ echo Press Ctrl+C to stop
 echo.
 
 REM Clear logcat buffer
-"%ADB%" logcat -c
+adb logcat -c
 
-REM Watch filtered logs
-"%ADB%" logcat -s ^
-    ScanRecoveryVM:* ^
-    ScanApiService:* ^
-    HybridSender:* ^
-    ScannerManager:* ^
-    XCScannerWrapper:* ^
-    AUTO_PAIR:* ^
-    System.out:I ^
-    AndroidRuntime:E
+REM Filter logs by app (as per WINDOWS_BUILD_SETUP.md)
+adb logcat | findstr "eckwms ScanRecoveryVM ScanApiService HybridSender AndroidRuntime"
 
 endlocal
