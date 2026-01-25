@@ -1648,7 +1648,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addPairingLog("")
         addPairingLog("📤 Sending credentials to server...")
         addPairingLog("   URL: $reachableUrl")
-        addPairingLog("   API: /E/api/internal/register-device")
+        addPairingLog("   API: /api/internal/register-device")
         addPairingLog("   Device: ${deviceId.take(8)}...")
         addPairingLog("")
         addPairingLog("⏳ Waiting for response...")

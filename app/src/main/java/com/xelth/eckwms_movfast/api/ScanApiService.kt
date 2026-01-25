@@ -17,14 +17,13 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 
 /**
  * Сервис для взаимодействия с API сканирования штрих-кодов
- * Updated for Go Server structure (endpoints: /E/api/... for subdirectory deployment)
+ * Updated: URL construction now relies on SettingsManager base URL without hardcoded prefix
  */
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
     // API Key for authentication with the server buffer
-    // Configured for public demo mode - scans will be visible on pda.repair/eckwms
-    private val API_KEY = "public-demo-key-for-eckwms-app"
+    private val API_KEY = "[REDACTED_GENERIC_SECRET]"
 
     // Ссылка на ScannerManager для получения информации о типе штрих-кода
     private var scannerManager: ScannerManager? = null
@@ -55,8 +54,8 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Updated: Go server at /E/ subdirectory
-            val url = URL("$baseUrl/E/api/scan")
+            // Fix: Removed hardcoded /E/ prefix
+            val url = URL("$baseUrl/api/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -183,14 +182,13 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Updated: Go server at /E/ subdirectory
-            val url = URL("$baseUrl/E/api/scan")
+            // Fix: Removed hardcoded /E/ prefix
+            val url = URL("$baseUrl/api/scan")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
-            // Add auth token for protected endpoint
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
@@ -308,8 +306,8 @@ class ScanApiService(private val context: Context) {
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-        // Updated: Go server at /E/ subdirectory
-        val url = URL("$baseUrl/E/api/upload/image")
+        // Fix: Removed hardcoded /E/ prefix
+        val url = URL("$baseUrl/api/upload/image")
         val connection = url.openConnection() as HttpURLConnection
         val outputStream: java.io.OutputStream
         val writer: java.io.PrintWriter
@@ -410,8 +408,8 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
-            // Updated: Go server at /E/ subdirectory
-            val url = URL("$serverUrl/E/api/internal/register-device")
+            // Fix: Removed hardcoded /E/ prefix
+            val url = URL("$serverUrl/api/internal/register-device")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -471,8 +469,8 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Checking device status with server: $serverUrl")
 
         try {
-            // Updated: Go server at /E/ subdirectory
-            val url = URL("$serverUrl/E/api/status")
+            // Fix: Removed hardcoded /E/ prefix
+            val url = URL("$serverUrl/api/status")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/json")
@@ -636,8 +634,8 @@ class ScanApiService(private val context: Context) {
 
         try {
             val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Updated: Go backend endpoint for AI response
-            val url = URL("$baseUrl/E/api/ai/respond")
+            // Fix: Removed hardcoded /E/ prefix
+            val url = URL("$baseUrl/api/ai/respond")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
