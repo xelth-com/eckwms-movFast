@@ -509,6 +509,19 @@ fun WorkflowDrivenUI(
                         onClick = onNavigateToCamera,
                         modifier = Modifier.focusable(false)
                     ) { Text("Capture Photo") }
+                    "showMap" -> {
+                        val whId = currentStep.variable ?: "1"
+                        // TODO: Extract target location barcode from step params when WorkflowStep has params map
+                        // For now, placeholder for demo
+                        val target = "p-LOC-001"
+                        
+                        Button(
+                            onClick = { 
+                                navController.navigate("warehouseMap/$whId?target=$target") 
+                            },
+                            modifier = Modifier.focusable(false)
+                        ) { Text("Show Map") }
+                    }
                     "showUI" -> Button(
                         onClick = { viewModel.endWorkflowLoop() },
                         modifier = Modifier.focusable(false)

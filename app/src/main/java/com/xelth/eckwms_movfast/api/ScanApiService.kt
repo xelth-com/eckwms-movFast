@@ -408,8 +408,8 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
-            // Fix: Removed hardcoded /E/ prefix
-            val url = URL("$serverUrl/api/internal/register-device")
+            // Fix: Removed hardcoded /E/ prefix, removed trailing slash to prevent double slashes
+            val url = URL("${serverUrl.removeSuffix("/")}/api/internal/register-device")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -469,8 +469,8 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Checking device status with server: $serverUrl")
 
         try {
-            // Fix: Removed hardcoded /E/ prefix
-            val url = URL("$serverUrl/api/status")
+            // Fix: Removed hardcoded /E/ prefix, removed trailing slash to prevent double slashes
+            val url = URL("${serverUrl.removeSuffix("/")}/api/status")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/json")
@@ -677,6 +677,37 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error sending AI response: ${e.message}", e)
             ScanResult.Error(e.message ?: "Unknown error sending AI response")
+        }
+    }
+
+    /**
+     * Fetches warehouse map data (blueprint)
+     */
+    suspend fun getWarehouseMap(warehouseId: String): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+        Log.d(TAG, "Fetching map for warehouse: $warehouseId")
+
+        try {
+            val url = URL("${serverUrl.removeSuffix("/")}/api/warehouse/$warehouseId/map")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                return@withContext ScanResult.Success(
+                    type = "map_data",
+                    message = "Map fetched",
+                    data = response
+                )
+            } else {
+                return@withContext ScanResult.Error("HTTP $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching map", e)
+            return@withContext ScanResult.Error(e.message ?: "Unknown error")
         }
     }
 

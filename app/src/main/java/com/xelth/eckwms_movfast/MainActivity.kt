@@ -19,6 +19,7 @@ import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
+import com.xelth.eckwms_movfast.ui.screens.WarehouseMapScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.utils.BitmapCache
@@ -193,6 +194,26 @@ class MainActivity : ComponentActivity() {
 
                     composable("restockScreen") {
                         RestockScreen(navController = navController)
+                    }
+
+                    composable(
+                        route = "warehouseMap/{warehouseId}?target={target}",
+                        arguments = listOf(
+                            navArgument("warehouseId") { type = NavType.StringType },
+                            navArgument("target") { type = NavType.StringType; nullable = true }
+                        )
+                    ) { backStackEntry ->
+                        val warehouseId = backStackEntry.arguments?.getString("warehouseId") ?: "1"
+                        val target = backStackEntry.arguments?.getString("target")
+                        
+                        LaunchedEffect(warehouseId) {
+                            viewModel.fetchAndShowMap(warehouseId, target)
+                        }
+                        
+                        WarehouseMapScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
                     }
                 }
             }

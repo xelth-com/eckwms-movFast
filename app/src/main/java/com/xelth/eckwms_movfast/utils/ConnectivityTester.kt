@@ -65,17 +65,18 @@ object ConnectivityTester {
         return try {
             withTimeoutOrNull(TIMEOUT_MS) {
                 val healthPath = if (urlStr.contains("PROXY", ignoreCase = true)) "/HEALTH" else "/health"
-                Log.d(TAG, "🔍 Testing: $urlStr$healthPath")
+                val baseUrl = urlStr.removeSuffix("/")
+                Log.d(TAG, "🔍 Testing: $baseUrl$healthPath")
 
-                val url = URL("$urlStr$healthPath")
+                val url = URL("$baseUrl$healthPath")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = TIMEOUT_MS.toInt()
                 connection.readTimeout = TIMEOUT_MS.toInt()
                 connection.setRequestProperty("Accept", "application/json")
                 connection.setRequestProperty("User-Agent", "eckWMS-Android/1.0")
-                // Prevent redirects to speed up failure on captive portals
-                connection.instanceFollowRedirects = false
+                // Follow redirects for HTTPS URLs, but prevent them for HTTP to avoid captive portals
+                connection.instanceFollowRedirects = urlStr.startsWith("https://", ignoreCase = true)
 
                 val responseCode = connection.responseCode
                 val timeTaken = System.currentTimeMillis() - start
