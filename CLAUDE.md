@@ -5,8 +5,8 @@ You are an Expert Developer. The architecture is already decided. Your job is to
 
 ## DEFINITION OF DONE (CRITICAL)
 When the task is complete:
-1. **UPDATE** the `.eck/AnswerToSA.md` file with your status.
-2. **CALL** the tool `eck_finish_task` to commit and sync context.
+1. **UPDATE** the `.eck/lastsnapshot/AnswerToSA.md` file with your status.
+2. **Use the `eck_finish_task` tool** to commit and sync context.
 3. **DO NOT** use raw git commands for the final commit.
 
 ## CONTEXT
