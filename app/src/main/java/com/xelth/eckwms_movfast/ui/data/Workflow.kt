@@ -15,6 +15,7 @@ data class WorkflowStep(
     val action: String, // e.g., "scanBarcode", "captureImage", "showUI"
     val ui: UIConfig,
     val variable: String? = null, // Variable to store the result in
+    val params: Map<String, String>? = null, // Extra parameters (e.g. for dynamic UI)
     val upload: UploadConfig? = null,
     val loop: LoopConfig? = null
 )

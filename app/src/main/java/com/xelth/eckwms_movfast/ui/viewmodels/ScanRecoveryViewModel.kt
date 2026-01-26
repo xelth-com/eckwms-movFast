@@ -955,7 +955,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     // --- WORKFLOW METHODS ---
     fun startWorkflow(workflowJson: String) {
         try {
-            val workflow = Json.decodeFromString<Workflow>(workflowJson)
+            // Use lenient parser to avoid crashes on extra fields
+            val parser = Json { ignoreUnknownKeys = true }
+            val workflow = parser.decodeFromString<Workflow>(workflowJson)
             workflowEngine = WorkflowEngine(workflow) { logMessage -> addLog(logMessage) }
             workflowEngine?.state?.observeForever { newState ->
                 addLog("[ViewModel] Observed new workflow state. Active: ${newState.isActive}, Step: ${newState.currentStep?.stepId}, Instruction: '${newState.instruction}'")

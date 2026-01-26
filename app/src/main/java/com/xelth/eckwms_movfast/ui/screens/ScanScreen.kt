@@ -156,7 +156,7 @@ fun ScanScreen(
                             Text("Start Manual Restock Order")
                         }
                     }
-                    WorkflowDrivenUI(viewModel = viewModel, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
+                    WorkflowDrivenUI(viewModel = viewModel, navController = navController, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
                     ScanHistorySection(viewModel = viewModel)
                 }
             } else {
@@ -482,6 +482,7 @@ fun ScanningStatusCard(
 @Composable
 fun WorkflowDrivenUI(
     viewModel: ScanRecoveryViewModel,
+    navController: androidx.navigation.NavController,
     onNavigateToCamera: () -> Unit
 ) {
     val workflowState by viewModel.workflowState.observeAsState()
