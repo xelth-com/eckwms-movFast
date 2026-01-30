@@ -44,9 +44,14 @@ class SyncWorker(
                     }
                 }
                 "image_upload" -> {
-                    // Future implementation for image uploads
-                    Log.d(TAG, "Image upload not yet implemented")
-                    Result.success()
+                    val result = processImageUploadJob(job.payload, job.scanId)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Image upload job ${job.id} completed successfully")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
                 }
                 else -> {
                     Log.w(TAG, "Unknown job type: ${job.type}")
@@ -94,6 +99,63 @@ class SyncWorker(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error processing scan job: ${e.message}", e)
+            false
+        }
+    }
+
+    private suspend fun processImageUploadJob(payload: String, scanId: Long?): Boolean {
+        return try {
+            val json = JSONObject(payload)
+            val imagePath = json.getString("imagePath")
+            val orderId = if (json.has("orderId")) json.getString("orderId") else null
+
+            val file = java.io.File(imagePath)
+            if (!file.exists()) {
+                Log.e(TAG, "Image file not found: $imagePath")
+                scanId?.let {
+                    database.scanDao().updateScanStatus(it, "FAILED")
+                }
+                return true // Fail permanently (cannot retry if file missing)
+            }
+
+            // Load bitmap
+            val bitmap = android.graphics.BitmapFactory.decodeFile(imagePath)
+            if (bitmap == null) {
+                Log.e(TAG, "Failed to decode bitmap: $imagePath")
+                scanId?.let {
+                    database.scanDao().updateScanStatus(it, "FAILED")
+                }
+                return true // Fail permanently
+            }
+
+            val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(applicationContext)
+            val quality = com.xelth.eckwms_movfast.utils.SettingsManager.getImageQuality()
+
+            Log.d(TAG, "Uploading image from background: $imagePath")
+
+            // Upload
+            val result = apiService.uploadImage(bitmap, deviceId, "sync_worker", null, quality, orderId)
+
+            bitmap.recycle() // Free memory
+
+            when (result) {
+                is ScanResult.Success -> {
+                    scanId?.let {
+                        database.scanDao().updateScanStatus(it, "CONFIRMED")
+                        Log.d(TAG, "Updated image upload $it status to CONFIRMED")
+                    }
+                    true
+                }
+                is ScanResult.Error -> {
+                    Log.e(TAG, "Image upload failed: ${result.message}")
+                    scanId?.let {
+                        database.scanDao().updateScanStatus(it, "FAILED")
+                    }
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing image upload job: ${e.message}", e)
             false
         }
     }

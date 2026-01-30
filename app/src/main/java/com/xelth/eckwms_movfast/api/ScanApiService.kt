@@ -161,6 +161,63 @@ class ScanApiService(private val context: Context) {
                     checksum = checksum,
                     aiInteraction = aiInteraction
                 )
+            } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                // 401 Unauthorized - attempt silent re-auth and retry
+                Log.w(TAG, "401 Unauthorized on scan. Attempting silent re-auth...")
+                connection.disconnect()
+
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    // Retry the request with new token
+                    Log.i(TAG, "Retrying scan with refreshed token...")
+                    val retryConnection = url.openConnection() as HttpURLConnection
+                    retryConnection.requestMethod = "POST"
+                    retryConnection.setRequestProperty("Content-Type", "application/json")
+                    retryConnection.setRequestProperty("Accept", "application/json")
+                    retryConnection.setRequestProperty("X-API-Key", API_KEY)
+                    retryConnection.setRequestProperty("Authorization", "Bearer $newToken")
+                    retryConnection.doOutput = true
+
+                    val retryWriter = OutputStreamWriter(retryConnection.outputStream, "UTF-8")
+                    retryWriter.write(jsonRequest.toString())
+                    retryWriter.flush()
+                    retryWriter.close()
+
+                    val retryResponseCode = retryConnection.responseCode
+                    if (retryResponseCode == HttpURLConnection.HTTP_OK || retryResponseCode == HttpURLConnection.HTTP_CREATED) {
+                        val response = retryConnection.inputStream.bufferedReader().use { it.readText() }
+                        val responseJson = JSONObject(response)
+                        val checksum = responseJson.optString("checksum", "")
+                        val message = responseJson.optString("message", "Scan buffered successfully")
+
+                        // Parse AI interaction (simplified - full implementation would include same logic as above)
+                        val aiInteraction = if (responseJson.has("ai_interaction")) {
+                            try {
+                                val aiJson = responseJson.getJSONObject("ai_interaction")
+                                com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                                    id = aiJson.optString("id", null),
+                                    type = aiJson.optString("type", "info"),
+                                    message = aiJson.optString("message", ""),
+                                    options = if (aiJson.has("options")) {
+                                        val optionsArray = aiJson.getJSONArray("options")
+                                        (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                                    } else null,
+                                    data = null,
+                                    barcode = aiJson.optString("barcode", barcode)
+                                )
+                            } catch (e: Exception) { null }
+                        } else null
+
+                        return@withContext ScanResult.Success("scan", message, response, checksum, aiInteraction = aiInteraction)
+                    } else {
+                        val retryError = retryConnection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $retryResponseCode"
+                        Log.e(TAG, "Retry failed: $retryError")
+                        return@withContext ScanResult.Error(retryError)
+                    }
+                } else {
+                    Log.e(TAG, "Silent re-auth failed, cannot retry")
+                    return@withContext ScanResult.Error("Authentication required")
+                }
             } else {
                 // Обрабатываем ошибку
                 val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
@@ -393,6 +450,20 @@ class ScanApiService(private val context: Context) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Image upload successful: $response")
                 return@withContext ScanResult.Success("upload", "Image uploaded", response)
+            } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                // 401 Unauthorized - attempt silent re-auth and retry
+                Log.w(TAG, "401 Unauthorized on image upload. Attempting silent re-auth...")
+                connection.disconnect()
+
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    // Retry upload with new token
+                    Log.i(TAG, "Retrying image upload with refreshed token...")
+                    return@withContext uploadImageWithToken(bitmap, deviceId, scanMode, barcodeData, quality, orderId, newToken)
+                } else {
+                    Log.e(TAG, "Silent re-auth failed for image upload")
+                    return@withContext ScanResult.Error("Authentication required")
+                }
             } else {
                 val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
                 Log.e(TAG, "Image upload failed: $error")
@@ -723,6 +794,137 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching map", e)
             return@withContext ScanResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Internal helper for uploadImage with explicit token (used for retry)
+     */
+    private suspend fun uploadImageWithToken(
+        bitmap: Bitmap,
+        deviceId: String,
+        scanMode: String,
+        barcodeData: String?,
+        quality: Int,
+        orderId: String?,
+        token: String
+    ): ScanResult = withContext(Dispatchers.IO) {
+        val boundary = "Boundary-${System.currentTimeMillis()}"
+        var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length - 1)
+        }
+        val finalUrl = "$baseUrl/api/upload/image"
+        val url = URL(finalUrl)
+        val connection = url.openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Authorization", "Bearer $token")  // Use provided token
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.doOutput = true
+
+            val outputStream = connection.outputStream
+            val writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+
+            // Send deviceId
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"deviceId\"").append("\r\n")
+            writer.append("\r\n").append(deviceId).append("\r\n").flush()
+
+            // Send scanMode
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"scanMode\"").append("\r\n")
+            writer.append("\r\n").append(scanMode).append("\r\n").flush()
+
+            // Send barcodeData if available
+            barcodeData?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"barcodeData\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Send orderId if available
+            orderId?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"orderId\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Compress and send image
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
+            val imageBytes = stream.toByteArray()
+
+            val crc = CRC32()
+            crc.update(imageBytes)
+            val imageChecksum = crc.value.toString(16).padStart(8, '0')
+
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"imageChecksum\"").append("\r\n")
+            writer.append("\r\n").append(imageChecksum).append("\r\n").flush()
+
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.webp\"").append("\r\n")
+            writer.append("Content-Type: image/webp").append("\r\n")
+            writer.append("\r\n").flush()
+            outputStream.write(imageBytes)
+            outputStream.flush()
+            writer.append("\r\n").flush()
+
+            writer.append("--$boundary--").append("\r\n").flush()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Image upload retry successful: $response")
+                return@withContext ScanResult.Success("upload", "Image uploaded", response)
+            } else {
+                val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                return@withContext ScanResult.Error("Upload retry failed: $error")
+            }
+        } catch (e: Exception) {
+            return@withContext ScanResult.Error(e.message ?: "Upload retry error")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
+     * Performs silent re-authentication using stored crypto keys
+     * Called automatically when receiving 401 Unauthorized
+     * @return New JWT token if successful, null otherwise
+     */
+    private suspend fun performSilentAuth(): String? {
+        return try {
+            Log.i(TAG, "🔄 Attempting silent re-authentication...")
+            val crypto = com.xelth.eckwms_movfast.utils.CryptoManager
+            val pubKey = crypto.getPublicKeyBase64()
+            val ts = System.currentTimeMillis()
+
+            // Create signature for registration
+            val sigData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$pubKey\"}"
+            val signature = android.util.Base64.encodeToString(
+                crypto.sign(sigData.toByteArray()),
+                android.util.Base64.NO_WRAP
+            )
+
+            // Call registerDevice to get new token
+            val result = registerDevice(pubKey, signature, ts)
+            if (result is ScanResult.Success) {
+                val json = JSONObject(result.data)
+                val token = json.optString("token")
+                if (token.isNotEmpty()) {
+                    com.xelth.eckwms_movfast.utils.SettingsManager.saveAuthToken(token)
+                    Log.i(TAG, "✅ Silent re-auth successful, new token saved")
+                    return token
+                }
+            }
+            Log.e(TAG, "❌ Silent re-auth failed: no token in response")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Silent re-auth exception: ${e.message}", e)
+            null
         }
     }
 
