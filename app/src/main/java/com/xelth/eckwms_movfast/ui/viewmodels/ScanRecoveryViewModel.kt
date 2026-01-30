@@ -1541,12 +1541,26 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         SettingsManager.saveServerUrl(reachableUrl)
 
-        val globalCandidate = candidates.firstOrNull { it.contains("pda.repair") || it.startsWith("https://") }
-        if (globalCandidate != null && globalCandidate != reachableUrl) {
-            SettingsManager.saveGlobalServerUrl(globalCandidate)
-            addPairingLog("✅ Saved fallback global URL: $globalCandidate")
-        } else if (reachableUrl.contains("pda.repair")) {
+        // Detect if reachableUrl is IP-based (local) or domain-based (global)
+        val cleanUrl = reachableUrl.replace(Regex("https?://"), "").split(":").first()
+        val isIpAddress = cleanUrl.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+"))
+
+        if (isIpAddress) {
+            // Local IP found - look for domain-based global candidate
+            val globalCandidate = candidates.firstOrNull { url ->
+                val candidateClean = url.replace(Regex("https?://"), "").split(":").first()
+                !candidateClean.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) // Not an IP = domain
+            }
+            if (globalCandidate != null) {
+                SettingsManager.saveGlobalServerUrl(globalCandidate)
+                addPairingLog("✅ Saved global server: $globalCandidate")
+            } else {
+                addPairingLog("ℹ️ No global server URL provided (local-only setup)")
+            }
+        } else {
+            // Domain-based URL - use as both local and global
             SettingsManager.saveGlobalServerUrl(reachableUrl)
+            addPairingLog("✅ Using domain-based server as global: $reachableUrl")
         }
 
         performSecureRegistration(reachableUrl, instanceId, inviteToken)

@@ -6,8 +6,8 @@ import androidx.compose.ui.graphics.Color
  * Connection type indicator
  */
 enum class ConnectionType {
-    LOCAL_IP,    // 192.168.x.x or similar - shows Computer icon
-    GLOBAL_URL,  // domain.com - shows Globe icon
+    LOCAL_IP,    // IP address (e.g., 10.x.x.x, 192.168.x.x) - shows Computer icon
+    GLOBAL_URL,  // Domain name (e.g., wms.example.com) - shows Globe icon
     NONE         // No connection
 }
 
