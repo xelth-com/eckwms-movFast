@@ -70,9 +70,9 @@ fun ScanScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    containerColor = Color(0xFF000000), // Black background
+                    titleContentColor = Color.White,
+                    actionIconContentColor = Color.White
                 ),
                 actions = {
                     // === ADVANCED NETWORK HEALTH INDICATOR ===
@@ -81,14 +81,43 @@ fun ScanScreen(
                     // - GREEN: approved + connected via local IP (optimal path)
                     // - YELLOW: approved + connected via internet (non-optimal path)
                     // - GRAY: offline
-                    val isDeviceApproved = deviceRegistrationStatus == "active"
+                    // Accept both 'active' and 'running' as approved statuses
+                    val isDeviceApproved = deviceRegistrationStatus == "active" || deviceRegistrationStatus == "running"
+
+                    // LOG: Badge color decision
+                    android.util.Log.d("BadgeIndicator", "========================================")
+                    android.util.Log.d("BadgeIndicator", "BADGE COLOR CALCULATION:")
+                    android.util.Log.d("BadgeIndicator", "  deviceRegistrationStatus = '$deviceRegistrationStatus'")
+                    android.util.Log.d("BadgeIndicator", "  isDeviceApproved = $isDeviceApproved (expected 'active' or 'running')")
+                    android.util.Log.d("BadgeIndicator", "  networkHealthState = ${networkHealthState::class.simpleName}")
+                    android.util.Log.d("BadgeIndicator", "  isConnected = ${networkHealthState.isConnected()}")
+                    android.util.Log.d("BadgeIndicator", "  connectionType = ${networkHealthState.connectionType}")
+                    android.util.Log.d("BadgeIndicator", "  serverUrl = ${networkHealthState.serverUrl}")
+                    android.util.Log.d("BadgeIndicator", "  serverHash = ${networkHealthState.serverHash}")
+
                     val indicatorColor = when {
-                        !isDeviceApproved -> Color(0xFFF44336) // Red - not approved
-                        !networkHealthState.isConnected() -> Color(0xFF9E9E9E) // Gray - offline
-                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> Color(0xFF4CAF50) // Green - local
-                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> Color(0xFFFFEB3B) // Yellow - global
-                        else -> Color(0xFF9E9E9E) // Gray - unknown
+                        !isDeviceApproved -> {
+                            android.util.Log.w("BadgeIndicator", "  → COLOR: RED (device NOT approved)")
+                            Color(0xFFF44336) // Red - not approved
+                        }
+                        !networkHealthState.isConnected() -> {
+                            android.util.Log.d("BadgeIndicator", "  → COLOR: GRAY (offline)")
+                            Color(0xFF9E9E9E) // Gray - offline
+                        }
+                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> {
+                            android.util.Log.d("BadgeIndicator", "  → COLOR: GREEN (local IP)")
+                            Color(0xFF4CAF50) // Green - local
+                        }
+                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> {
+                            android.util.Log.d("BadgeIndicator", "  → COLOR: YELLOW (global URL)")
+                            Color(0xFFFFEB3B) // Yellow - global
+                        }
+                        else -> {
+                            android.util.Log.w("BadgeIndicator", "  → COLOR: GRAY (unknown)")
+                            Color(0xFF9E9E9E) // Gray - unknown
+                        }
                     }
+                    android.util.Log.d("BadgeIndicator", "========================================")
 
                     Row(
                         modifier = Modifier
@@ -147,26 +176,6 @@ fun ScanScreen(
                             )
                         }
                     }
-
-                    // Auth/Device Status Indicator Icon
-                    val authIcon = when (deviceRegistrationStatus) {
-                        "active" -> "✓"
-                        "pending" -> "⏳"
-                        "blocked" -> "✗"
-                        else -> "?"
-                    }
-                    val authColor = when (deviceRegistrationStatus) {
-                        "active" -> Color(0xFF4CAF50) // Green
-                        "pending" -> Color(0xFFFF9800) // Orange
-                        "blocked" -> Color(0xFFF44336) // Red
-                        else -> Color(0xFF9E9E9E) // Gray
-                    }
-                    Text(
-                        text = authIcon,
-                        color = authColor,
-                        fontSize = 20.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
 
                     // Mode Toggle Button (Temporary for dev)
                     IconButton(onClick = { viewModel.toggleUiMode() }) {
@@ -397,112 +406,6 @@ fun ScanningStatusCard(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
-
-            // Network Health Status Card - use original displayName and description
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = networkHealthState.color.copy(alpha = 0.2f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                        .clickable { viewModel.triggerManualHealthCheck() },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = networkHealthState.icon,
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.padding(end = 8.dp)
-                            )
-                            Text(
-                                text = networkHealthState.displayName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = networkHealthState.color
-                            )
-                        }
-                        Text(
-                            text = networkHealthState.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = networkHealthState.color
-                        )
-                    }
-                }
-            }
-
-            // Device Registration Status Card
-            val statusColor = when (deviceRegistrationStatus) {
-                "active" -> Color(0xFF4CAF50) // Green
-                "pending" -> Color(0xFFFF9800) // Orange
-                "blocked" -> Color(0xFFF44336) // Red
-                else -> Color(0xFF9E9E9E) // Gray
-            }
-            val statusIcon = when (deviceRegistrationStatus) {
-                "active" -> "✅"
-                "pending" -> "⏳"
-                "blocked" -> "🚫"
-                else -> "❓"
-            }
-            val statusText = when (deviceRegistrationStatus) {
-                "active" -> "Active"
-                "pending" -> "Pending Approval"
-                "blocked" -> "Blocked"
-                else -> "Unknown"
-            }
-            val statusDescription = when (deviceRegistrationStatus) {
-                "active" -> "Device is authorized and ready to scan"
-                "pending" -> "Waiting for administrator approval - scanning is blocked"
-                "blocked" -> "Device is blocked by administrator"
-                else -> "Device registration status not determined"
-            }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.2f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = statusIcon,
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.padding(end = 8.dp)
-                            )
-                            Text(
-                                text = "Device: $statusText",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = statusColor
-                            )
-                        }
-                        Text(
-                            text = statusDescription,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Status: ${scanState.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)

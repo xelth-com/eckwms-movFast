@@ -393,6 +393,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val deviceStatus = SettingsManager.getDeviceStatus()
         _deviceRegistrationStatus.postValue(deviceStatus)
         addLog("Device registration status: $deviceStatus")
+        android.util.Log.w("DeviceStatus", "========================================")
+        android.util.Log.w("DeviceStatus", "DEVICE REGISTRATION STATUS LOADED:")
+        android.util.Log.w("DeviceStatus", "  Status from SettingsManager: '$deviceStatus'")
+        android.util.Log.w("DeviceStatus", "  Expected values: 'active', 'pending', 'blocked'")
+        android.util.Log.w("DeviceStatus", "  Current value matches 'active': ${deviceStatus == "active"}")
+        android.util.Log.w("DeviceStatus", "========================================")
 
         // Load scan history from local database
         viewModelScope.launch {
@@ -584,6 +590,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         _deviceRegistrationStatus.postValue(status)
                         SettingsManager.saveDeviceStatus(status)
                         addLog("Device status updated: $status")
+                        android.util.Log.w("DeviceStatus", "========================================")
+                        android.util.Log.w("DeviceStatus", "DEVICE STATUS UPDATED FROM SERVER:")
+                        android.util.Log.w("DeviceStatus", "  Old: '${_deviceRegistrationStatus.value}'")
+                        android.util.Log.w("DeviceStatus", "  New: '$status'")
+                        android.util.Log.w("DeviceStatus", "  Matches 'active': ${status == "active"}")
+                        android.util.Log.w("DeviceStatus", "========================================")
                     }
                 } catch (e: Exception) {
                     addLog("Warning: Could not parse status from server response")
