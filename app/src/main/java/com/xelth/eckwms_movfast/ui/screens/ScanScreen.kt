@@ -13,10 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
@@ -90,22 +87,21 @@ fun ScanScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // 1. Connection Type Icon (Computer for Local, Globe for Global)
-                        val connectionIcon = when {
+                        // 1. Connection Type Icon (🖥️ for Local, 🌍 for Global)
+                        val connectionEmoji = when {
                             networkHealthState.isConnected() -> {
                                 when (networkHealthState.connectionType) {
-                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> Icons.Default.Computer
-                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> Icons.Default.Public
-                                    else -> Icons.Default.WifiOff
+                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> "🖥️"
+                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> "🌍"
+                                    else -> "❌"
                                 }
                             }
-                            else -> Icons.Default.WifiOff
+                            else -> "❌"
                         }
 
-                        Icon(
-                            imageVector = connectionIcon,
-                            contentDescription = "Connection Type",
-                            tint = networkHealthState.color,
+                        Text(
+                            text = connectionEmoji,
+                            style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.size(16.dp)
                         )
 
