@@ -110,8 +110,8 @@ object NetworkHealthMonitor {
                 connection.readTimeout = HEALTH_CHECK_TIMEOUT_MS.toInt()
                 connection.setRequestProperty("Accept", "application/json")
                 connection.setRequestProperty("User-Agent", "eckWMS-Android/HealthCheck")
-                // Follow redirects for HTTPS URLs
-                connection.instanceFollowRedirects = serverUrl.startsWith("https://", ignoreCase = true)
+                // Follow redirects for both HTTP and HTTPS (server validates /E/ prefix)
+                connection.instanceFollowRedirects = true
 
                 val responseCode = connection.responseCode
                 val timeTaken = System.currentTimeMillis() - start
