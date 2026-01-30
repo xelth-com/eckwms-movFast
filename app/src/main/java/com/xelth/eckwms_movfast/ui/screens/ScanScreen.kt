@@ -13,7 +13,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
@@ -75,13 +78,65 @@ fun ScanScreen(
                     actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                 ),
                 actions = {
-                    // Network Health Indicator (Circle with state color)
-                    Box(
+                    // === ADVANCED NETWORK HEALTH INDICATOR ===
+                    Row(
                         modifier = Modifier
-                            .padding(horizontal = 8.dp)
-                            .size(12.dp)
-                            .background(networkHealthState.color, shape = androidx.compose.foundation.shape.CircleShape)
-                    )
+                            .padding(end = 8.dp)
+                            .background(
+                                color = networkHealthState.color.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // 1. Connection Type Icon (Computer for Local, Globe for Global)
+                        val connectionIcon = when {
+                            networkHealthState.isConnected() -> {
+                                when (networkHealthState.connectionType) {
+                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> Icons.Default.Computer
+                                    com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> Icons.Default.Public
+                                    else -> Icons.Default.WifiOff
+                                }
+                            }
+                            else -> Icons.Default.WifiOff
+                        }
+
+                        Icon(
+                            imageVector = connectionIcon,
+                            contentDescription = "Connection Type",
+                            tint = networkHealthState.color,
+                            modifier = Modifier.size(16.dp)
+                        )
+
+                        // 2. Server Hash (Unique Identifier like #A1B2)
+                        if (networkHealthState.isConnected() && networkHealthState.serverHash.isNotEmpty()) {
+                            Text(
+                                text = networkHealthState.serverHash,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = networkHealthState.color
+                            )
+                        } else {
+                            Text(
+                                text = "OFF",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = networkHealthState.color
+                            )
+                        }
+
+                        // 3. Latency Indicator (if connected and latency > 0)
+                        if (networkHealthState.isConnected() && networkHealthState.latencyMs > 0) {
+                            Text(
+                                text = "${networkHealthState.latencyMs}ms",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = networkHealthState.color.copy(alpha = 0.7f),
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
 
                     // Auth/Device Status Indicator Icon
                     val authIcon = when (deviceRegistrationStatus) {

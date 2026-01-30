@@ -287,17 +287,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     /**
      * Gets the initial health state from cache for instant UI display
+     * Since we don't have latency/url data in cache, we return Checking
+     * The real health check will run immediately after startup and update the state
      */
     private fun getInitialHealthState(): NetworkHealthState {
-        val lastState = SettingsManager.getLastHealthState()
-        return when (lastState) {
-            "Direct Local" -> NetworkHealthState.DirectLocal
-            "Proxy Global" -> NetworkHealthState.ProxyGlobal
-            "Local Only" -> NetworkHealthState.LocalOnlyNoInternet
-            "Global Only" -> NetworkHealthState.GlobalOnlyCacheMode
-            "Offline" -> NetworkHealthState.Offline
-            else -> NetworkHealthState.Checking
-        }
+        // Always start with Checking - the health check will update it immediately
+        return NetworkHealthState.Checking
     }
 
     var isAutoPairing = false

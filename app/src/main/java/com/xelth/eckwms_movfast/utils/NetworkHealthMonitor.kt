@@ -169,19 +169,28 @@ object NetworkHealthMonitor {
             // Scenario 1: Direct Local (Green) - Best case
             localReachable && globalReachable -> {
                 Log.i(TAG, "State: DIRECT_LOCAL (Both servers reachable)")
-                NetworkHealthState.DirectLocal
+                NetworkHealthState.DirectLocal(
+                    serverUrl = localHealth!!.url,
+                    latencyMs = localHealth.responseTimeMs
+                )
             }
 
             // Scenario 2: Local Only (Orange) - Local OK, no internet
             localReachable && !globalReachable -> {
                 Log.i(TAG, "State: LOCAL_ONLY_NO_INTERNET (Local reachable, global not)")
-                NetworkHealthState.LocalOnlyNoInternet
+                NetworkHealthState.LocalOnlyNoInternet(
+                    serverUrl = localHealth!!.url,
+                    latencyMs = localHealth.responseTimeMs
+                )
             }
 
             // Scenario 3: Proxy Global (Yellow) - Only global reachable, using cache
             !localReachable && globalReachable -> {
                 Log.i(TAG, "State: PROXY_GLOBAL (Only global reachable)")
-                NetworkHealthState.ProxyGlobal
+                NetworkHealthState.ProxyGlobal(
+                    serverUrl = globalHealth!!.url,
+                    latencyMs = globalHealth.responseTimeMs
+                )
             }
 
             // Scenario 4: Offline (Red) - Nothing reachable
