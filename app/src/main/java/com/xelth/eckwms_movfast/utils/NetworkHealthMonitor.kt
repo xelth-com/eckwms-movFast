@@ -100,10 +100,15 @@ object NetworkHealthMonitor {
         val start = System.currentTimeMillis()
         return try {
             withTimeoutOrNull(HEALTH_CHECK_TIMEOUT_MS) {
-                val healthPath = if (serverUrl.contains("PROXY", ignoreCase = true)) "/HEALTH" else "/health"
-                Log.d(TAG, "[$serverType] Checking: $serverUrl$healthPath")
+                // Strip trailing slash to prevent double-slash in URL
+                val cleanUrl = if (serverUrl.endsWith("/")) {
+                    serverUrl.substring(0, serverUrl.length - 1)
+                } else serverUrl
 
-                val url = URL("$serverUrl$healthPath")
+                val healthPath = if (cleanUrl.contains("PROXY", ignoreCase = true)) "/HEALTH" else "/health"
+                Log.d(TAG, "[$serverType] Checking: $cleanUrl$healthPath")
+
+                val url = URL("$cleanUrl$healthPath")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = HEALTH_CHECK_TIMEOUT_MS.toInt()

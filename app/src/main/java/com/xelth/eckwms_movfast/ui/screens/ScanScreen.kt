@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.size
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
+import com.xelth.eckwms_movfast.ui.data.TransactionType
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanState
 import java.text.SimpleDateFormat
@@ -337,6 +338,20 @@ fun ScanHistoryItemCard(item: ScanHistoryItem) {
     val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     val timeString = dateFormat.format(Date(item.timestamp))
 
+    // Determine prefix and label based on transaction type
+    val prefix = if (item.transactionType == TransactionType.IMAGE_UPLOAD) {
+        "📷 "  // Camera emoji
+    } else {
+        "🔍 "  // Magnifying glass emoji
+    }
+
+    val displayText = if (item.transactionType == TransactionType.IMAGE_UPLOAD) {
+        val sizeKb = (item.imageSize ?: 0) / 1024
+        "${prefix}Image Upload (${sizeKb}KB)"
+    } else {
+        "${prefix}${item.barcode}"
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -351,12 +366,15 @@ fun ScanHistoryItemCard(item: ScanHistoryItem) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = item.barcode,
+                    text = displayText,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = if (item.transactionType == TransactionType.BARCODE_SCAN) {
+                        FontFamily.Monospace
+                    } else FontFamily.Default
                 )
                 Text(
                     text = "${item.type} • $timeString",

@@ -60,6 +60,51 @@ class WarehouseRepository(
     }
 
     /**
+     * Saves an image upload transaction to local history and sync queue
+     * @param imagePath Local file path to the captured image
+     * @param imageSize Size of the image in bytes
+     * @param orderId Optional order ID context
+     * @return Database ID of the saved transaction
+     */
+    suspend fun saveImageUpload(
+        imagePath: String,
+        imageSize: Long,
+        orderId: String? = null
+    ): Long = withContext(Dispatchers.IO) {
+        // 1. Save image transaction to local database
+        val scanEntity = ScanEntity(
+            transactionType = "IMAGE_UPLOAD",
+            barcode = "IMAGE",  // Placeholder for display
+            timestamp = System.currentTimeMillis(),
+            status = "PENDING",
+            type = "camera",
+            imagePath = imagePath,
+            imageSize = imageSize,
+            orderId = orderId
+        )
+        val scanId = db.scanDao().insertScan(scanEntity)
+
+        // 2. Add to sync queue
+        val payload = JSONObject().apply {
+            put("imagePath", imagePath)
+            put("imageSize", imageSize)
+            orderId?.let { put("orderId", it) }
+        }.toString()
+
+        val queueEntity = SyncQueueEntity(
+            type = "image_upload",  // NEW type
+            payload = payload,
+            scanId = scanId
+        )
+        db.syncQueueDao().addToQueue(queueEntity)
+
+        // 3. Trigger sync worker
+        SyncManager.scheduleSync(context)
+
+        scanId
+    }
+
+    /**
      * Get all scans as a Flow for real-time updates
      */
     fun getAllScansFlow(): Flow<List<ScanHistoryItem>> {
@@ -67,11 +112,18 @@ class WarehouseRepository(
             entities.map { entity ->
                 ScanHistoryItem(
                     id = entity.id,
+                    transactionType = if (entity.transactionType == "IMAGE_UPLOAD") {
+                        com.xelth.eckwms_movfast.ui.data.TransactionType.IMAGE_UPLOAD
+                    } else {
+                        com.xelth.eckwms_movfast.ui.data.TransactionType.BARCODE_SCAN
+                    },
                     barcode = entity.barcode,
                     timestamp = entity.timestamp,
                     status = parseStatus(entity.status),
                     type = entity.type,
-                    checksum = entity.checksum
+                    checksum = entity.checksum,
+                    imagePath = entity.imagePath,
+                    imageSize = entity.imageSize
                 )
             }
         }
@@ -84,11 +136,18 @@ class WarehouseRepository(
         db.scanDao().getAllScans().map { entity ->
             ScanHistoryItem(
                 id = entity.id,
+                transactionType = if (entity.transactionType == "IMAGE_UPLOAD") {
+                    com.xelth.eckwms_movfast.ui.data.TransactionType.IMAGE_UPLOAD
+                } else {
+                    com.xelth.eckwms_movfast.ui.data.TransactionType.BARCODE_SCAN
+                },
                 barcode = entity.barcode,
                 timestamp = entity.timestamp,
                 status = parseStatus(entity.status),
                 type = entity.type,
-                checksum = entity.checksum
+                checksum = entity.checksum,
+                imagePath = entity.imagePath,
+                imageSize = entity.imageSize
             )
         }
     }

@@ -1327,21 +1327,49 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null) {
         viewModelScope.launch {
+            // 1. Save bitmap to temp file for reference
+            val tempFile = java.io.File(getApplication<Application>().cacheDir, "upload_${System.currentTimeMillis()}.webp")
+            tempFile.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
+            }
+            val imagePath = tempFile.absolutePath
+            val imageSize = tempFile.length()
+
+            // 2. Create history item BEFORE upload (with PENDING status)
+            val historyId = repository.saveImageUpload(
+                imagePath = imagePath,
+                imageSize = imageSize,
+                orderId = _activeOrderId.value
+            )
+            loadScanHistory()  // Refresh UI
+
             try {
+                // 3. Attempt upload
                 val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality, orderId)
                 when (result) {
                     is ScanResult.Success -> {
                         addLog("Upload successful. Server response: ${result.data}")
                         _errorMessage.postValue("Image uploaded successfully.")
+
+                        // 4. Update history status to CONFIRMED
+                        repository.updateScanStatus(historyId, ScanStatus.CONFIRMED)
+                        loadScanHistory()
                     }
                     is ScanResult.Error -> {
                         addLog("Upload failed: ${result.message}")
                         _errorMessage.postValue("Upload failed: ${result.message}")
+
+                        // 5. Update history status to FAILED (will retry via sync worker)
+                        repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                        loadScanHistory()
                     }
                 }
             } catch (e: Exception) {
                 addLog("Exception during upload: ${e.message}")
                 _errorMessage.postValue("Upload failed due to an exception.")
+
+                repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                loadScanHistory()
             } finally {
                 // Recycle bitmap copy to free memory
                 if (!bitmap.isRecycled) {

@@ -11,5 +11,9 @@ data class ScanEntity(
     var status: String, // PENDING, BUFFERED, CONFIRMED, FAILED
     val type: String,
     var checksum: String? = null,
-    val orderId: String? = null
+    val orderId: String? = null,
+    // Image upload fields
+    val transactionType: String = "BARCODE_SCAN",  // "BARCODE_SCAN" or "IMAGE_UPLOAD"
+    val imagePath: String? = null,
+    val imageSize: Long? = null
 )

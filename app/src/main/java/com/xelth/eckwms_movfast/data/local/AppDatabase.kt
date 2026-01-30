@@ -11,7 +11,7 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 
 @Database(
     entities = [ScanEntity::class, SyncQueueEntity::class],
-    version = 1,
+    version = 2,  // Added transactionType, imagePath, imageSize to ScanEntity
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
