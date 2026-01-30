@@ -76,9 +76,19 @@ fun ScanScreen(
                 ),
                 actions = {
                     // === ADVANCED NETWORK HEALTH INDICATOR ===
-                    // If device not approved, show red color
+                    // Badge color logic:
+                    // - RED: device not approved (regardless of connection)
+                    // - GREEN: approved + connected via local IP (optimal path)
+                    // - YELLOW: approved + connected via internet (non-optimal path)
+                    // - GRAY: offline
                     val isDeviceApproved = deviceRegistrationStatus == "active"
-                    val indicatorColor = if (!isDeviceApproved) Color(0xFFF44336) else networkHealthState.color
+                    val indicatorColor = when {
+                        !isDeviceApproved -> Color(0xFFF44336) // Red - not approved
+                        !networkHealthState.isConnected() -> Color(0xFF9E9E9E) // Gray - offline
+                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> Color(0xFF4CAF50) // Green - local
+                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.GLOBAL_URL -> Color(0xFFFFEB3B) // Yellow - global
+                        else -> Color(0xFF9E9E9E) // Gray - unknown
+                    }
 
                     Row(
                         modifier = Modifier
@@ -91,9 +101,8 @@ fun ScanScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // 1. Connection Type Icon (🖥️ for Local, 🌍 for Global)
+                        // 1. Connection Type Icon (🖥️ for Local, 🌍 for Global, ❌ for Offline)
                         val connectionEmoji = when {
-                            !isDeviceApproved -> "⛔" // Device not approved
                             networkHealthState.isConnected() -> {
                                 when (networkHealthState.connectionType) {
                                     com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP -> "🖥️"
@@ -110,15 +119,8 @@ fun ScanScreen(
                             modifier = Modifier.size(16.dp)
                         )
 
-                        // 2. Server Hash or Status
-                        if (!isDeviceApproved) {
-                            Text(
-                                text = "НЕ ПРИНЯТ",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = indicatorColor
-                            )
-                        } else if (networkHealthState.isConnected() && networkHealthState.serverHash.isNotEmpty()) {
+                        // 2. Server Hash (always show if connected, regardless of approval status)
+                        if (networkHealthState.isConnected() && networkHealthState.serverHash.isNotEmpty()) {
                             Text(
                                 text = networkHealthState.serverHash,
                                 style = MaterialTheme.typography.labelSmall,
@@ -135,8 +137,8 @@ fun ScanScreen(
                             )
                         }
 
-                        // 3. Latency Indicator (only if device approved and connected)
-                        if (isDeviceApproved && networkHealthState.isConnected() && networkHealthState.latencyMs > 0) {
+                        // 3. Latency Indicator (show if connected, regardless of approval)
+                        if (networkHealthState.isConnected() && networkHealthState.latencyMs > 0) {
                             Text(
                                 text = "${networkHealthState.latencyMs}ms",
                                 style = MaterialTheme.typography.labelSmall,
@@ -396,26 +398,7 @@ fun ScanningStatusCard(
                 fontWeight = FontWeight.Bold
             )
 
-            // Network Health Status Card
-            val connectionTitle = when {
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Checking -> "Проверка..."
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Restoring -> "Восстановление..."
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Offline -> "Нет связи"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.DirectLocal -> "Локальный сервер"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.LocalOnlyNoInternet -> "Только локально"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.ProxyGlobal -> "Глобальный сервер"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.GlobalOnlyCacheMode -> "Только интернет"
-                else -> networkHealthState.displayName
-            }
-
-            val connectionDescription = when {
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.Offline -> "Нет подключения к серверу"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.DirectLocal -> "Подключен к складскому серверу — быстрая работа"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.LocalOnlyNoInternet -> "Локальный сервер работает, но нет интернета"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.ProxyGlobal -> "Подключен через интернет — медленнее"
-                networkHealthState is com.xelth.eckwms_movfast.ui.data.NetworkHealthState.GlobalOnlyCacheMode -> "Только глобальный сервер доступен"
-                else -> networkHealthState.description
-            }
+            // Network Health Status Card - use original displayName and description
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -438,14 +421,14 @@ fun ScanningStatusCard(
                                 modifier = Modifier.padding(end = 8.dp)
                             )
                             Text(
-                                text = connectionTitle,
+                                text = networkHealthState.displayName,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = networkHealthState.color
                             )
                         }
                         Text(
-                            text = connectionDescription,
+                            text = networkHealthState.description,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -474,16 +457,16 @@ fun ScanningStatusCard(
                 else -> "❓"
             }
             val statusText = when (deviceRegistrationStatus) {
-                "active" -> "Авторизовано"
-                "pending" -> "Ожидает одобрения"
-                "blocked" -> "Заблокировано"
-                else -> "Неизвестно"
+                "active" -> "Active"
+                "pending" -> "Pending Approval"
+                "blocked" -> "Blocked"
+                else -> "Unknown"
             }
             val statusDescription = when (deviceRegistrationStatus) {
-                "active" -> "Устройство принято и готово к работе"
-                "pending" -> "Ожидает одобрения администратором — сканирование недоступно"
-                "blocked" -> "Устройство заблокировано администратором"
-                else -> "Статус регистрации устройства неизвестен"
+                "active" -> "Device is authorized and ready to scan"
+                "pending" -> "Waiting for administrator approval - scanning is blocked"
+                "blocked" -> "Device is blocked by administrator"
+                else -> "Device registration status not determined"
             }
 
             Card(
@@ -506,7 +489,7 @@ fun ScanningStatusCard(
                                 modifier = Modifier.padding(end = 8.dp)
                             )
                             Text(
-                                text = "Устройство: $statusText",
+                                text = "Device: $statusText",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = statusColor
