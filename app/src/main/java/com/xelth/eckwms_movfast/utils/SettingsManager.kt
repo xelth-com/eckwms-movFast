@@ -22,8 +22,20 @@ object SettingsManager {
     fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 75)
 
     // Critical: Use commit() for immediate disk persistence
-    fun saveServerUrl(url: String) = prefs.edit().putString(KEY_SERVER_URL, url.trim()).commit()
-    fun getServerUrl(): String = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+    // Ensure URL doesn't end with slash to allow clean concatenation
+    fun saveServerUrl(url: String): Boolean {
+        var cleanUrl = url.trim()
+        if (cleanUrl.endsWith("/")) {
+            cleanUrl = cleanUrl.substring(0, cleanUrl.length - 1)
+        }
+        return prefs.edit().putString(KEY_SERVER_URL, cleanUrl).commit()
+    }
+
+    fun getServerUrl(): String {
+        val url = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+        // Defensive: strip trailing slash if present
+        return if (url.endsWith("/")) url.substring(0, url.length - 1) else url
+    }
 
     private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
     private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair"

@@ -53,9 +53,14 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Processing scan: $barcode (type: $barcodeType)")
 
         try {
-            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Fix: Removed hardcoded /E/ prefix
-            val url = URL("$baseUrl/api/scan")
+            var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            // Ensure no trailing slash to prevent double slashes
+            if (baseUrl.endsWith("/")) {
+                baseUrl = baseUrl.substring(0, baseUrl.length - 1)
+            }
+            val finalUrl = "$baseUrl/api/scan"
+            Log.e(TAG, "Target URL for Scan: $finalUrl")
+            val url = URL(finalUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -181,9 +186,14 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Processing scan with ID: $barcode (type: $barcodeType, msgId: $msgId)")
 
         try {
-            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Fix: Removed hardcoded /E/ prefix
-            val url = URL("$baseUrl/api/scan")
+            var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+            // Ensure no trailing slash to prevent double slashes
+            if (baseUrl.endsWith("/")) {
+                baseUrl = baseUrl.substring(0, baseUrl.length - 1)
+            }
+            val finalUrl = "$baseUrl/api/scan"
+            Log.e(TAG, "Target URL for ScanWithID: $finalUrl")
+            val url = URL(finalUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -305,9 +315,14 @@ class ScanApiService(private val context: Context) {
      */
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
-        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-        // Fix: Removed hardcoded /E/ prefix
-        val url = URL("$baseUrl/api/upload/image")
+        var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
+        // Ensure no trailing slash to prevent double slashes
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length - 1)
+        }
+        val finalUrl = "$baseUrl/api/upload/image"
+        Log.e(TAG, "Target URL for Image Upload: $finalUrl")
+        val url = URL(finalUrl)
         val connection = url.openConnection() as HttpURLConnection
         val outputStream: java.io.OutputStream
         val writer: java.io.PrintWriter
