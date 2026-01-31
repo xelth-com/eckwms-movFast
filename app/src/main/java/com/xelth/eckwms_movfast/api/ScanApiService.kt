@@ -356,23 +356,31 @@ class ScanApiService(private val context: Context) {
     /**
      * Uploads an image to the server with optional barcode data
      * Implements Immediate Failover: Local -> Global
+     * Modified to require client-side generated imageId for deduplication
      * @param bitmap The image to upload
      * @param deviceId The device identifier
      * @param scanMode The scan mode ("dumb" or "mlkit")
      * @param barcodeData Optional barcode data from ML Kit analysis
+     * @param quality Image compression quality
+     * @param orderId Optional order ID
+     * @param existingImageId Optional pre-generated image ID (for retry scenarios)
      * @return Result of the upload operation
      */
-    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null, existingImageId: String? = null): ScanResult = withContext(Dispatchers.IO) {
+        // Generate ID at the Edge if not provided (Source of Truth)
+        val imageId = existingImageId ?: UUID.randomUUID().toString()
+
         val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
 
         // 1. Try Active URL first
-        var result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId)
+        var result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
 
-        // 2. If failed AND Active != Global, try Global immediately
+        // 2. If failed AND Active != Global, try Global immediately with SAME imageId
         if (result is ScanResult.Error && activeUrl != globalUrl) {
-            Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global: $globalUrl")
-            result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId)
+            Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global. ImageID: $imageId")
+            // Retry with SAME imageId - critical for deduplication!
+            result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
 
             if (result is ScanResult.Success) {
                 Log.i(TAG, "✅ Global upload success. Updating active server setting.")
@@ -385,11 +393,12 @@ class ScanApiService(private val context: Context) {
 
     /**
      * Internal helper for image upload
+     * @param imageId Required client-generated unique ID for deduplication
      */
-    private suspend fun internalUploadImage(baseUrl: String, bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String?): ScanResult {
+    private suspend fun internalUploadImage(baseUrl: String, bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String?, imageId: String): ScanResult {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val finalUrl = "$baseUrl/api/upload/image"
-        Log.e(TAG, "Target URL for Image Upload: $finalUrl")
+        Log.e(TAG, "Target URL for Image Upload: $finalUrl (ImageID: $imageId)")
 
         try {
             val url = URL(finalUrl)
@@ -399,10 +408,19 @@ class ScanApiService(private val context: Context) {
             connection.readTimeout = 30000 // 30s for upload response
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            // Add Idempotency Key header (modern standard)
+            connection.setRequestProperty("X-Idempotency-Key", imageId)
+            // Also send as header for proxy routing hints
+            connection.setRequestProperty("X-Image-ID", imageId)
             connection.doOutput = true
 
             val outputStream = connection.outputStream
             val writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+
+            // 1. Send Image ID FIRST (The most important field for deduplication)
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"imageId\"").append("\r\n")
+            writer.append("\r\n").append(imageId).append("\r\n").flush()
 
             // Send deviceId
             writer.append("--$boundary").append("\r\n")
@@ -436,16 +454,16 @@ class ScanApiService(private val context: Context) {
             val crc = CRC32()
             crc.update(imageBytes)
             val imageChecksum = crc.value.toString(16).padStart(8, '0')
-            Log.d(TAG, "Compressed image size: ${imageBytes.size} bytes, Checksum: $imageChecksum")
+            Log.d(TAG, "Compressed image size: ${imageBytes.size} bytes, Checksum: $imageChecksum, ImageID: $imageId")
 
             // Send imageChecksum
             writer.append("--$boundary").append("\r\n")
             writer.append("Content-Disposition: form-data; name=\"imageChecksum\"").append("\r\n")
             writer.append("\r\n").append(imageChecksum).append("\r\n").flush()
 
-            // Send image file
+            // Send image file with imageId as filename
             writer.append("--$boundary").append("\r\n")
-            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.webp\"").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"${imageId}.webp\"").append("\r\n")
             writer.append("Content-Type: image/webp").append("\r\n")
             writer.append("\r\n").flush()
             outputStream.write(imageBytes)
@@ -458,15 +476,15 @@ class ScanApiService(private val context: Context) {
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
-                Log.d(TAG, "Image upload successful: $response")
+                Log.d(TAG, "Image upload successful (ImageID: $imageId): $response")
                 return ScanResult.Success("upload", "Image uploaded", response)
             } else {
                 val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
-                Log.e(TAG, "Image upload failed: $error")
+                Log.e(TAG, "Image upload failed (ImageID: $imageId): $error")
                 return ScanResult.Error("Upload failed: $error")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Upload error to $baseUrl: ${e.message}")
+            Log.w(TAG, "Upload error to $baseUrl (ImageID: $imageId): ${e.message}")
             return ScanResult.Error(e.message ?: "Unknown upload error")
         } finally {
             connection.disconnect()
@@ -795,6 +813,7 @@ class ScanApiService(private val context: Context) {
 
     /**
      * Internal helper for uploadImage with explicit token (used for retry)
+     * @param imageId Required client-generated unique ID for deduplication
      */
     private suspend fun uploadImageWithToken(
         bitmap: Bitmap,
@@ -803,7 +822,8 @@ class ScanApiService(private val context: Context) {
         barcodeData: String?,
         quality: Int,
         orderId: String?,
-        token: String
+        token: String,
+        imageId: String
     ): ScanResult = withContext(Dispatchers.IO) {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
@@ -818,10 +838,18 @@ class ScanApiService(private val context: Context) {
             connection.requestMethod = "POST"
             connection.setRequestProperty("Authorization", "Bearer $token")  // Use provided token
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            // Add Idempotency Key header
+            connection.setRequestProperty("X-Idempotency-Key", imageId)
+            connection.setRequestProperty("X-Image-ID", imageId)
             connection.doOutput = true
 
             val outputStream = connection.outputStream
             val writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+
+            // Send Image ID first
+            writer.append("--$boundary").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"imageId\"").append("\r\n")
+            writer.append("\r\n").append(imageId).append("\r\n").flush()
 
             // Send deviceId
             writer.append("--$boundary").append("\r\n")
@@ -861,7 +889,7 @@ class ScanApiService(private val context: Context) {
             writer.append("\r\n").append(imageChecksum).append("\r\n").flush()
 
             writer.append("--$boundary").append("\r\n")
-            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"upload.webp\"").append("\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"${imageId}.webp\"").append("\r\n")
             writer.append("Content-Type: image/webp").append("\r\n")
             writer.append("\r\n").flush()
             outputStream.write(imageBytes)
@@ -873,7 +901,7 @@ class ScanApiService(private val context: Context) {
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
-                Log.d(TAG, "Image upload retry successful: $response")
+                Log.d(TAG, "Image upload retry successful (ImageID: $imageId): $response")
                 return@withContext ScanResult.Success("upload", "Image uploaded", response)
             } else {
                 val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
