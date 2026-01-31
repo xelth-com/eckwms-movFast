@@ -400,9 +400,9 @@ class ScanApiService(private val context: Context) {
         val finalUrl = "$baseUrl/api/upload/image"
         Log.e(TAG, "Target URL for Image Upload: $finalUrl (ImageID: $imageId)")
 
+        val url = URL(finalUrl)
+        val connection = url.openConnection() as HttpURLConnection
         try {
-            val url = URL(finalUrl)
-            val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.connectTimeout = 10000 // 10s for upload
             connection.readTimeout = 30000 // 30s for upload response
