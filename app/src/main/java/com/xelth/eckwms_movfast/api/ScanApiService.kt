@@ -45,35 +45,57 @@ class ScanApiService(private val context: Context) {
 
     /**
      * Отправляет отсканированный штрих-код на сервер
+     * Implements Immediate Failover: Local -> Global
      * @param barcode Отсканированный штрих-код
      * @param barcodeType Тип штрих-кода (QR_CODE, CODE_128, и т.д.)
      * @return Результат обработки штрих-кода
      */
     suspend fun processScan(barcode: String, barcodeType: String, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Processing scan: $barcode (type: $barcodeType)")
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        // 1. Try Active URL first
+        var result = internalProcessScan(activeUrl, barcode, barcodeType, orderId)
+
+        // 2. If failed (Network Error) AND Active != Global, try Global immediately
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ Scan to $activeUrl failed. Failover to Global: $globalUrl")
+            result = internalProcessScan(globalUrl, barcode, barcodeType, orderId)
+
+            if (result is ScanResult.Success) {
+                // If Global worked, update settings to avoid future timeouts
+                Log.i(TAG, "✅ Global failover success. Updating active server setting.")
+                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+            }
+        }
+
+        return@withContext result
+    }
+
+    /**
+     * Internal helper for scan processing to avoid code duplication
+     */
+    private suspend fun internalProcessScan(baseUrl: String, barcode: String, barcodeType: String, orderId: String?): ScanResult {
+        Log.d(TAG, "Processing scan: $barcode (type: $barcodeType) to $baseUrl")
 
         try {
-            var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Ensure no trailing slash to prevent double slashes
-            if (baseUrl.endsWith("/")) {
-                baseUrl = baseUrl.substring(0, baseUrl.length - 1)
-            }
             val finalUrl = "$baseUrl/api/scan"
             Log.e(TAG, "Target URL for Scan: $finalUrl")
             val url = URL(finalUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
+            connection.connectTimeout = 5000 // 5 sec timeout for faster failover
+            connection.readTimeout = 10000
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
-            // Add auth token for protected endpoint
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
             // Create JSON request - Go server expects 'barcode' field
             val payloadJson = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
+                put("barcode", barcode)
                 put("type", barcodeType)
             }
             val payloadBytes = payloadJson.toString().toByteArray()
@@ -83,7 +105,7 @@ class ScanApiService(private val context: Context) {
 
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
+                put("barcode", barcode)
                 put("type", barcodeType)
                 put("checksum", checksum)
                 orderId?.let { put("orderId", it) }
@@ -108,10 +130,10 @@ class ScanApiService(private val context: Context) {
 
                 // Parse the JSON response to extract checksum and ai_interaction
                 val responseJson = JSONObject(response)
-                val checksum = responseJson.optString("checksum", "")
+                val responseChecksum = responseJson.optString("checksum", "")
                 val message = responseJson.optString("message", "Scan buffered successfully")
 
-                Log.d(TAG, "Extracted checksum: $checksum")
+                Log.d(TAG, "Extracted checksum: $responseChecksum")
 
                 // Parse AI interaction if present
                 val aiInteraction = if (responseJson.has("ai_interaction")) {
@@ -120,7 +142,7 @@ class ScanApiService(private val context: Context) {
                         val id = aiJson.optString("id", null)
                         val type = aiJson.optString("type", "info")
                         val aiMessage = aiJson.optString("message", "")
-                        val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+                        val aiBarcode = aiJson.optString("barcode", barcode)
 
                         // Support both "options" (Standard) and "suggestedActions" (Gemini AI)
                         val options = if (aiJson.has("options")) {
@@ -154,105 +176,74 @@ class ScanApiService(private val context: Context) {
                     Log.d(TAG, "AI Interaction detected: ${aiInteraction.type} - ${aiInteraction.message}")
                 }
 
-                return@withContext ScanResult.Success(
+                return ScanResult.Success(
                     type = "scan",
                     message = message,
                     data = response,
-                    checksum = checksum,
+                    checksum = responseChecksum,
                     aiInteraction = aiInteraction
                 )
             } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
-                // 401 Unauthorized - attempt silent re-auth and retry
-                Log.w(TAG, "401 Unauthorized on scan. Attempting silent re-auth...")
-                connection.disconnect()
-
-                val newToken = performSilentAuth()
-                if (newToken != null) {
-                    // Retry the request with new token
-                    Log.i(TAG, "Retrying scan with refreshed token...")
-                    val retryConnection = url.openConnection() as HttpURLConnection
-                    retryConnection.requestMethod = "POST"
-                    retryConnection.setRequestProperty("Content-Type", "application/json")
-                    retryConnection.setRequestProperty("Accept", "application/json")
-                    retryConnection.setRequestProperty("X-API-Key", API_KEY)
-                    retryConnection.setRequestProperty("Authorization", "Bearer $newToken")
-                    retryConnection.doOutput = true
-
-                    val retryWriter = OutputStreamWriter(retryConnection.outputStream, "UTF-8")
-                    retryWriter.write(jsonRequest.toString())
-                    retryWriter.flush()
-                    retryWriter.close()
-
-                    val retryResponseCode = retryConnection.responseCode
-                    if (retryResponseCode == HttpURLConnection.HTTP_OK || retryResponseCode == HttpURLConnection.HTTP_CREATED) {
-                        val response = retryConnection.inputStream.bufferedReader().use { it.readText() }
-                        val responseJson = JSONObject(response)
-                        val checksum = responseJson.optString("checksum", "")
-                        val message = responseJson.optString("message", "Scan buffered successfully")
-
-                        // Parse AI interaction (simplified - full implementation would include same logic as above)
-                        val aiInteraction = if (responseJson.has("ai_interaction")) {
-                            try {
-                                val aiJson = responseJson.getJSONObject("ai_interaction")
-                                com.xelth.eckwms_movfast.ui.data.AiInteraction(
-                                    id = aiJson.optString("id", null),
-                                    type = aiJson.optString("type", "info"),
-                                    message = aiJson.optString("message", ""),
-                                    options = if (aiJson.has("options")) {
-                                        val optionsArray = aiJson.getJSONArray("options")
-                                        (0 until optionsArray.length()).map { optionsArray.getString(it) }
-                                    } else null,
-                                    data = null,
-                                    barcode = aiJson.optString("barcode", barcode)
-                                )
-                            } catch (e: Exception) { null }
-                        } else null
-
-                        return@withContext ScanResult.Success("scan", message, response, checksum, aiInteraction = aiInteraction)
-                    } else {
-                        val retryError = retryConnection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $retryResponseCode"
-                        Log.e(TAG, "Retry failed: $retryError")
-                        return@withContext ScanResult.Error(retryError)
-                    }
-                } else {
-                    Log.e(TAG, "Silent re-auth failed, cannot retry")
-                    return@withContext ScanResult.Error("Authentication required")
-                }
+                // 401 Unauthorized
+                Log.w(TAG, "401 Unauthorized on scan")
+                return ScanResult.Error("Authentication required")
             } else {
                 // Обрабатываем ошибку
                 val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
                     ?: "Error code: $responseCode"
 
                 Log.e(TAG, "Server error: $errorMessage")
-                return@withContext ScanResult.Error(errorMessage)
+                return ScanResult.Error(errorMessage)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing scan: ${e.message}", e)
-            return@withContext ScanResult.Error(e.message ?: "Unknown error")
+            Log.w(TAG, "Connection failed to $baseUrl: ${e.message}")
+            return ScanResult.Error(e.message ?: "Unknown error")
         }
     }
 
     /**
      * Process scan with message ID for deduplication (used by HybridMessageSender)
+     * Implements Immediate Failover: Local -> Global
      * @param barcode The barcode value
      * @param barcodeType The type of barcode
      * @param msgId The unique message ID for deduplication
      * @return Result of the scan operation
      */
     suspend fun processScanWithId(barcode: String, barcodeType: String, msgId: String): ScanResult = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Processing scan with ID: $barcode (type: $barcodeType, msgId: $msgId)")
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        // 1. Try Active URL first
+        var result = internalProcessScanWithId(activeUrl, barcode, barcodeType, msgId)
+
+        // 2. If failed AND Active != Global, try Global immediately
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ ScanWithID to $activeUrl failed. Failover to Global: $globalUrl")
+            result = internalProcessScanWithId(globalUrl, barcode, barcodeType, msgId)
+
+            if (result is ScanResult.Success) {
+                Log.i(TAG, "✅ Global failover success for ScanWithID. Updating active server setting.")
+                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+            }
+        }
+
+        return@withContext result
+    }
+
+    /**
+     * Internal helper for scan processing with message ID
+     */
+    private suspend fun internalProcessScanWithId(baseUrl: String, barcode: String, barcodeType: String, msgId: String): ScanResult {
+        Log.d(TAG, "Processing scan with ID: $barcode (type: $barcodeType, msgId: $msgId) to $baseUrl")
 
         try {
-            var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-            // Ensure no trailing slash to prevent double slashes
-            if (baseUrl.endsWith("/")) {
-                baseUrl = baseUrl.substring(0, baseUrl.length - 1)
-            }
             val finalUrl = "$baseUrl/api/scan"
             Log.e(TAG, "Target URL for ScanWithID: $finalUrl")
             val url = URL(finalUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
+            connection.connectTimeout = 5000 // 5 sec timeout for faster failover
+            connection.readTimeout = 10000
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("X-API-Key", API_KEY)
@@ -262,7 +253,7 @@ class ScanApiService(private val context: Context) {
             // Create JSON request with msgId for deduplication - Go server expects 'barcode'
             val payloadJson = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
+                put("barcode", barcode)
                 put("type", barcodeType)
                 put("msgId", msgId)
             }
@@ -273,7 +264,7 @@ class ScanApiService(private val context: Context) {
 
             val jsonRequest = JSONObject().apply {
                 put("deviceId", deviceId)
-                put("barcode", barcode)  // Changed from 'payload' to 'barcode'
+                put("barcode", barcode)
                 put("type", barcodeType)
                 put("checksum", checksum)
                 put("msgId", msgId)
@@ -308,7 +299,7 @@ class ScanApiService(private val context: Context) {
                         val id = aiJson.optString("id", null)
                         val type = aiJson.optString("type", "info")
                         val aiMessage = aiJson.optString("message", "")
-                        val aiBarcode = aiJson.optString("barcode", barcode) // Use scanned barcode if not provided
+                        val aiBarcode = aiJson.optString("barcode", barcode)
 
                         // Support both "options" (Standard) and "suggestedActions" (Gemini AI)
                         val options = if (aiJson.has("options")) {
@@ -342,7 +333,7 @@ class ScanApiService(private val context: Context) {
                     Log.d(TAG, "AI Interaction detected (msgId=$msgId): ${aiInteraction.type} - ${aiInteraction.message}")
                 }
 
-                return@withContext ScanResult.Success(
+                return ScanResult.Success(
                     type = "scan",
                     message = message,
                     data = response,
@@ -354,16 +345,17 @@ class ScanApiService(private val context: Context) {
                     ?: "Error code: $responseCode"
 
                 Log.e(TAG, "Server error (msgId=$msgId): $errorMessage")
-                return@withContext ScanResult.Error(errorMessage)
+                return ScanResult.Error(errorMessage)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing scan with ID (msgId=$msgId): ${e.message}", e)
-            return@withContext ScanResult.Error(e.message ?: "Unknown error")
+            Log.w(TAG, "Connection failed to $baseUrl (msgId=$msgId): ${e.message}")
+            return ScanResult.Error(e.message ?: "Unknown error")
         }
     }
 
     /**
      * Uploads an image to the server with optional barcode data
+     * Implements Immediate Failover: Local -> Global
      * @param bitmap The image to upload
      * @param deviceId The device identifier
      * @param scanMode The scan mode ("dumb" or "mlkit")
@@ -371,28 +363,46 @@ class ScanApiService(private val context: Context) {
      * @return Result of the upload operation
      */
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null): ScanResult = withContext(Dispatchers.IO) {
-        val boundary = "Boundary-${System.currentTimeMillis()}"
-        var baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
-        // Ensure no trailing slash to prevent double slashes
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length - 1)
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        // 1. Try Active URL first
+        var result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId)
+
+        // 2. If failed AND Active != Global, try Global immediately
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global: $globalUrl")
+            result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId)
+
+            if (result is ScanResult.Success) {
+                Log.i(TAG, "✅ Global upload success. Updating active server setting.")
+                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+            }
         }
+
+        return@withContext result
+    }
+
+    /**
+     * Internal helper for image upload
+     */
+    private suspend fun internalUploadImage(baseUrl: String, bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String?): ScanResult {
+        val boundary = "Boundary-${System.currentTimeMillis()}"
         val finalUrl = "$baseUrl/api/upload/image"
         Log.e(TAG, "Target URL for Image Upload: $finalUrl")
-        val url = URL(finalUrl)
-        val connection = url.openConnection() as HttpURLConnection
-        val outputStream: java.io.OutputStream
-        val writer: java.io.PrintWriter
 
         try {
+            val url = URL(finalUrl)
+            val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
-            // Add auth token for protected endpoint
+            connection.connectTimeout = 10000 // 10s for upload
+            connection.readTimeout = 30000 // 30s for upload response
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             connection.doOutput = true
 
-            outputStream = connection.outputStream
-            writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+            val outputStream = connection.outputStream
+            val writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
 
             // Send deviceId
             writer.append("--$boundary").append("\r\n")
@@ -449,29 +459,15 @@ class ScanApiService(private val context: Context) {
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Image upload successful: $response")
-                return@withContext ScanResult.Success("upload", "Image uploaded", response)
-            } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
-                // 401 Unauthorized - attempt silent re-auth and retry
-                Log.w(TAG, "401 Unauthorized on image upload. Attempting silent re-auth...")
-                connection.disconnect()
-
-                val newToken = performSilentAuth()
-                if (newToken != null) {
-                    // Retry upload with new token
-                    Log.i(TAG, "Retrying image upload with refreshed token...")
-                    return@withContext uploadImageWithToken(bitmap, deviceId, scanMode, barcodeData, quality, orderId, newToken)
-                } else {
-                    Log.e(TAG, "Silent re-auth failed for image upload")
-                    return@withContext ScanResult.Error("Authentication required")
-                }
+                return ScanResult.Success("upload", "Image uploaded", response)
             } else {
                 val error = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
                 Log.e(TAG, "Image upload failed: $error")
-                return@withContext ScanResult.Error("Upload failed: $error")
+                return ScanResult.Error("Upload failed: $error")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error uploading image: ${e.message}", e)
-            return@withContext ScanResult.Error(e.message ?: "Unknown upload error")
+            Log.w(TAG, "Upload error to $baseUrl: ${e.message}")
+            return ScanResult.Error(e.message ?: "Unknown upload error")
         } finally {
             connection.disconnect()
         }
