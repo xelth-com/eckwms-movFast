@@ -105,9 +105,21 @@ class SyncWorker(
 
     private suspend fun processImageUploadJob(payload: String, scanId: Long?): Boolean {
         return try {
+            // Check if scan is already CONFIRMED (direct upload succeeded)
+            scanId?.let {
+                val scan = database.scanDao().getScanById(it)
+                if (scan?.status == "CONFIRMED") {
+                    Log.d(TAG, "Scan $it already CONFIRMED (direct upload succeeded), skipping sync worker upload")
+                    return true // Job complete, remove from queue
+                }
+            }
+
             val json = JSONObject(payload)
             val imagePath = json.getString("imagePath")
+            val imageId = json.getString("imageId")  // Read imageId from payload
             val orderId = if (json.has("orderId")) json.getString("orderId") else null
+
+            Log.d(TAG, "Processing image upload job - imageId: $imageId")
 
             val file = java.io.File(imagePath)
             if (!file.exists()) {
@@ -131,10 +143,10 @@ class SyncWorker(
             val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(applicationContext)
             val quality = com.xelth.eckwms_movfast.utils.SettingsManager.getImageQuality()
 
-            Log.d(TAG, "Uploading image from background: $imagePath")
+            Log.d(TAG, "Uploading image from background: $imagePath (imageId: $imageId)")
 
-            // Upload
-            val result = apiService.uploadImage(bitmap, deviceId, "sync_worker", null, quality, orderId)
+            // Upload with SAME imageId for deduplication
+            val result = apiService.uploadImage(bitmap, deviceId, "sync_worker", null, quality, orderId, imageId)
 
             bitmap.recycle() // Free memory
 

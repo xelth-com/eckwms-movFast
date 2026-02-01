@@ -15,5 +15,6 @@ data class ScanEntity(
     // Image upload fields
     val transactionType: String = "BARCODE_SCAN",  // "BARCODE_SCAN" or "IMAGE_UPLOAD"
     val imagePath: String? = null,
-    val imageSize: Long? = null
+    val imageSize: Long? = null,
+    val imageId: String? = null  // Client-generated UUID for deduplication
 )

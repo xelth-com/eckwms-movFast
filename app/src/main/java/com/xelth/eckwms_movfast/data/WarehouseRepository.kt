@@ -63,12 +63,14 @@ class WarehouseRepository(
      * Saves an image upload transaction to local history and sync queue
      * @param imagePath Local file path to the captured image
      * @param imageSize Size of the image in bytes
+     * @param imageId Client-generated UUID for deduplication
      * @param orderId Optional order ID context
      * @return Database ID of the saved transaction
      */
     suspend fun saveImageUpload(
         imagePath: String,
         imageSize: Long,
+        imageId: String,
         orderId: String? = null
     ): Long = withContext(Dispatchers.IO) {
         // 1. Save image transaction to local database
@@ -80,6 +82,7 @@ class WarehouseRepository(
             type = "camera",
             imagePath = imagePath,
             imageSize = imageSize,
+            imageId = imageId,
             orderId = orderId
         )
         val scanId = db.scanDao().insertScan(scanEntity)
@@ -88,6 +91,7 @@ class WarehouseRepository(
         val payload = JSONObject().apply {
             put("imagePath", imagePath)
             put("imageSize", imageSize)
+            put("imageId", imageId)  // Include imageId for sync worker
             orderId?.let { put("orderId", it) }
         }.toString()
 

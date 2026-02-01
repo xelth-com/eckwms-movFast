@@ -1327,6 +1327,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null) {
         viewModelScope.launch {
+            // 0. Generate imageId ONCE for deduplication
+            val imageId = java.util.UUID.randomUUID().toString()
+            addLog("Generated imageId: $imageId")
+
             // 1. Save bitmap to temp file for reference
             val tempFile = java.io.File(getApplication<Application>().cacheDir, "upload_${System.currentTimeMillis()}.webp")
             tempFile.outputStream().use { out ->
@@ -1339,13 +1343,14 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             val historyId = repository.saveImageUpload(
                 imagePath = imagePath,
                 imageSize = imageSize,
+                imageId = imageId,
                 orderId = _activeOrderId.value
             )
             loadScanHistory()  // Refresh UI
 
             try {
-                // 3. Attempt upload
-                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality, orderId)
+                // 3. Attempt upload with imageId
+                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
                 when (result) {
                     is ScanResult.Success -> {
                         addLog("Upload successful. Server response: ${result.data}")
