@@ -7,10 +7,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.ListAlt
-import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,7 +65,7 @@ fun MainScreen(
                     DashboardCard(
                         title = "Scan",
                         subtitle = "Inventory & Lookup",
-                        icon = Icons.Outlined.QrCodeScanner,
+                        icon = Icons.Filled.Settings,
                         color = MaterialTheme.colorScheme.primary,
                         onClick = { navController.navigate("scanScreen") }
                     )
@@ -75,7 +75,7 @@ fun MainScreen(
                     DashboardCard(
                         title = "Restock",
                         subtitle = "Manual Orders",
-                        icon = Icons.Outlined.ListAlt,
+                        icon = Icons.Filled.Add,
                         color = MaterialTheme.colorScheme.secondary,
                         onClick = { navController.navigate("restockScreen") }
                     )
@@ -85,7 +85,7 @@ fun MainScreen(
                     DashboardCard(
                         title = "AI Agent",
                         subtitle = "Ask Assistant",
-                        icon = Icons.Outlined.Psychology,
+                        icon = Icons.Filled.Info,
                         color = MaterialTheme.colorScheme.tertiary,
                         onClick = { navController.navigate("scanScreen") }
                     )

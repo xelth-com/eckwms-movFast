@@ -11,8 +11,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,31 +31,30 @@ import coil.size.Size
 
 private const val TAG = "ImageViewerScreen"
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageViewerScreen(onBack: () -> Unit) {
-    val viewModel = androidx.lifecycle.viewmodel.compose.viewModel<com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel>()
-    val scanHistory by viewModel.scanHistory.observeAsState(emptyList())
-
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Image Viewer") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            contentAlignment = Alignment.Center
         ) {
-            ImageViewerSection(
-                imageUrls = scanHistory.mapNotNull { it.imageUrl },
-                modifier = Modifier.padding(16.dp)
+            Text(
+                text = "No images to display",
+                style = MaterialTheme.typography.bodyLarge
             )
         }
     }
