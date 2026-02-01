@@ -1197,47 +1197,99 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      * It decides whether to route the data to the workflow engine or the standard process.
      * @return true if the barcode was handled as a special command (e.g., order ID), false otherwise
      */
+    /**
+     * Central scan routing with audit trail (Концептуальная архитектура)
+     *
+     * This method implements a three-tier routing system:
+     * 1. System codes (ECK*) - processed locally
+     * 2. Active workflow - routed to workflow engine
+     * 3. Standard scans - sent to server for lookup
+     *
+     * All scans are logged to audit trail first (Журнал событий)
+     *
+     * @return true if handled as special command (ECK/Order ID), false otherwise
+     */
     fun handleGeneralScanResult(barcode: String, type: String): Boolean {
-        // 1. Check for ECK Pairing Protocol (Auto-Pairing Trigger)
-        if (barcode.startsWith("ECK")) {
-            android.util.Log.e("AUTO_PAIR", "=== ECK CODE DETECTED ===")
-            android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
-            addLog("⚡ ECK Pairing Code detected via global scan")
+        addLog("[Router] handleGeneralScanResult: '$barcode' type='$type'")
 
-            if (!isOnPairingScreen) {
-                android.util.Log.e("AUTO_PAIR", "Starting AUTO-PAIRING mode")
-                addLog("🚀 Auto-Pairing triggered! Navigating to console...")
-                isAutoPairing = true
-                android.util.Log.e("AUTO_PAIR", "isAutoPairing set to: $isAutoPairing")
-                _navigationCommand.postValue(NavigationCommand.TO_PAIRING)
-                android.util.Log.e("AUTO_PAIR", "Navigation command TO_PAIRING sent")
-            } else {
-                android.util.Log.e("AUTO_PAIR", "Already on PairingScreen - MANUAL mode")
-                addLog("ℹ️ Already on Pairing Screen - treating as manual scan")
-                isAutoPairing = false
+        // 1. ALWAYS log to audit trail first (Immutable Audit Trail)
+        viewModelScope.launch {
+            val scanId = repository.logRawScan(barcode, type, _activeOrderId.value)
+            addLog("[Audit] Logged scan #$scanId to audit trail")
+
+            // 2. Routing Logic (Router)
+            when {
+                // A. System Codes (Executed Locally)
+                barcode.startsWith("ECK") -> {
+                    android.util.Log.e("AUTO_PAIR", "=== ECK CODE DETECTED ===")
+                    android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
+                    addLog("[Router] → ROUTE A: System code (ECK Pairing)")
+
+                    if (!isOnPairingScreen) {
+                        android.util.Log.e("AUTO_PAIR", "Starting AUTO-PAIRING mode")
+                        addLog("🚀 Auto-Pairing triggered! Navigating to console...")
+                        isAutoPairing = true
+                        android.util.Log.e("AUTO_PAIR", "isAutoPairing set to: $isAutoPairing")
+                        _navigationCommand.postValue(NavigationCommand.TO_PAIRING)
+                        android.util.Log.e("AUTO_PAIR", "Navigation command TO_PAIRING sent")
+                    } else {
+                        android.util.Log.e("AUTO_PAIR", "Already on PairingScreen - MANUAL mode")
+                        addLog("ℹ️ Already on Pairing Screen - treating as manual scan")
+                        isAutoPairing = false
+                    }
+
+                    handlePairingQrCode(barcode)
+                    repository.updateScanStatusString(scanId, "PROCESSED_LOCALLY")
+                    addLog("[Audit] Scan #$scanId marked as PROCESSED_LOCALLY")
+                }
+
+                // Order ID session activation (also a system command)
+                barcode.startsWith("CS-DE-") && barcode.length > 10 -> {
+                    addLog("[Router] → ROUTE A: System code (Order ID activation)")
+                    _activeOrderId.postValue(barcode)
+                    addLog("ACTIVE ORDER SET: $barcode")
+                    repository.updateScanStatusString(scanId, "SESSION_ACTIVATED")
+                    addLog("[Audit] Scan #$scanId marked as SESSION_ACTIVATED")
+                }
+
+                // B. Active Workflow (Isolated Logic)
+                isWorkflowActive() -> {
+                    addLog("[Router] → ROUTE B: Active workflow - delegating to workflow engine")
+
+                    // Workflow engine validates if barcode is expected
+                    val currentStep = _workflowState.value?.currentStep
+                    if (currentStep != null) {
+                        addLog("[Workflow] Current step: ${currentStep.stepId} ('${currentStep.action}')")
+
+                        // Let workflow engine process
+                        workflowEngine?.onBarcodeScanned(barcode)
+
+                        // Also send to server (workflow scans need server-side tracking)
+                        val barcodeType = scannerManager.getLastBarcodeType() ?: type
+                        sendScanToServer(barcode, barcodeType)
+
+                        repository.updateScanStatusString(scanId, "USED_IN_WORKFLOW")
+                        addLog("[Audit] Scan #$scanId marked as USED_IN_WORKFLOW")
+                    } else {
+                        addLog("[Workflow] ERROR: Workflow active but no current step!")
+                        repository.updateScanStatusString(scanId, "REJECTED_BY_WORKFLOW")
+                        addLog("[Audit] Scan #$scanId marked as REJECTED_BY_WORKFLOW")
+                        _errorMessage.postValue("Workflow error: No active step")
+                    }
+                }
+
+                // C. Standard Scan (Info mode / Lookup)
+                else -> {
+                    addLog("[Router] → ROUTE C: Standard scan - sending to server for lookup")
+                    handleScannedData(barcode, type)
+                    repository.updateScanStatusString(scanId, "SENT_TO_SERVER")
+                    addLog("[Audit] Scan #$scanId marked as SENT_TO_SERVER")
+                }
             }
-
-            handlePairingQrCode(barcode)
-            return true // Handled special command
         }
 
-        // Check if the scanned barcode is an Order ID to activate the session
-        if (barcode.startsWith("CS-DE-") && barcode.length > 10) {
-            _activeOrderId.postValue(barcode)
-            addLog("ACTIVE ORDER SET: $barcode")
-            // Do not process as a regular scan, just set the state
-            return true // Indicate this was a special command
-        }
-
-        addLog("[ViewModel] handleGeneralScanResult: Processing '$barcode' from source '$type'")
-        if (isWorkflowActive()) {
-            addLog("[ViewModel] Workflow is active - routing to workflow engine")
-            onBarcodeScannedForWorkflow(barcode)
-        } else {
-            addLog("[ViewModel] No workflow active - routing to standard scan handler")
-            handleScannedData(barcode, type)
-        }
-        return false // Normal scan, should be displayed
+        // Return value indicates if this was a special command (for UI purposes)
+        return barcode.startsWith("ECK") || (barcode.startsWith("CS-DE-") && barcode.length > 10)
     }
 
     /**

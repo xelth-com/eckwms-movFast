@@ -168,12 +168,42 @@ class WarehouseRepository(
     }
 
     /**
+     * Logs a raw scan to the audit trail (Журнал событий)
+     * This creates an immutable record of every scan event before any processing logic
+     * @return Scan ID for later status updates
+     */
+    suspend fun logRawScan(barcode: String, type: String, orderId: String? = null): Long = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Logging raw scan to audit trail: $barcode")
+
+        val scanEntity = ScanEntity(
+            barcode = barcode,
+            timestamp = System.currentTimeMillis(),
+            status = "RAW", // Initial audit state before routing
+            type = type,
+            orderId = orderId
+        )
+        val scanId = db.scanDao().insertScan(scanEntity)
+        Log.d(TAG, "Raw scan logged with ID: $scanId")
+
+        scanId
+    }
+
+    /**
      * Update scan status (called by SyncWorker after successful sync)
      */
     suspend fun updateScanStatus(scanId: Long, status: ScanStatus, checksum: String? = null) =
         withContext(Dispatchers.IO) {
             db.scanDao().updateScanStatus(scanId, status.name, checksum)
             Log.d(TAG, "Updated scan $scanId status to ${status.name}")
+        }
+
+    /**
+     * Update scan status by string (for routing status tracking)
+     */
+    suspend fun updateScanStatusString(scanId: Long, status: String, checksum: String? = null) =
+        withContext(Dispatchers.IO) {
+            db.scanDao().updateScanStatus(scanId, status, checksum)
+            Log.d(TAG, "Updated scan $scanId status to $status")
         }
 
     /**
