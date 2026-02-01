@@ -63,9 +63,8 @@ class ScanApiService(private val context: Context) {
             result = internalProcessScan(globalUrl, barcode, barcodeType, orderId)
 
             if (result is ScanResult.Success) {
-                // If Global worked, update settings to avoid future timeouts
-                Log.i(TAG, "✅ Global failover success. Updating active server setting.")
-                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+                // Global failover success - but keep local as active for next attempt
+                Log.i(TAG, "✅ Global failover success (keeping local as active for next attempt)")
             }
         }
 
@@ -222,8 +221,8 @@ class ScanApiService(private val context: Context) {
             result = internalProcessScanWithId(globalUrl, barcode, barcodeType, msgId)
 
             if (result is ScanResult.Success) {
-                Log.i(TAG, "✅ Global failover success for ScanWithID. Updating active server setting.")
-                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+                // Global failover success - but keep local as active for next attempt
+                Log.i(TAG, "✅ Global failover success for ScanWithID (keeping local as active for next attempt)")
             }
         }
 
@@ -383,8 +382,8 @@ class ScanApiService(private val context: Context) {
             result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
 
             if (result is ScanResult.Success) {
-                Log.i(TAG, "✅ Global upload success. Updating active server setting.")
-                com.xelth.eckwms_movfast.utils.SettingsManager.saveServerUrl(globalUrl)
+                // Global failover success - but keep local as active for next attempt
+                Log.i(TAG, "✅ Global upload success (keeping local as active for next attempt)")
             }
         }
 
