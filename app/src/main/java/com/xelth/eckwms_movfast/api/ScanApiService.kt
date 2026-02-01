@@ -353,6 +353,180 @@ class ScanApiService(private val context: Context) {
     }
 
     /**
+     * Optimized upload that streams file directly without Bitmap decoding
+     * Saves ~40MB RAM per upload and avoids double-compression
+     * Implements Immediate Failover: Local -> Global
+     * Auto-retries on 401 (token expired)
+     * @param filePath Path to the image file on disk
+     * @param deviceId The device identifier
+     * @param scanMode The scan mode ("sync_worker", "direct_upload", etc.)
+     * @param barcodeData Optional barcode data
+     * @param orderId Optional order ID
+     * @param existingImageId Optional pre-generated image ID (for retry scenarios)
+     * @return Result of the upload operation
+     */
+    suspend fun uploadImageFile(filePath: String, deviceId: String, scanMode: String, barcodeData: String?, orderId: String? = null, existingImageId: String? = null): ScanResult = withContext(Dispatchers.IO) {
+        val imageId = existingImageId ?: UUID.randomUUID().toString()
+        val file = java.io.File(filePath)
+
+        if (!file.exists()) {
+            return@withContext ScanResult.Error("File not found: $filePath")
+        }
+
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        Log.d(TAG, "uploadImageFile START - activeUrl: $activeUrl, file: ${file.name}, imageId: $imageId")
+
+        // 1. Try Active URL
+        var result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+
+        // 1.1 Auto-Retry on 401 (Token Expired)
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            Log.w(TAG, "🔑 401 Unauthorized - attempting silent re-auth...")
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                Log.i(TAG, "🔄 Token refreshed, retrying upload...")
+                result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+            }
+        }
+
+        // 2. Failover to Global
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ UploadFile failed. Failover to Global. ImageID: $imageId")
+            result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+
+            // 2.1 Auto-Retry on 401 for Global too
+            if (result is ScanResult.Error && result.message.contains("401")) {
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+                }
+            }
+        }
+
+        Log.d(TAG, "uploadImageFile END - result: ${result::class.simpleName}, imageId: $imageId")
+        return@withContext result
+    }
+
+    /**
+     * Internal helper - streams file bytes directly to network
+     * No Bitmap decoding = Low RAM usage, no compression overhead
+     */
+    private suspend fun internalUploadFileStream(
+        baseUrl: String,
+        file: java.io.File,
+        deviceId: String,
+        scanMode: String,
+        barcodeData: String?,
+        orderId: String?,
+        imageId: String
+    ): ScanResult {
+        val boundary = "Boundary-${System.currentTimeMillis()}"
+        val finalUrl = "$baseUrl/api/upload/image"
+        Log.e(TAG, "Target URL for File Stream Upload: $finalUrl (ImageID: $imageId, File: ${file.name})")
+
+        val url = URL(finalUrl)
+        val connection = url.openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 60000
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.setRequestProperty("X-Idempotency-Key", imageId)
+            connection.setRequestProperty("X-Image-ID", imageId)
+
+            // Add Target Instance header for Smart Routing
+            val homeInstanceId = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+            if (homeInstanceId.isNotEmpty()) {
+                connection.setRequestProperty("X-Target-Instance", homeInstanceId)
+            }
+
+            connection.doOutput = true
+            connection.setChunkedStreamingMode(0) // Efficient streaming
+
+            val outputStream = connection.outputStream
+            val writer = java.io.PrintWriter(java.io.OutputStreamWriter(outputStream, "UTF-8"), true)
+
+            // Write form fields
+            writer.append("--$boundary\r\n")
+            writer.append("Content-Disposition: form-data; name=\"imageId\"\r\n\r\n")
+            writer.append("$imageId\r\n")
+
+            writer.append("--$boundary\r\n")
+            writer.append("Content-Disposition: form-data; name=\"deviceId\"\r\n\r\n")
+            writer.append("$deviceId\r\n")
+
+            writer.append("--$boundary\r\n")
+            writer.append("Content-Disposition: form-data; name=\"scanMode\"\r\n\r\n")
+            writer.append("$scanMode\r\n")
+
+            if (barcodeData != null) {
+                writer.append("--$boundary\r\n")
+                writer.append("Content-Disposition: form-data; name=\"barcodeData\"\r\n\r\n")
+                writer.append("$barcodeData\r\n")
+            }
+
+            if (orderId != null) {
+                writer.append("--$boundary\r\n")
+                writer.append("Content-Disposition: form-data; name=\"orderId\"\r\n\r\n")
+                writer.append("$orderId\r\n")
+            }
+
+            // Stream file directly
+            writer.append("--$boundary\r\n")
+            writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"${file.name}\"\r\n")
+            writer.append("Content-Type: image/webp\r\n\r\n")
+            writer.flush()
+
+            val fileInputStream = java.io.FileInputStream(file)
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            var totalBytes = 0L
+            while (fileInputStream.read(buffer).also { bytesRead = it } != -1) {
+                outputStream.write(buffer, 0, bytesRead)
+                totalBytes += bytesRead
+            }
+            outputStream.flush()
+            fileInputStream.close()
+
+            Log.d(TAG, "Streamed $totalBytes bytes from ${file.name}")
+
+            writer.append("\r\n")
+            writer.append("--$boundary--\r\n")
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "File stream upload successful: $response")
+
+                val responseJson = JSONObject(response)
+                val message = responseJson.optString("message", "File uploaded successfully")
+
+                return ScanResult.Success("upload", message, response)
+            } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                Log.e(TAG, "401 Unauthorized - token expired")
+                return ScanResult.Error("401 Unauthorized")
+            } else {
+                val errorMessage = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    ?: "HTTP $responseCode"
+                Log.e(TAG, "Upload failed: $errorMessage")
+                return ScanResult.Error("Upload failed: $errorMessage")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "File stream upload error: ${e.message}", e)
+            return ScanResult.Error(e.message ?: "Upload stream error")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
      * Uploads an image to the server with optional barcode data
      * Implements Immediate Failover: Local -> Global
      * Modified to require client-side generated imageId for deduplication

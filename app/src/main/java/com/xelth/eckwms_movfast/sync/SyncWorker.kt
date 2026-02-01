@@ -130,25 +130,14 @@ class SyncWorker(
                 return true // Fail permanently (cannot retry if file missing)
             }
 
-            // Load bitmap
-            val bitmap = android.graphics.BitmapFactory.decodeFile(imagePath)
-            if (bitmap == null) {
-                Log.e(TAG, "Failed to decode bitmap: $imagePath")
-                scanId?.let {
-                    database.scanDao().updateScanStatus(it, "FAILED")
-                }
-                return true // Fail permanently
-            }
-
+            // OPTIMIZATION: Stream directly from file! No bitmap decoding needed.
+            // This saves ~40MB RAM per upload and avoids double-compression.
             val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(applicationContext)
-            val quality = com.xelth.eckwms_movfast.utils.SettingsManager.getImageQuality()
 
-            Log.d(TAG, "Uploading image from background: $imagePath (imageId: $imageId)")
+            Log.d(TAG, "🚀 Streaming image from background: $imagePath (imageId: $imageId)")
 
-            // Upload with SAME imageId for deduplication
-            val result = apiService.uploadImage(bitmap, deviceId, "sync_worker", null, quality, orderId, imageId)
-
-            bitmap.recycle() // Free memory
+            // Use new streaming method - no Bitmap allocation!
+            val result = apiService.uploadImageFile(imagePath, deviceId, "sync_worker", null, orderId, imageId)
 
             when (result) {
                 is ScanResult.Success -> {
