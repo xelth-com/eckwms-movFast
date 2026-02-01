@@ -400,9 +400,13 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         android.util.Log.w("DeviceStatus", "  Current value matches 'active': ${deviceStatus == "active"}")
         android.util.Log.w("DeviceStatus", "========================================")
 
-        // Load scan history from local database
+        // Load scan history from local database with auto-update via Flow
+        // This ensures UI refreshes automatically when SyncWorker updates status in background
         viewModelScope.launch {
-            loadScanHistory()
+            repository.getAllScansFlow().collect { scans ->
+                _scanHistory.postValue(scans)
+                addLog("Scan history updated: ${scans.size} scans")
+            }
         }
 
         // Initialize network health monitoring
