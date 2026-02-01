@@ -16,9 +16,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
+import com.xelth.eckwms_movfast.ui.screens.ImageViewerScreen
+import com.xelth.eckwms_movfast.ui.screens.MainScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
+import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.screens.WarehouseMapScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
@@ -68,8 +71,12 @@ class MainActivity : ComponentActivity() {
 
                 NavHost(
                     navController = navController,
-                    startDestination = "scanScreen"
+                    startDestination = "mainMenu"
                 ) {
+                    composable("mainMenu") {
+                        MainScreen(navController = navController, viewModel = viewModel)
+                    }
+
                     composable("scanScreen") { backStackEntry ->
                         // Listen for result from camera scan
                         val savedStateHandle = backStackEntry.savedStateHandle
@@ -146,11 +153,25 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             navController = navController,
                             onNavigateToSettings = {
-                                viewModel.addLog("!!! onNavigateToSettings called !!!")
-                                val intent = Intent(this@MainActivity, ScannerActivity::class.java)
-                                startActivity(intent)
+                                navController.navigate("settings")
                             }
                         )
+                    }
+
+                    composable("settings") {
+                        ScannerSettingsScreen(
+                            scannerManager = (application as EckwmsApp).scannerManager,
+                            viewModel = viewModel,
+                            onNavigateBack = { navController.popBackStack() },
+                            onOpenImageViewer = { navController.navigate("imageViewer") },
+                            onNavigateToCamera = { scanMode ->
+                                navController.navigate("cameraScanScreen?scan_mode=$scanMode")
+                            }
+                        )
+                    }
+
+                    composable("imageViewer") {
+                        ImageViewerScreen(onBack = { navController.popBackStack() })
                     }
 
                     composable(
