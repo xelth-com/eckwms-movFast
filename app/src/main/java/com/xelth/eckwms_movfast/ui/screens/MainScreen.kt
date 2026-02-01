@@ -3,9 +3,6 @@ package com.xelth.eckwms_movfast.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.filled.Settings
@@ -18,15 +15,63 @@ import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
+
+enum class HexagonSide { FULL, LEFT, RIGHT }
+
+class HexagonShape(private val side: HexagonSide = HexagonSide.FULL) : Shape {
+    override fun createOutline(
+        size: androidx.compose.ui.geometry.Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        return Outline.Generic(
+            path = hexagonPath(size, side)
+        )
+    }
+}
+
+private fun hexagonPath(size: androidx.compose.ui.geometry.Size, side: HexagonSide): Path {
+    val width = size.width
+    val height = size.height
+    return Path().apply {
+        when (side) {
+            HexagonSide.FULL -> {
+                moveTo(width * 0.5f, 0f)
+                lineTo(width, height * 0.25f)
+                lineTo(width, height * 0.75f)
+                lineTo(width * 0.5f, height)
+                lineTo(0f, height * 0.75f)
+                lineTo(0f, height * 0.25f)
+            }
+            HexagonSide.LEFT -> {
+                moveTo(0f, 0f)
+                lineTo(width, height * 0.25f)
+                lineTo(width, height * 0.75f)
+                lineTo(0f, height)
+            }
+            HexagonSide.RIGHT -> {
+                moveTo(width, 0f)
+                lineTo(0f, height * 0.25f)
+                lineTo(0f, height * 0.75f)
+                lineTo(width, height)
+            }
+        }
+        close()
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,62 +91,11 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = "Dashboard",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                item {
-                    DashboardCard(
-                        title = "Scan",
-                        subtitle = "Inventory & Lookup",
-                        icon = Icons.Filled.Settings,
-                        color = MaterialTheme.colorScheme.primary,
-                        onClick = { navController.navigate("scanScreen") }
-                    )
-                }
-
-                item {
-                    DashboardCard(
-                        title = "Restock",
-                        subtitle = "Manual Orders",
-                        icon = Icons.Filled.Add,
-                        color = MaterialTheme.colorScheme.secondary,
-                        onClick = { navController.navigate("restockScreen") }
-                    )
-                }
-
-                item {
-                    DashboardCard(
-                        title = "AI Agent",
-                        subtitle = "Ask Assistant",
-                        icon = Icons.Filled.Info,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        onClick = { navController.navigate("scanScreen") }
-                    )
-                }
-
-                item {
-                    DashboardCard(
-                        title = "Settings",
-                        subtitle = "Debug & Config",
-                        icon = Icons.Outlined.Settings,
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        onClick = { navController.navigate("settings") }
-                    )
-                }
-            }
+            HexagonalGrid(navController)
         }
     }
 }
@@ -127,7 +121,7 @@ fun MainTopBar(networkState: NetworkHealthState) {
         },
         actions = {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = MaterialTheme.shapes.small,
                 color = if (networkState.isConnected()) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
                 modifier = Modifier.padding(end = 16.dp)
             ) {
@@ -153,63 +147,77 @@ fun MainTopBar(networkState: NetworkHealthState) {
 }
 
 @Composable
-fun DashboardCard(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    color: Color,
-    textColor: Color = Color.White,
+fun HexagonalGrid(navController: NavController) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HexagonalButton(
+                label = "Scan",
+                colorHex = "#4A90E2",
+                onClick = { navController.navigate("scanScreen") }
+            )
+            HexagonalButton(
+                label = "Restock",
+                colorHex = "#50E3C2",
+                onClick = { navController.navigate("restockScreen") }
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HexagonalButton(
+                label = "AI Agent",
+                colorHex = "#F5A623",
+                onClick = { navController.navigate("scanScreen") }
+            )
+            HexagonalButton(
+                label = "Settings",
+                colorHex = "#9013FE",
+                onClick = { navController.navigate("settings") }
+            )
+        }
+    }
+}
+
+@Composable
+fun HexagonalButton(
+    label: String,
+    colorHex: String,
     onClick: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .height(160.dp)
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            color.copy(alpha = 0.8f),
-                            color
-                        )
-                    )
-                )
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = textColor,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                        .padding(8.dp)
-                )
+    val backgroundColor = try {
+        Color(android.graphics.Color.parseColor(colorHex))
+    } catch (e: IllegalArgumentException) {
+        Color.Gray
+    }
 
-                Column {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = textColor
-                    )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = textColor.copy(alpha = 0.8f)
-                    )
-                }
-            }
+    Box(
+        modifier = Modifier
+            .size(140.dp, 160.dp)
+            .clip(HexagonShape(HexagonSide.FULL))
+            .background(backgroundColor)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = label,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 24.sp
+            )
         }
     }
 }
