@@ -87,25 +87,36 @@ class WarehouseRepository(
         )
         val scanId = db.scanDao().insertScan(scanEntity)
 
-        // 2. Add to sync queue
+        // NOTE: Do NOT add to sync queue here. Only add if direct upload fails.
+        // This prevents double upload (direct + sync worker).
+
+        scanId
+    }
+
+    suspend fun addImageUploadToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
+        val scan = db.scanDao().getScanById(scanId)
+        if (scan == null || scan.imagePath == null || scan.imageId == null) {
+            Log.w("WarehouseRepository", "Cannot add to sync queue: scan not found or missing data")
+            return@withContext
+        }
+
+        // Add to sync queue for retry
         val payload = JSONObject().apply {
-            put("imagePath", imagePath)
-            put("imageSize", imageSize)
-            put("imageId", imageId)  // Include imageId for sync worker
-            orderId?.let { put("orderId", it) }
+            put("imagePath", scan.imagePath)
+            put("imageSize", scan.imageSize)
+            put("imageId", scan.imageId)
+            scan.orderId?.let { put("orderId", it) }
         }.toString()
 
         val queueEntity = SyncQueueEntity(
-            type = "image_upload",  // NEW type
+            type = "image_upload",
             payload = payload,
             scanId = scanId
         )
         db.syncQueueDao().addToQueue(queueEntity)
 
-        // 3. Trigger sync worker
+        // Trigger sync worker
         SyncManager.scheduleSync(context)
-
-        scanId
     }
 
     /**

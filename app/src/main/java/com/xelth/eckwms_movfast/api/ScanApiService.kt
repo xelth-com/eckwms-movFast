@@ -372,8 +372,12 @@ class ScanApiService(private val context: Context) {
         val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
 
+        Log.d(TAG, "uploadImage START - activeUrl: $activeUrl, globalUrl: $globalUrl, scanMode: $scanMode, imageId: $imageId, Thread: ${Thread.currentThread().name}")
+
         // 1. Try Active URL first
         var result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+
+        Log.d(TAG, "uploadImage FIRST_ATTEMPT result: ${result::class.simpleName}, imageId: $imageId")
 
         // 2. If failed AND Active != Global, try Global immediately with SAME imageId
         if (result is ScanResult.Error && activeUrl != globalUrl) {
@@ -381,11 +385,15 @@ class ScanApiService(private val context: Context) {
             // Retry with SAME imageId - critical for deduplication!
             result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
 
+            Log.d(TAG, "uploadImage FAILOVER result: ${result::class.simpleName}, imageId: $imageId")
+
             if (result is ScanResult.Success) {
                 // Global failover success - but keep local as active for next attempt
                 Log.i(TAG, "✅ Global upload success (keeping local as active for next attempt)")
             }
         }
+
+        Log.d(TAG, "uploadImage END - final result: ${result::class.simpleName}, imageId: $imageId")
 
         return@withContext result
     }

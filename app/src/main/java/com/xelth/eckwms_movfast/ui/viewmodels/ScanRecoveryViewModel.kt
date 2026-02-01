@@ -1364,8 +1364,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         addLog("Upload failed: ${result.message}")
                         _errorMessage.postValue("Upload failed: ${result.message}")
 
-                        // 5. Update history status to FAILED (will retry via sync worker)
+                        // 5. Update history status to FAILED and add to sync queue for retry
                         repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                        repository.addImageUploadToSyncQueue(historyId)
                         loadScanHistory()
                     }
                 }
@@ -1374,6 +1375,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 _errorMessage.postValue("Upload failed due to an exception.")
 
                 repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                repository.addImageUploadToSyncQueue(historyId)
                 loadScanHistory()
             } finally {
                 // Recycle bitmap copy to free memory
