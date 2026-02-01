@@ -1582,6 +1582,16 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             if (url.contains("192.168.") || url.contains("10.") || url.contains("172.")) 0 else 1
         }
 
+        // OPTIMISTIC STRATEGY: Identify the "Dream" Local URL
+        // Even if we fail to connect to it now (e.g. no WiFi), we save it to check later.
+        val preferredLocal = sortedCandidates.firstOrNull { url ->
+             url.contains("192.168.") || url.contains("10.") || url.contains("172.")
+        }
+        if (preferredLocal != null) {
+            SettingsManager.savePreferredLocalUrl(preferredLocal)
+            addPairingLog("💾 Saved preferred local URL for future switchback: $preferredLocal")
+        }
+
         val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(sortedCandidates)
 
         if (reachableUrl == null) {

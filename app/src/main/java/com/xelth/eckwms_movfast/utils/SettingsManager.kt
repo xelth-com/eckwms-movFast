@@ -56,6 +56,7 @@ object SettingsManager {
     private const val KEY_LAST_HEALTH_STATE = "last_health_state"
     private const val KEY_LOCAL_SERVER_REACHABLE = "local_server_reachable"
     private const val KEY_GLOBAL_SERVER_REACHABLE = "global_server_reachable"
+    private const val KEY_PREFERRED_LOCAL_URL = "preferred_local_url"
 
     // Critical: Use commit() for immediate disk persistence
     fun saveLastWorkingLocalUrl(url: String) = prefs.edit().putString(KEY_LAST_WORKING_LOCAL_URL, url.trim()).commit()
@@ -64,6 +65,9 @@ object SettingsManager {
     // Critical: Use commit() for immediate disk persistence
     fun saveLastWorkingGlobalUrl(url: String) = prefs.edit().putString(KEY_LAST_WORKING_GLOBAL_URL, url.trim()).commit()
     fun getLastWorkingGlobalUrl(): String? = prefs.getString(KEY_LAST_WORKING_GLOBAL_URL, null)
+
+    fun savePreferredLocalUrl(url: String) = prefs.edit().putString(KEY_PREFERRED_LOCAL_URL, url.trim()).commit()
+    fun getPreferredLocalUrl(): String? = prefs.getString(KEY_PREFERRED_LOCAL_URL, null)
 
     fun saveLastHealthCheckTimestamp(timestamp: Long) = prefs.edit().putLong(KEY_LAST_HEALTH_CHECK_TIMESTAMP, timestamp).apply()
     fun getLastHealthCheckTimestamp(): Long = prefs.getLong(KEY_LAST_HEALTH_CHECK_TIMESTAMP, 0L)

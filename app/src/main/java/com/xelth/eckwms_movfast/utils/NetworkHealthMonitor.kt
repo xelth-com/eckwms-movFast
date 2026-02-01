@@ -36,9 +36,27 @@ object NetworkHealthMonitor {
         localServerUrl: String?,
         globalServerUrl: String?
     ): NetworkHealthState = withContext(Dispatchers.IO) {
+        // --- OPTIMISTIC SWITCHBACK CHECK ---
+        // Check if we have a preferred local URL that is DIFFERENT from current settings
+        // This happens if we paired via Global (no WiFi) but now WiFi might be back
+        val preferredLocal = SettingsManager.getPreferredLocalUrl()
+        var effectiveLocalUrl = localServerUrl
+
+        if (!preferredLocal.isNullOrEmpty() && preferredLocal != localServerUrl) {
+             Log.d(TAG, "🕵️ OPTIMISTIC CHECK: Sniffing preferred local: $preferredLocal")
+             val probeResult = checkServerHealth(preferredLocal, "PROBE_LOCAL")
+             if (probeResult.isReachable) {
+                 Log.i(TAG, "🚀 PREFERRED LOCAL IS ALIVE! Switching primary URL to: $preferredLocal")
+                 SettingsManager.saveServerUrl(preferredLocal)
+                 // Update the variable for the rest of this function run
+                 effectiveLocalUrl = preferredLocal
+             }
+        }
+        // -----------------------------------
+
         Log.d(TAG, "========================================")
         Log.d(TAG, "Starting network health check")
-        Log.d(TAG, "Local server: ${localServerUrl ?: "not configured"}")
+        Log.d(TAG, "Local server: ${effectiveLocalUrl ?: "not configured"}")
         Log.d(TAG, "Global server: ${globalServerUrl ?: "not configured"}")
         Log.d(TAG, "========================================")
 
@@ -52,7 +70,7 @@ object NetworkHealthMonitor {
 
         // Check both servers in parallel
         val localHealthDeferred = async {
-            localServerUrl?.let { checkServerHealth(it, "LOCAL") }
+            effectiveLocalUrl?.let { checkServerHealth(it, "LOCAL") }
         }
         val globalHealthDeferred = async {
             globalServerUrl?.let { checkServerHealth(it, "GLOBAL") }
@@ -67,10 +85,10 @@ object NetworkHealthMonitor {
 
         // Update last working URLs if reachable and add to history
         if (localHealth?.isReachable == true) {
-            SettingsManager.saveLastWorkingLocalUrl(localServerUrl!!)
+            SettingsManager.saveLastWorkingLocalUrl(effectiveLocalUrl!!)
             // Add successful local URL to connection history
-            SettingsManager.addToConnectionHistory(localServerUrl)
-            Log.d(TAG, "Added to connection history: $localServerUrl")
+            SettingsManager.addToConnectionHistory(effectiveLocalUrl)
+            Log.d(TAG, "Added to connection history: $effectiveLocalUrl")
         }
         if (globalHealth?.isReachable == true) {
             SettingsManager.saveLastWorkingGlobalUrl(globalServerUrl!!)
