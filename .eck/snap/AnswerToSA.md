@@ -1,219 +1,182 @@
-# 🎯 Task Complete: Implement Immediate Failover for Network Failures
+# 🎯 Task Complete: Implement Production-Ready Main Screen
 
 ## 📋 Task
-Implement automatic failover from Local server to Global server when network errors occur in ScanApiService, preventing SyncWorker from repeatedly failing when local server is unreachable.
+Replace the debug-heavy default screen with a production-friendly tile-based Main Menu inspired by ecKasse POS style. Create a clean, user-friendly dashboard for warehouse workers.
 
 ## Status
 ✅ **COMPLETE**
 
 ## Summary
-Successfully implemented **Immediate Failover** mechanism in ScanApiService. When a request to the active (local) server fails with a network error, the service now automatically retries the request using the Global server URL. If the Global server responds successfully, it becomes the new active server to prevent future timeouts.
+Successfully implemented a **Tile-Based Main Screen** with modern Material 3 design. The new dashboard provides clear navigation, network status visibility, and separates production UI from debug tools.
 
 ---
 
 ## 🔧 Actions Taken
 
-### 1. Refactored `processScan()` Method
-**File:** `app/src/main/java/com/xelth/eckwms_movfast/api/ScanApiService.kt:52-135`
+### 1. Created `MainScreen.kt`
+**File:** `app/src/main/java/com/xelth/eckwms_movfast/ui/screens/MainScreen.kt`
+
+**Components:**
+- ✅ `MainScreen` - Main dashboard composable with grid layout
+- ✅ `MainTopBar` - Top app bar with "eckWMS" branding and network status indicator
+- ✅ `DashboardCard` - Reusable card component for actions with gradient background
+
+**Features:**
+- Network health status indicator (ONLINE/OFFLINE with emoji icons)
+- 4 action cards in 2x2 grid layout:
+  - **Scan** - Barcode scanning & inventory lookup (links to scanScreen)
+  - **Restock** - Manual orders management (links to restockScreen)
+  - **AI Agent** - AI assistant (links to scanScreen with AI mode)
+  - **Settings** - Debug & configuration (links to settings)
+- Material 3 design with rounded corners, gradients, and proper elevation
+- Responsive card layout with large touch targets (160dp height)
+
+---
+
+### 2. Updated `MainActivity.kt`
+**File:** `app/src/main/java/com/xelth/eckwms_movfast/MainActivity.kt`
 
 **Changes:**
-- ✅ Split into public wrapper + private `internalProcessScan()` helper
-- ✅ Added failover logic: Try activeUrl → If error AND activeUrl != globalUrl → Try globalUrl
-- ✅ Auto-update active server setting when Global succeeds after Local fails
-- ✅ Added connection timeout: 5 seconds (faster failover detection)
-- ✅ Added read timeout: 10 seconds
+- ✅ Added `MainScreen` import
+- ✅ Added `ScannerSettingsScreen` import (for settings route)
+- ✅ Added `ImageViewerScreen` import
+- ✅ Changed `startDestination` from `"scanScreen"` to `"mainMenu"`
+- ✅ Added `composable("mainMenu")` route for MainScreen
+- ✅ Added `composable("settings")` route for ScannerSettingsScreen
+- ✅ Added `composable("imageViewer")` route for ImageViewerScreen
+- ✅ Updated `ScanScreen.onNavigateToSettings` to navigate to `"settings"` route instead of starting ScannerActivity
 
-**Before:**
-```kotlin
-suspend fun processScan(barcode: String, barcodeType: String, orderId: String? = null): ScanResult {
-    val baseUrl = SettingsManager.getServerUrl()
-    // ... direct HTTP connection to baseUrl ...
-    // No failover logic
-}
+**Navigation Flow:**
 ```
-
-**After:**
-```kotlin
-suspend fun processScan(barcode: String, barcodeType: String, orderId: String? = null): ScanResult {
-    val activeUrl = SettingsManager.getServerUrl().removeSuffix("/")
-    val globalUrl = SettingsManager.getGlobalServerUrl().removeSuffix("/")
-
-    var result = internalProcessScan(activeUrl, barcode, barcodeType, orderId)
-
-    if (result is ScanResult.Error && activeUrl != globalUrl) {
-        Log.w(TAG, "⚠️ Scan to $activeUrl failed. Failover to Global: $globalUrl")
-        result = internalProcessScan(globalUrl, barcode, barcodeType, orderId)
-
-        if (result is ScanResult.Success) {
-            SettingsManager.saveServerUrl(globalUrl) // Auto-switch to Global
-        }
-    }
-    return result
-}
+Main Screen (mainMenu)
+├── Scan → Scan Screen (scanScreen)
+├── Restock → Restock Screen (restockScreen)
+├── AI Agent → Scan Screen with AI mode (scanScreen)
+└── Settings → Scanner Settings (settings)
+    └── View Scanned Image → Image Viewer (imageViewer)
 ```
 
 ---
 
-### 2. Refactored `processScanWithId()` Method
-**File:** `app/src/main/java/com/xelth/eckwms_movfast/api/ScanApiService.kt:242-350`
+### 3. Enhanced `ImageViewerScreen.kt`
+**File:** `app/src/main/java/com/xelth/eckwms_movfast/ui/screens/ImageViewerScreen.kt`
 
 **Changes:**
-- ✅ Split into public wrapper + private `internalProcessScanWithId()` helper
-- ✅ Added identical failover logic for msgId-based scans (HybridSender)
-- ✅ Added connection timeout: 5 seconds
-- ✅ Added read timeout: 10 seconds
-
-**Impact:**
-- Fixes timeout issues for deduplicated scans from HybridMessageSender
-- Ensures msgId-based scans also benefit from failover
+- ✅ Added `ImageViewerScreen` - Full-screen composable with Scaffold
+- ✅ Added TopAppBar with back navigation
+- ✅ Integrated with ScanRecoveryViewModel to display scan history images
+- ✅ Added missing imports (Icons, ArrowBack)
 
 ---
 
-### 3. Refactored `uploadImage()` Method
-**File:** `app/src/main/java/com/xelth/eckwms_movfast/api/ScanApiService.kt:373-478`
+## 🎨 UI Design
 
-**Changes:**
-- ✅ Split into public wrapper + private `internalUploadImage()` helper
-- ✅ Added failover logic for image uploads
-- ✅ Added connection timeout: 10 seconds (longer for uploads)
-- ✅ Added read timeout: 30 seconds (longer for upload response)
-- ✅ Removed redundant re-auth retry logic (simplified for failover)
+### Color Scheme
+- **Scan Card**: MaterialTheme.colorScheme.primary (blue gradient)
+- **Restock Card**: MaterialTheme.colorScheme.secondary (purple gradient)
+- **AI Agent Card**: MaterialTheme.colorScheme.tertiary (teal gradient)
+- **Settings Card**: MaterialTheme.colorScheme.surfaceVariant (gray, dark text)
 
-**Before:**
-```kotlin
-suspend fun uploadImage(...): ScanResult {
-    val baseUrl = SettingsManager.getServerUrl()
-    // ... multipart upload to baseUrl ...
-    // 401 handling with performSilentAuth() + uploadImageWithToken() retry
-}
-```
+### Network Status Indicator
+- **ONLINE**: Green background (0xFFE8F5E9) with ☁️ emoji and "ONLINE" text
+- **OFFLINE**: Red background (0xFFFFEBEE) with ❌ emoji and "OFFLINE" text
+- Rounded badge shape with 16dp corner radius
 
-**After:**
-```kotlin
-suspend fun uploadImage(...): ScanResult {
-    val activeUrl = SettingsManager.getServerUrl().removeSuffix("/")
-    val globalUrl = SettingsManager.getGlobalServerUrl().removeSuffix("/")
-
-    var result = internalUploadImage(activeUrl, bitmap, ...)
-
-    if (result is ScanResult.Error && activeUrl != globalUrl) {
-        Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global: $globalUrl")
-        result = internalUploadImage(globalUrl, bitmap, ...)
-
-        if (result is ScanResult.Success) {
-            SettingsManager.saveServerUrl(globalUrl)
-        }
-    }
-    return result
-}
-```
-
----
-
-## 🧪 How It Works
-
-### Scenario 1: Local Server Unreachable
-```
-1. User scans barcode / uploads image
-2. processScan() tries activeUrl (http://192.168.11.189:3210/E)
-3. Connection timeout after 5 seconds → ScanResult.Error
-4. activeUrl != globalUrl → Trigger failover
-5. processScan() retries with globalUrl (https://pda.repair/E)
-6. Global server responds → ScanResult.Success
-7. Auto-update: SettingsManager.saveServerUrl("https://pda.repair/E")
-8. Future requests go directly to Global (no more 5s timeout)
-```
-
-### Scenario 2: Both Servers Available
-```
-1. User scans barcode
-2. processScan() tries activeUrl (http://192.168.11.189:3210/E)
-3. Local server responds → ScanResult.Success
-4. No failover needed
-5. activeUrl remains unchanged
-```
-
-### Scenario 3: Only One Server Configured
-```
-1. activeUrl == globalUrl (both point to same server)
-2. processScan() tries activeUrl
-3. If error → No failover (activeUrl == globalUrl check prevents retry)
-4. Returns error immediately
-```
+### Card Design
+- Height: 160dp
+- Corner radius: 16dp
+- Elevation: 4dp
+- Vertical gradient background (80% opacity to 100% opacity)
+- Large icon in top-left corner (40dp with semi-transparent background)
+- Title + subtitle in bottom-left corner
+- Full-width clickable area
 
 ---
 
 ## 📊 Impact
 
-### ✅ Fixed Issues
-1. **SyncWorker Reliability**: No more repeated failures when local server is down
-2. **Fast Failover**: 5-second timeout instead of 31-second hang (from logs)
-3. **Auto-Recovery**: Automatically switches to working server
-4. **User Experience**: Scans/uploads succeed via Global when Local unavailable
+### ✅ User Experience Improvements
+1. **Clear Navigation**: Large, labeled buttons instead of debug controls
+2. **Status Visibility**: Network health indicator in header
+3. **Professional Appearance**: Material 3 design with gradients and shadows
+4. **Touch-Friendly**: Large cards optimized for warehouse worker interaction
+5. **Separation of Concerns**: Production UI separate from debug tools
 
-### ⚡ Performance Improvements
-- **Before**: 31+ seconds to fail (5s connect + retries)
-- **After**: 5-10 seconds to failover and succeed
+### 🔄 Architecture Changes
+- **Before**: App starts directly on debug-heavy ScanScreen
+- **After**: App starts on clean Main Menu with navigation to all features
+- Settings integrated as Compose screen (no longer separate ScannerActivity)
+- Full navigation within single NavHost (no Activity jumping)
 
-### 🔄 Auto-Switching Behavior
-- When Local fails and Global succeeds → Switch to Global permanently
-- Prevents future 5-second timeouts on every request
-- User can manually switch back to Local via settings when network recovers
+### 🚀 Future-Ready
+- Easy to add new action cards to the grid
+- Scalable layout that works on different screen sizes
+- Consistent design language that can be extended to other screens
+
+---
+
+## 📝 Files Created/Modified
+
+### Created Files:
+1. `app/src/main/java/com/xelth/eckwms_movfast/ui/screens/MainScreen.kt` (166 lines)
+
+### Modified Files:
+1. `app/src/main/java/com/xelth/eckwms_movfast/MainActivity.kt`
+   - Added MainScreen navigation route
+   - Changed start destination to mainMenu
+   - Added settings and imageViewer routes
+   - Updated settings navigation
+
+2. `app/src/main/java/com/xelth/eckwms_movfast/ui/screens/ImageViewerScreen.kt`
+   - Added full-screen ImageViewerScreen composable
+   - Added required imports
 
 ---
 
 ## 🧪 Testing Instructions
 
-### Test 1: Verify Failover Logs
-1. Ensure local server is unreachable (turn off or wrong IP)
-2. Scan a barcode or upload image
-3. Check Logcat for:
-```
-W/ScanApiService: ⚠️ Scan to http://192.168.11.189:3210/E failed. Failover to Global: https://pda.repair/E
-I/ScanApiService: ✅ Global failover success. Updating active server setting.
-```
+### Test 1: Verify Main Screen Launch
+1. Launch the app
+2. Expected: Main Menu screen appears with "Dashboard" title
+3. Expected: Top bar shows "eckWMS" with "GO" badge
+4. Expected: Network status indicator shows ONLINE or OFFLINE
+5. Expected: 4 cards displayed in 2x2 grid
 
-### Test 2: Verify Timeout Reduction
-1. Time how long it takes for a scan to complete when local is down
-2. Expected: ~5-10 seconds (5s timeout + Global request)
-3. Previous behavior: 31+ seconds
+### Test 2: Verify Navigation to Scan Screen
+1. Tap "Scan" card
+2. Expected: Navigate to scanScreen
+3. Expected: Hardware scanner functionality works
+4. Expected: Back button returns to Main Menu
 
-### Test 3: Verify Auto-Switch
-1. Scan with local server down
-2. Check Settings → Server URL should now show Global URL
-3. Subsequent scans should go directly to Global (no 5s delay)
+### Test 3: Verify Navigation to Settings
+1. Tap "Settings" card
+2. Expected: Navigate to ScannerSettingsScreen
+3. Expected: Back button returns to Main Menu
+4. Expected: All settings controls functional
 
-### Test 4: Verify Normal Operation
-1. Ensure local server is reachable
-2. Scan a barcode
-3. Should use Local server (no failover triggered)
+### Test 4: Verify Navigation to Restock
+1. Tap "Restock" card
+2. Expected: Navigate to restockScreen
+3. Expected: Back button returns to Main Menu
 
----
-
-## 📝 Files Modified
-1. `app/src/main/java/com/xelth/eckwms_movfast/api/ScanApiService.kt`
-   - Added `internalProcessScan()` helper
-   - Added `internalProcessScanWithId()` helper
-   - Added `internalUploadImage()` helper
-   - Modified `processScan()` with failover logic
-   - Modified `processScanWithId()` with failover logic
-   - Modified `uploadImage()` with failover logic
-   - Added connection/read timeouts to all methods
-
-2. `.eck/JOURNAL.md`
-   - Added entry for Immediate Failover implementation
+### Test 5: Verify Network Status
+1. Disconnect network
+2. Expected: Status indicator changes to OFFLINE (red background, ❌ emoji)
+3. Reconnect network
+4. Expected: Status indicator changes to ONLINE (green background, ☁️ emoji)
 
 ---
 
 ## 🚀 Next Steps (Optional Enhancements)
 
-1. **Smart Retry**: Periodically test local server availability and auto-switch back
-2. **User Notification**: Show toast when failover occurs
-3. **Health Metrics**: Track failover frequency for diagnostics
-4. **Network Type Detection**: Prefer Local when on same WiFi network
+1. **AI Integration**: Connect AI Agent card to AI chat interface
+2. **Quick Actions**: Add quick scan button in header for power users
+3. **Recent Items**: Show recently scanned items on Main Screen
+4. **Device Status**: Display device ID and battery level in header
+5. **Custom Shortcuts**: Allow users to pin frequently used actions
 
 ---
 
-**Completed**: 2026-01-31
+**Completed**: 2026-02-02
 **Agent**: Expert Developer (Fixer)
-**Task**: Implement Immediate Failover for Network Failures
+**Task**: Implement Production-Ready Main Screen
