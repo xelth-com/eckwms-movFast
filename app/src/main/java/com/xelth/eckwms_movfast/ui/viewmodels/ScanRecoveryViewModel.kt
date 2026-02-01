@@ -1542,6 +1542,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addPairingLog("✅ UUID: $instanceId")
         addPairingLog("✅ Server PubKey: ${serverPublicKeyHex.take(16)}...${serverPublicKeyHex.takeLast(8)}")
 
+        // Save Home Instance ID for Smart Routing
+        SettingsManager.saveHomeInstanceId(instanceId)
+        addPairingLog("✅ Home Instance ID saved: $instanceId")
+
         SettingsManager.saveServerPublicKey(serverPublicKeyHex)
         addPairingLog("✅ Server public key saved")
 

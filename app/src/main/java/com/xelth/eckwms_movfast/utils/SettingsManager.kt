@@ -87,6 +87,11 @@ object SettingsManager {
     fun getAuthToken(): String = prefs.getString(KEY_AUTH_TOKEN, "") ?: ""
     fun clearAuthToken() = prefs.edit().remove(KEY_AUTH_TOKEN).commit()
 
+    // Home Instance ID for Smart Routing (extracted from pairing QR code)
+    private const val KEY_HOME_INSTANCE_ID = "home_instance_id"
+    fun saveHomeInstanceId(id: String) = prefs.edit().putString(KEY_HOME_INSTANCE_ID, id.trim()).commit()
+    fun getHomeInstanceId(): String = prefs.getString(KEY_HOME_INSTANCE_ID, "") ?: ""
+
     private const val KEY_USER_ROLE = "user_role"
     private const val KEY_PERMISSIONS = "user_permissions"
 

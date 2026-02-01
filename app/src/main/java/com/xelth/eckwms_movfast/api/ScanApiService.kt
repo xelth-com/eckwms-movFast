@@ -411,6 +411,15 @@ class ScanApiService(private val context: Context) {
             connection.setRequestProperty("X-Idempotency-Key", imageId)
             // Also send as header for proxy routing hints
             connection.setRequestProperty("X-Image-ID", imageId)
+
+            // Add Target Instance header for Smart Routing
+            // This tells any server (even a Blind Relay) where this data belongs
+            val homeInstanceId = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+            if (homeInstanceId.isNotEmpty()) {
+                connection.setRequestProperty("X-Target-Instance", homeInstanceId)
+                Log.d(TAG, "Smart Routing: X-Target-Instance=$homeInstanceId")
+            }
+
             connection.doOutput = true
 
             val outputStream = connection.outputStream
@@ -840,6 +849,13 @@ class ScanApiService(private val context: Context) {
             // Add Idempotency Key header
             connection.setRequestProperty("X-Idempotency-Key", imageId)
             connection.setRequestProperty("X-Image-ID", imageId)
+
+            // Add Target Instance header for Smart Routing
+            val homeInstanceId = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+            if (homeInstanceId.isNotEmpty()) {
+                connection.setRequestProperty("X-Target-Instance", homeInstanceId)
+            }
+
             connection.doOutput = true
 
             val outputStream = connection.outputStream
