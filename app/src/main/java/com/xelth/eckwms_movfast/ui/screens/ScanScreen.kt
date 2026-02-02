@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.focusable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +35,7 @@ import com.xelth.eckwms_movfast.ui.data.ScanStatus
 import com.xelth.eckwms_movfast.ui.data.TransactionType
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanState
+import com.xelth.eckwms_movfast.ui.screens.pos.components.order.InterlockingShape
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -267,7 +270,7 @@ fun ScanHistorySection(viewModel: ScanRecoveryViewModel) {
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
         Column(
@@ -282,7 +285,7 @@ fun ScanHistorySection(viewModel: ScanRecoveryViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Scan History (${scanHistory.size})",
+                    text = "Order Items",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -299,7 +302,7 @@ fun ScanHistorySection(viewModel: ScanRecoveryViewModel) {
             ) {
                 if (scanHistory.isEmpty()) {
                     Text(
-                        text = "No scans yet",
+                        text = "No items yet",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 8.dp)
@@ -308,13 +311,73 @@ fun ScanHistorySection(viewModel: ScanRecoveryViewModel) {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(300.dp) // Limit height to make the column scrollable inside a Column
+                            .height(400.dp),
+                        verticalArrangement = Arrangement.spacedBy((-24).dp)
                     ) {
-                        items(scanHistory, key = { it.id }) { item ->
-                            ScanHistoryItemCard(item)
+                        itemsIndexed(scanHistory, key = { _, item -> item.id }) { index, item ->
+                            InterlockingRow(item, index % 2 == 0)
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun InterlockingRow(item: ScanHistoryItem, isEven: Boolean) {
+    val brush = if (isEven) {
+        Brush.verticalGradient(
+            listOf(
+                MaterialTheme.colorScheme.surfaceContainer,
+                MaterialTheme.colorScheme.surface
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            listOf(
+                MaterialTheme.colorScheme.surface,
+                MaterialTheme.colorScheme.surfaceContainer
+            )
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = if (isEven) 0.dp else 30.dp,
+                end = if (isEven) 30.dp else 0.dp
+            )
+            .height(48.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(InterlockingShape(isEven))
+                .background(brush)
+                .padding(horizontal = 40.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = if (item.transactionType == TransactionType.IMAGE_UPLOAD) {
+                        "📷 Image"
+                    } else {
+                        "🔍 ${item.barcode}"
+                    },
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1
+                )
+                Text(
+                    text = item.status.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
             }
         }
     }

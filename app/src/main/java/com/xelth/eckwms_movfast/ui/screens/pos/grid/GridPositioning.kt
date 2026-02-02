@@ -19,6 +19,10 @@ fun Pair<Int, Int>.secondComponent(): Int = this.second
 
 /**
  * Converts virtual grid coordinates to physical Dp positions for asymmetric layout.
+ *
+ * Ported mathematical correction from ecKasseAnd:
+ * - Added -1f offset for even rows to snap buttons to half-buttons.
+ * - Restored legacy odd row calculation that proved stable.
  */
 fun virtualToPhysical(row: Int, col: Int, config: GridConfig): Position {
     val fullWidth = config.cellWidth.value
@@ -26,15 +30,15 @@ fun virtualToPhysical(row: Int, col: Int, config: GridConfig): Position {
     val gap = config.buttonGap.value
 
     val x = if (row % 2 == 0) {
-        // Even rows: align hexagons to the left
+        // Even rows: align hexagons to the left with -1f compensation
         when (col) {
             0 -> 0f
-            1 -> halfWidth + gap
-            2 -> fullWidth + gap + halfWidth + gap
-            else -> 0f
+            1 -> halfWidth + gap - 1f
+            2 -> halfWidth + gap - 1f + fullWidth + gap
+            else -> col.toFloat() * (fullWidth + gap)
         }
     } else {
-        // Odd rows: offset hexagons by half width
+        // Odd rows: offset hexagons by half width (legacy stable calculation)
         val isOddCol = col % 2 == 1
         val visualCol = col / 2
         visualCol.toFloat() * (fullWidth + gap) + (if (isOddCol) (fullWidth + gap) / 2f else 0f)
