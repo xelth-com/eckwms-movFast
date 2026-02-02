@@ -158,46 +158,40 @@ fun NetworkIndicatorButton(
             .background(bgColor),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(2.dp)
-        ) {
-            // Connection icon
-            Text(
-                text = if (networkState.isConnected()) {
-                    if (networkState.connectionType == ConnectionType.LOCAL_IP) "🖥️" else "🌍"
-                } else "❌",
-                fontSize = 12.sp
-            )
-
-            if (networkState.isConnected()) {
-                // Server hash
+        if (networkState.isConnected()) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(horizontal = 2.dp)
+            ) {
+                // Server hash — max size to fill the button
                 Text(
                     text = networkState.serverHash,
                     color = textColor,
-                    fontSize = 7.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
-                    maxLines = 1
+                    maxLines = 1,
+                    lineHeight = 12.sp
                 )
-                // Latency
+                // Latency — tight spacing
                 if (networkState.latencyMs > 0) {
                     Text(
                         text = "${networkState.latencyMs}ms",
                         color = textColor.copy(alpha = 0.8f),
-                        fontSize = 7.sp,
+                        fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
-                        maxLines = 1
+                        maxLines = 1,
+                        lineHeight = 11.sp
                     )
                 }
-            } else {
-                Text(
-                    text = "OFF",
-                    color = textColor,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold
-                )
             }
+        } else {
+            Text(
+                text = "OFF",
+                color = textColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
