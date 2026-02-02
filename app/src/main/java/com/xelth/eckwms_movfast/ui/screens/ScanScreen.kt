@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -201,43 +203,14 @@ fun ScanScreen(
             )
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues)) {
+        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
             if (uiMode == "DEBUG") {
-                // === LEGACY DEBUG CONSOLE ===
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                        .verticalScroll(scrollState)
-                        .focusable(false),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Dummy button to catch keyboard events from scanner - does nothing
-                    Button(
-                        onClick = {
-                            viewModel.addLog(">>> Dummy button clicked - keyboard event caught and ignored")
-                        },
-                        modifier = Modifier
-                            .size(0.dp)  // Invisible button
-                            .focusable(true),  // This one SHOULD be focusable to catch events
-                        enabled = false  // Disabled so it looks invisible
-                    ) { }
-
-                    ActiveOrderCard(viewModel = viewModel)
-                    ScanningStatusCard(viewModel = viewModel, navController = navController)
-                    if (viewModel.hasPermission("inventory.adjust")) {
-                        Button(
-                            onClick = { navController.navigate("restockScreen") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusable(false)
-                        ) {
-                            Text("Start Manual Restock Order")
-                        }
-                    }
-                    WorkflowDrivenUI(viewModel = viewModel, navController = navController, onNavigateToCamera = { viewModel.addLog("Navigate to camera for workflow"); navController.navigate("cameraScanScreen?scan_mode=workflow_capture") })
-                    ScanHistorySection(viewModel = viewModel)
-                }
+                // === MAIN CONSOLE (Full Screen) ===
+                OrderConsoleScreen(
+                    viewModel = viewModel,
+                    navController = navController,
+                    modifier = Modifier.fillMaxSize()
+                )
             } else {
                 // === DYNAMIC AI LAYOUT ===
                 com.xelth.eckwms_movfast.ui.dynamic.DynamicUiRenderer(
@@ -257,6 +230,146 @@ fun ScanScreen(
                 onDismiss = { viewModel.clearAiInteraction() },
                 onResponse = { response -> viewModel.respondToAiInteraction(response) }
             )
+        }
+    }
+}
+
+/**
+ * Full-screen order console with interlocking item list
+ * Ported from ecKasseAnd OrderConsoleView
+ */
+@Composable
+fun OrderConsoleScreen(
+    viewModel: ScanRecoveryViewModel,
+    navController: androidx.navigation.NavController,
+    modifier: Modifier = Modifier
+) {
+    val scanHistory by viewModel.scanHistory.observeAsState(emptyList())
+
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Current Order",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold
+                )
+
+                if (scanHistory.isNotEmpty()) {
+                    val chipBackground = Modifier.background(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                    Box(
+                        modifier = chipBackground
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "${scanHistory.size} items",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+            }
+
+            // Items List (Interlocking)
+            if (scanHistory.isEmpty()) {
+                // Empty state
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No items scanned",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Scan items to begin",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+            } else {
+                // Interlocking list
+                val listState = rememberLazyListState()
+
+                // Auto-scroll to newest item
+                LaunchedEffect(scanHistory.size) {
+                    if (scanHistory.isNotEmpty()) {
+                        listState.animateScrollToItem(0)
+                    }
+                }
+
+                Box(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .align(Alignment.BottomCenter),
+                        verticalArrangement = Arrangement.spacedBy((-24).dp, Alignment.Bottom),
+                        reverseLayout = true
+                    ) {
+                        itemsIndexed(
+                            items = scanHistory.reversed(),
+                            key = { _, item -> item.id }
+                        ) { index, item ->
+                            val isEven = (scanHistory.size - 1 - index) % 2 == 0
+                            InterlockingRow(item, isEven)
+                        }
+                    }
+                }
+            }
+
+            // Bottom Action Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Button(
+                    onClick = { navController.navigate("cameraScanScreen") },
+                    modifier = Modifier.weight(1f).padding(end = 4.dp)
+                ) {
+                    Text("Camera Scan")
+                }
+                Button(
+                    onClick = { navController.navigate("pairingScreen") },
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Text("Settings")
+                }
+            }
         }
     }
 }

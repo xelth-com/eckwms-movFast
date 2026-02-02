@@ -20,9 +20,10 @@ fun Pair<Int, Int>.secondComponent(): Int = this.second
 /**
  * Converts virtual grid coordinates to physical Dp positions for asymmetric layout.
  *
- * Ported mathematical correction from ecKasseAnd:
- * - Added -1f offset for even rows to snap buttons to half-buttons.
- * - Restored legacy odd row calculation that proved stable.
+ * Ported from ecKasseAnd with full hexagonal grid support:
+ * - Even rows: HALF_LEFT (col=0) + FULL buttons (col=1,3,5) with -1f compensation
+ * - Odd rows: FULL buttons (col=0,2,4) with standard offset logic
+ * - DEAD zones are handled at grid management level (col=2,4,6 for even, col=1,3,5 for odd)
  */
 fun virtualToPhysical(row: Int, col: Int, config: GridConfig): Position {
     val fullWidth = config.cellWidth.value
@@ -30,15 +31,16 @@ fun virtualToPhysical(row: Int, col: Int, config: GridConfig): Position {
     val gap = config.buttonGap.value
 
     val x = if (row % 2 == 0) {
-        // Even rows: align hexagons to the left with -1f compensation
+        // Even rows: compensate for reduced half-button size
         when (col) {
-            0 -> 0f
-            1 -> halfWidth + gap - 1f
-            2 -> halfWidth + gap - 1f + fullWidth + gap
-            else -> col.toFloat() * (fullWidth + gap)
+            0 -> 0f  // HALF_LEFT starts at x=0
+            1 -> halfWidth + gap - 1f  // Shift full buttons 1dp closer to half-button
+            3 -> halfWidth + gap - 1f + fullWidth + gap  // 2nd full button
+            5 -> halfWidth + gap - 1f + 2 * fullWidth + 2 * gap  // 3rd full button
+            else -> 0f  // DEAD zones or out of bounds
         }
     } else {
-        // Odd rows: offset hexagons by half width (legacy stable calculation)
+        // Odd rows: legacy logic that proved stable
         val isOddCol = col % 2 == 1
         val visualCol = col / 2
         visualCol.toFloat() * (fullWidth + gap) + (if (isOddCol) (fullWidth + gap) / 2f else 0f)
