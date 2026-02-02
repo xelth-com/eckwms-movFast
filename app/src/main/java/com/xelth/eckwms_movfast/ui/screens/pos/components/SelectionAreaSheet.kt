@@ -44,6 +44,22 @@ fun SelectionAreaSheet(
                     color = content["color"] as? String ?: "#3a3a3a"
                     enabled = true
                 }
+                content is Map<*, *> && content["type"] == "placeholder" -> {
+                    label = ""
+                    color = "#2a2a2a"
+                    enabled = false
+                }
+                content is Map<*, *> && content["type"] == "empty" -> {
+                    label = ""
+                    color = "#2a2a2a"
+                    enabled = false
+                }
+                // Show empty slots as inactive buttons
+                content == null || content is String && content.isEmpty() -> {
+                    label = ""
+                    color = "#2a2a2a"
+                    enabled = false
+                }
             }
 
             val offsetX = cell.cssPosition.x

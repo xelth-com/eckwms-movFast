@@ -36,8 +36,8 @@ class MainScreenViewModel : ViewModel() {
 
     val gridManager = GridManager(
         config = gridConfig,
-        dimensions = Pair(2, 2), // 2 rows, 2 cols
-        layoutType = "symmetrical"
+        dimensions = Pair(4, 7), // 4 rows, 7 cols (like ecKasse)
+        layoutType = "asymmetrical"
     )
 
     private val _renderCells = MutableLiveData<List<RenderCell>>(emptyList())
