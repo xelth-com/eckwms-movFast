@@ -60,6 +60,7 @@ fun MainScreen(
     val renderCells by mainViewModel.renderCells.observeAsState(emptyList())
     val consoleLogs by mainViewModel.consoleLogs.observeAsState(emptyList())
     val pageCount by mainViewModel.pageCount.observeAsState(1)
+    val scannerEnabled by mainViewModel.scannerEnabled.observeAsState(true)
 
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
@@ -103,6 +104,20 @@ fun MainScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .height(consoleHeight)
+                        .background(Color(0xFF121212))
+                ) {
+                    ConsoleView(
+                        logs = consoleLogs,
+                        modifier = Modifier.fillMaxSize(),
+                        scannerEnabled = scannerEnabled,
+                        onScannerToggle = { mainViewModel.toggleScanner() }
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .height(selectionAreaHeight)
                         .background(MaterialTheme.colorScheme.surface)
                 ) {
@@ -120,18 +135,6 @@ fun MainScreen(
                                 "navigate_settings" -> navController.navigate("settings")
                             }
                         }
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(consoleHeight)
-                        .background(Color(0xFF121212))
-                ) {
-                    ConsoleView(
-                        logs = consoleLogs,
-                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }

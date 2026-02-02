@@ -49,6 +49,9 @@ class MainScreenViewModel : ViewModel() {
     private val _pageCount = MutableLiveData<Int>(1)
     val pageCount: LiveData<Int> = _pageCount
 
+    private val _scannerEnabled = MutableLiveData<Boolean>(true)
+    val scannerEnabled: LiveData<Boolean> = _scannerEnabled
+
     init {
         initializeGrid()
     }
@@ -123,6 +126,12 @@ class MainScreenViewModel : ViewModel() {
 
     fun clearLogs() {
         _consoleLogs.postValue(emptyList())
+    }
+
+    fun toggleScanner() {
+        val current = _scannerEnabled.value ?: true
+        _scannerEnabled.postValue(!current)
+        addLog("Scanner ${if (!current) "enabled" else "disabled"}")
     }
 
     fun onSystemAction(action: String) {
