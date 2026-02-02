@@ -143,7 +143,7 @@ sealed class NetworkHealthState(
         fun generateHash(url: String): String {
             if (url.isEmpty()) return "??"
             val hash = url.hashCode().toString(16).uppercase().replace("-", "")
-            return "#" + hash.takeLast(4)
+            return "#" + hash.take(4)
         }
 
         /**

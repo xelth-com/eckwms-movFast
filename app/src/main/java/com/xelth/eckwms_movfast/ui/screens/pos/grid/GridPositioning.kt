@@ -11,45 +11,52 @@ data class GridConfig(
     val cellWidth: Dp = 140.dp,
     val cellHeight: Dp = 80.dp,
     val buttonGap: Dp = 6.dp,
-    val verticalOverlap: Float = 0.75f
+    val verticalOverlap: Float = 0.75f,
+    val containerWidth: Dp = 0.dp,
+    val isMirrored: Boolean = false
 )
 
 fun Pair<Int, Int>.firstComponent(): Int = this.first
 fun Pair<Int, Int>.secondComponent(): Int = this.second
 
 /**
- * Converts virtual grid coordinates to physical Dp positions for asymmetric layout.
- *
- * Ported from ecKasseAnd with full hexagonal grid support:
- * - Even rows: HALF_LEFT (col=0) + FULL buttons (col=1,3,5) with -1f compensation
- * - Odd rows: FULL buttons (col=0,2,4) with standard offset logic
- * - DEAD zones are handled at grid management level (col=2,4,6 for even, col=1,3,5 for odd)
+ * Converts virtual grid coordinates to physical Dp positions.
+ * Supports asymmetric layout and mirroring (Left-handed mode).
  */
 fun virtualToPhysical(row: Int, col: Int, config: GridConfig): Position {
     val fullWidth = config.cellWidth.value
     val halfWidth = fullWidth / 2f
     val gap = config.buttonGap.value
 
-    val x = if (row % 2 == 0) {
-        // Even rows: compensate for reduced half-button size
+    // Calculate Standard (Right-Handed) X Position
+    val standardX = if (row % 2 == 0) {
+        // Even rows: HALF_LEFT at start
         when (col) {
             0 -> 0f  // HALF_LEFT starts at x=0
-            1 -> halfWidth + gap - 1f  // Shift full buttons 1dp closer to half-button
-            3 -> halfWidth + gap - 1f + fullWidth + gap  // 2nd full button
-            5 -> halfWidth + gap - 1f + 2 * fullWidth + 2 * gap  // 3rd full button
-            else -> 0f  // DEAD zones or out of bounds
+            1 -> halfWidth + gap - 1f
+            3 -> halfWidth + gap - 1f + fullWidth + gap
+            5 -> halfWidth + gap - 1f + 2 * fullWidth + 2 * gap
+            else -> 0f
         }
     } else {
-        // Odd rows: legacy logic that proved stable
+        // Odd rows: Full buttons shifted
         val isOddCol = col % 2 == 1
         val visualCol = col / 2
         visualCol.toFloat() * (fullWidth + gap) + (if (isOddCol) (fullWidth + gap) / 2f else 0f)
-    }.dp
+    }
+
+    // Apply Mirroring if enabled
+    val finalX = if (config.isMirrored && config.containerWidth.value > 0) {
+        val elementWidth = if (row % 2 == 0 && col == 0) halfWidth else fullWidth
+        config.containerWidth.value - standardX - elementWidth
+    } else {
+        standardX
+    }
 
     val verticalSpacing = config.cellHeight * config.verticalOverlap
     val y = (row.toFloat() * (verticalSpacing + config.buttonGap).value).dp
 
-    return Position(x, y)
+    return Position(finalX.dp, y)
 }
 
 /**

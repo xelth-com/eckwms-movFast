@@ -27,6 +27,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:label="@string/app_name"
             android:theme="@style/Theme.EckwmsmovFast"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
@@ -39,6 +40,7 @@
         <!-- Добавленная активность для сканера -->
         <activity
             android:name=".ScannerActivity"
+            android:screenOrientation="portrait"
             android:exported="false"
             android:theme="@style/Theme.EckwmsmovFast" />
     </application>

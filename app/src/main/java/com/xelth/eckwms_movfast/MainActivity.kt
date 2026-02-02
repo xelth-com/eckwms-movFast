@@ -63,6 +63,12 @@ class MainActivity : ComponentActivity() {
                             viewModel.resetNavigationCommand()
                             android.util.Log.e("AUTO_PAIR", "Navigation command reset")
                         }
+                        com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.TO_MAIN_REPAIR -> {
+                            navController.navigate("mainMenu") {
+                                popUpTo("mainMenu") { inclusive = true }
+                            }
+                            viewModel.resetNavigationCommand()
+                        }
                         else -> {
                             android.util.Log.e("AUTO_PAIR", "Command is NONE - no action")
                         }
@@ -73,7 +79,23 @@ class MainActivity : ComponentActivity() {
                     navController = navController,
                     startDestination = "mainMenu"
                 ) {
-                    composable("mainMenu") {
+                    composable("mainMenu") { backStackEntry ->
+                        val savedStateHandle = backStackEntry.savedStateHandle
+
+                        // Handle workflow image capture returning to main menu (Repair Mode photo)
+                        LaunchedEffect(savedStateHandle) {
+                            savedStateHandle.get<Boolean>("captured_workflow_image")?.let { success ->
+                                if (success) {
+                                    val bitmap = BitmapCache.getCapturedImage()
+                                    if (bitmap != null) {
+                                        viewModel.setRepairPhotoBitmap(bitmap)
+                                        BitmapCache.clearCapturedImage()
+                                    }
+                                }
+                                savedStateHandle.remove<Boolean>("captured_workflow_image")
+                            }
+                        }
+
                         MainScreen(navController = navController, viewModel = viewModel)
                     }
 

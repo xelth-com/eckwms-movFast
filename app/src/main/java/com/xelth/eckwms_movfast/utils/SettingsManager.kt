@@ -158,4 +158,36 @@ object SettingsManager {
     fun clearConnectionHistory() {
         prefs.edit().remove(KEY_CONNECTION_HISTORY).commit()
     }
+
+    // --- Repair Mode Slot Persistence ---
+    private const val KEY_REPAIR_SLOTS = "repair_slots"
+
+    /**
+     * Save repair slots as "index:barcode,index:barcode,..."
+     * Only saves bound slots (with barcodes).
+     */
+    fun saveRepairSlots(slots: List<Pair<Int, String>>) {
+        val encoded = slots.joinToString(";") { "${it.first}:${it.second}" }
+        prefs.edit().putString(KEY_REPAIR_SLOTS, encoded).commit()
+    }
+
+    /**
+     * Load saved repair slots. Returns list of (index, barcode) pairs.
+     */
+    fun loadRepairSlots(): List<Pair<Int, String>> {
+        val raw = prefs.getString(KEY_REPAIR_SLOTS, "") ?: ""
+        if (raw.isEmpty()) return emptyList()
+        return raw.split(";").mapNotNull { entry ->
+            val parts = entry.split(":", limit = 2)
+            if (parts.size == 2) {
+                val index = parts[0].toIntOrNull()
+                val barcode = parts[1]
+                if (index != null && barcode.isNotEmpty()) Pair(index, barcode) else null
+            } else null
+        }
+    }
+
+    fun clearRepairSlots() {
+        prefs.edit().remove(KEY_REPAIR_SLOTS).commit()
+    }
 }

@@ -11,7 +11,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -45,7 +47,10 @@ fun HexagonalButton(
                 textAlign = TextAlign.Center,
                 fontSize = 14.sp,
                 lineHeight = 16.sp,
-                modifier = Modifier.padding(8.dp)
+                fontFamily = FontFamily.Monospace,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(4.dp)
             )
         }
     }

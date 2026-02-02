@@ -1149,6 +1149,95 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    /**
+     * Send a repair workflow event to the server.
+     * Used when a barcode scan or photo reference is linked to a device being repaired.
+     */
+    suspend fun sendRepairEvent(
+        targetDeviceId: String,
+        eventType: String,
+        data: String
+    ): ScanResult = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalSendRepairEvent(activeUrl, targetDeviceId, eventType, data)
+
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ Repair event to $activeUrl failed. Failover to Global.")
+            result = internalSendRepairEvent(globalUrl, targetDeviceId, eventType, data)
+        }
+
+        return@withContext result
+    }
+
+    private suspend fun internalSendRepairEvent(
+        baseUrl: String,
+        targetDeviceId: String,
+        eventType: String,
+        data: String
+    ): ScanResult {
+        val finalUrl = "$baseUrl/api/repair/event"
+        Log.d(TAG, "Sending repair event to $finalUrl: $eventType -> $targetDeviceId")
+
+        try {
+            val url = URL(finalUrl)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                put("source_device_id", deviceId)
+                put("target_device_id", targetDeviceId)
+                put("event_type", eventType)
+                put("data", data)
+            }
+
+            val outputStream = connection.outputStream
+            val writer = OutputStreamWriter(outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Repair event response: $response")
+                return ScanResult.Success(type = "repair", message = "Event logged", data = response)
+            } else {
+                val errorResponse = try {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "Unknown error"
+                } catch (e: Exception) { "Error reading response" }
+                Log.e(TAG, "Repair event failed ($responseCode): $errorResponse")
+                return ScanResult.Error("Server error: $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Repair event exception: ${e.message}")
+            return ScanResult.Error("Network error: ${e.message}")
+        }
+    }
+
+    /**
+     * Upload an image linked to a repair workflow (includes target_device_id in metadata).
+     */
+    suspend fun uploadRepairImage(
+        bitmap: Bitmap,
+        targetDeviceId: String,
+        quality: Int = 80
+    ): ScanResult {
+        // Use existing upload with repair-specific scan mode and barcode data containing the target
+        return uploadImage(
+            bitmap = bitmap,
+            deviceId = deviceId,
+            scanMode = "repair_photo",
+            barcodeData = targetDeviceId,
+            quality = quality
+        )
+    }
 }
 
 /**

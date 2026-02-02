@@ -316,6 +316,43 @@ fun ScannerSettingsScreen(
             // 6. Image Settings Section
             ImageSettingsSection(viewModel = viewModel)
 
+            // Interface Settings Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Interface Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Left-Handed Mode (Mirror)", style = MaterialTheme.typography.bodyLarge)
+                        Switch(
+                            checked = viewModel.isLeftHanded.value ?: false,
+                            onCheckedChange = { viewModel.toggleHandedness() }
+                        )
+                    }
+
+                    // Grid Row Count
+                    Column {
+                        val currentRows = viewModel.gridRowCount.value ?: 7
+                        Text("Grid Rows: $currentRows", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        Slider(
+                            value = currentRows.toFloat(),
+                            onValueChange = { viewModel.setGridRowCount(it.toInt()) },
+                            valueRange = 4f..12f,
+                            steps = 7
+                        )
+                    }
+                }
+            }
+
             // 7. Scanner Settings Card
             Card(
                 modifier = Modifier.fillMaxWidth(),

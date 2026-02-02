@@ -33,7 +33,7 @@ import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 
-enum class NavigationCommand { NONE, TO_PAIRING, BACK }
+enum class NavigationCommand { NONE, TO_PAIRING, BACK, TO_MAIN_REPAIR }
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -125,6 +125,14 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _uiMode = MutableLiveData<String>("DEBUG")
     val uiMode: LiveData<String> = _uiMode
 
+    // Left-handed mode (mirroring)
+    private val _isLeftHanded = MutableLiveData<Boolean>(false)
+    val isLeftHanded: LiveData<Boolean> = _isLeftHanded
+
+    // Configurable grid row count
+    private val _gridRowCount = MutableLiveData<Int>(7)
+    val gridRowCount: LiveData<Int> = _gridRowCount
+
     // Current Dynamic Layout JSON
     private val _currentLayout = MutableLiveData<String>("{ \"components\": [ { \"type\": \"text\", \"content\": \"Waiting for AI Agent...\", \"style\": \"h2\" } ] }")
     val currentLayout: LiveData<String> = _currentLayout
@@ -132,6 +140,45 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     // AI Interaction from server
     private val _aiInteraction = MutableLiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?>(null)
     val aiInteraction: LiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?> = _aiInteraction
+
+    // --- REPAIR MODE BRIDGE ---
+    // Temporary storage for photo captured during Repair Mode workflow
+    private val _repairPhotoBitmap = MutableLiveData<Bitmap?>(null)
+    val repairPhotoBitmap: LiveData<Bitmap?> = _repairPhotoBitmap
+
+    fun setRepairPhotoBitmap(bitmap: Bitmap) {
+        _repairPhotoBitmap.postValue(bitmap)
+    }
+
+    fun consumeRepairPhotoBitmap(): Bitmap? {
+        val bmp = _repairPhotoBitmap.value
+        _repairPhotoBitmap.postValue(null)
+        return bmp
+    }
+
+    /** Send a repair event (barcode scan linked to a device) to the server */
+    fun sendRepairEvent(targetDeviceId: String, eventType: String, data: String) {
+        viewModelScope.launch {
+            addLog("Repair event: $eventType -> $targetDeviceId ($data)")
+            val result = scanApiService.sendRepairEvent(targetDeviceId, eventType, data)
+            when (result) {
+                is ScanResult.Success -> addLog("✅ Repair event sent: $eventType")
+                is ScanResult.Error -> addLog("❌ Repair event failed: ${result.message}")
+            }
+        }
+    }
+
+    /** Upload a repair photo linked to a device being repaired */
+    fun uploadRepairPhoto(targetDeviceId: String, bitmap: Bitmap) {
+        viewModelScope.launch {
+            addLog("Uploading repair photo for $targetDeviceId")
+            val result = scanApiService.uploadRepairImage(bitmap, targetDeviceId)
+            when (result) {
+                is ScanResult.Success -> addLog("✅ Repair photo uploaded for $targetDeviceId")
+                is ScanResult.Error -> addLog("❌ Repair photo failed: ${result.message}")
+            }
+        }
+    }
 
     // --- MAP STATE ---
     private val _warehouseMap = MutableLiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?>(null)
@@ -266,6 +313,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("UI Mode switched to: ${_uiMode.value}")
     }
 
+    fun toggleHandedness() {
+        _isLeftHanded.value = !(_isLeftHanded.value ?: false)
+        addLog("UI Handedness toggled: ${_isLeftHanded.value}")
+    }
+
+    fun setGridRowCount(rows: Int) {
+        val clamped = rows.coerceIn(4, 12)
+        _gridRowCount.value = clamped
+        addLog("Grid rows set to: $clamped")
+    }
+
     fun updateLayout(json: String) {
         _currentLayout.postValue(json)
         _uiMode.postValue("DYNAMIC") // Auto-switch to dynamic when layout arrives
@@ -350,6 +408,14 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             // Route to appropriate handler (workflow or normal)
             val wasSpecialCommand = handleGeneralScanResult(it, barcodeType)
+
+            // Check if barcode matches a saved repair device → navigate to repair
+            val savedRepairSlots = SettingsManager.loadRepairSlots()
+            if (savedRepairSlots.any { pair -> pair.second == it }) {
+                _scannedBarcode.postValue(it)
+                _navigationCommand.postValue(NavigationCommand.TO_MAIN_REPAIR)
+                return@Observer
+            }
 
             // Update UI state if NOT in workflow mode (AFTER handleGeneralScanResult to avoid race)
             // Only show in UI if it wasn't a special command (like order ID)
