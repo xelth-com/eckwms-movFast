@@ -15,7 +15,10 @@ import java.util.Locale
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.SlotType
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.ContentGrid
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.ContentSlot
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.floor
 
 data class MainMenuButton(
     val id: String,
@@ -27,18 +30,21 @@ data class MainMenuButton(
 
 class MainScreenViewModel : ViewModel() {
 
-    val gridConfig = GridConfig(
+    // Dynamic grid config - recalculated based on screen dimensions
+    var gridConfig = GridConfig(
         cellWidth = 140.dp,
         cellHeight = 80.dp,
-        buttonGap = 6.dp,
+        buttonGap = 2.dp,
         verticalOverlap = 0.75f
     )
+        private set
 
-    val gridManager = GridManager(
+    var gridManager = GridManager(
         config = gridConfig,
-        dimensions = Pair(4, 7), // 4 rows, 7 cols (like ecKasse)
+        dimensions = Pair(4, 7),
         layoutType = "asymmetrical"
     )
+        private set
 
     private val _renderCells = MutableLiveData<List<RenderCell>>(emptyList())
     val renderCells: LiveData<List<RenderCell>> = _renderCells
@@ -52,7 +58,56 @@ class MainScreenViewModel : ViewModel() {
     private val _scannerEnabled = MutableLiveData<Boolean>(true)
     val scannerEnabled: LiveData<Boolean> = _scannerEnabled
 
+    private var lastWidth = 0f
+    private var lastHeight = 0f
+
     init {
+        initializeGrid()
+    }
+
+    /**
+     * Recalculate grid dimensions to fill screen edge-to-edge
+     * Ported from ecKasseAnd PosViewModel.recalculateLayout()
+     *
+     * Formula: cellWidth = containerWidth / 3.5 - gap
+     * (3 full buttons + 1 half button = 3.5 button widths per row)
+     */
+    fun updateLayoutDimensions(width: Dp, height: Dp, density: Density) {
+        val containerWidth = width.value
+        val containerHeight = height.value
+
+        // Avoid redundant recalculations
+        if (containerWidth == lastWidth && containerHeight == lastHeight) return
+        if (containerWidth <= 0 || containerHeight <= 0) return
+        lastWidth = containerWidth
+        lastHeight = containerHeight
+
+        val buttonGap = 2f
+
+        // Each row has 3 full buttons + 1 half = 3.5 button widths
+        val buttonWidth = containerWidth / 3.5f - buttonGap
+        val buttonHeight = buttonWidth * (80f / 120f) // 2:3 aspect ratio
+
+        val effectiveRowHeight = buttonHeight * 0.75f + buttonGap
+        if (effectiveRowHeight <= 0) return
+
+        // Calculate how many rows fit in available height
+        val numRows = floor((containerHeight - buttonHeight * 0.25f) / effectiveRowHeight).toInt() + 1
+        if (numRows <= 0) return
+
+        gridConfig = GridConfig(
+            cellWidth = buttonWidth.dp,
+            cellHeight = buttonHeight.dp,
+            buttonGap = buttonGap.dp,
+            verticalOverlap = 0.75f
+        )
+
+        gridManager = GridManager(
+            config = gridConfig,
+            dimensions = Pair(numRows.coerceAtLeast(1), 7),
+            layoutType = "asymmetrical"
+        )
+
         initializeGrid()
     }
 

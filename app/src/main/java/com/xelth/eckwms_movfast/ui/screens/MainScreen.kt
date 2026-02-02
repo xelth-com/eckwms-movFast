@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -71,35 +72,35 @@ fun MainScreen(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
             val containerWidth = maxWidth
             val containerHeight = maxHeight
 
-            val gridConfig = GridConfig(
-                cellWidth = 140.dp,
-                cellHeight = 80.dp,
-                buttonGap = 6.dp,
-                verticalOverlap = 0.75f
-            )
+            // Recalculate grid dimensions when container size changes
+            LaunchedEffect(containerWidth, containerHeight) {
+                if (containerWidth > 0.dp && containerHeight > 0.dp) {
+                    mainViewModel.updateLayoutDimensions(containerWidth, containerHeight, density)
+                }
+            }
 
+            // Use dynamic grid config from ViewModel
+            val gridConfig = mainViewModel.gridConfig
+
+            // Console takes top portion, buttons fill the rest
             val consoleHeight = when {
                 containerHeight < 600.dp -> 150.dp
                 containerHeight < 800.dp -> 200.dp
                 else -> 250.dp
             }
 
-            val verticalOverlap = with(density) {
-                val buttonHeight = gridConfig.cellHeight.value
-                val verticalOverlap = gridConfig.verticalOverlap
-                (buttonHeight * (1 - verticalOverlap)).dp
-            }
-
-            val selectionAreaHeight = containerHeight - consoleHeight - padding.calculateTopPadding()
+            val selectionAreaHeight = containerHeight - consoleHeight
 
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+                modifier = Modifier.fillMaxSize()
             ) {
                 Box(
                     modifier = Modifier
