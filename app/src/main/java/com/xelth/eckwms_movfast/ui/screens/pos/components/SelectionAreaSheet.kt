@@ -65,11 +65,15 @@ fun SelectionAreaSheet(
             val offsetX = cell.cssPosition.x
             val offsetY = cell.cssPosition.y
 
+            // Map SlotType to HexagonSide (ported from ecKasseAnd)
             val buttonSide = when(slotType) {
                 SlotType.FULL -> HexagonSide.FULL
+                SlotType.HALF_LEFT -> HexagonSide.LEFT
+                SlotType.HALF_RIGHT -> HexagonSide.RIGHT
                 else -> HexagonSide.FULL
             }
 
+            // Half buttons are exactly half width minus 1dp for gap
             val buttonWidth = if (buttonSide == HexagonSide.FULL) {
                 cellWidth
             } else {
