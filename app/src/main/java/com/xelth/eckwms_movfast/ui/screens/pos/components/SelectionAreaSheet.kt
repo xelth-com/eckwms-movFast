@@ -3,17 +3,27 @@ package com.xelth.eckwms_movfast.ui.screens.pos.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.xelth.eckwms_movfast.ui.screens.pos.grid.Position
+import androidx.compose.ui.unit.sp
+import com.xelth.eckwms_movfast.ui.data.ConnectionType
+import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.RenderCell
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.SlotType
 
@@ -23,6 +33,8 @@ fun SelectionAreaSheet(
     cellWidth: Dp = 140.dp,
     cellHeight: Dp = 80.dp,
     buttonGap: Dp = 6.dp,
+    networkState: NetworkHealthState = NetworkHealthState.Checking,
+    regStatus: String = "unknown",
     onButtonClick: (String) -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
@@ -34,6 +46,37 @@ fun SelectionAreaSheet(
                 return@forEach
             }
 
+            val offsetX = cell.cssPosition.x
+            val offsetY = cell.cssPosition.y
+            val (row, col) = cell.logicalPosition
+
+            val buttonSide = when(slotType) {
+                SlotType.FULL -> HexagonSide.FULL
+                SlotType.HALF_LEFT -> HexagonSide.LEFT
+                SlotType.HALF_RIGHT -> HexagonSide.RIGHT
+                else -> HexagonSide.FULL
+            }
+
+            val buttonWidth = if (buttonSide == HexagonSide.FULL) {
+                cellWidth
+            } else {
+                (cellWidth / 2) - 1.dp
+            }
+
+            // First HALF_LEFT (row=0, col=0) → Network Indicator
+            if (slotType == SlotType.HALF_LEFT && row == 0) {
+                NetworkIndicatorButton(
+                    modifier = Modifier
+                        .size(width = buttonWidth, height = cellHeight)
+                        .offset(x = offsetX, y = offsetY),
+                    side = buttonSide,
+                    networkState = networkState,
+                    regStatus = regStatus
+                )
+                return@forEach
+            }
+
+            // Regular buttons
             var label = ""
             var color = "#3a3a3a"
             var enabled = false
@@ -44,7 +87,7 @@ fun SelectionAreaSheet(
                     color = content["color"] as? String ?: "#3a3a3a"
                     enabled = true
                 }
-                content is Map<*, *> && content["type"] == "placeholder" -> {
+                content is Map<*, *> && content["type"] == "system" -> {
                     label = ""
                     color = "#2a2a2a"
                     enabled = false
@@ -54,30 +97,11 @@ fun SelectionAreaSheet(
                     color = "#2a2a2a"
                     enabled = false
                 }
-                // Show empty slots as inactive buttons
                 content == null || content is String && content.isEmpty() -> {
                     label = ""
                     color = "#2a2a2a"
                     enabled = false
                 }
-            }
-
-            val offsetX = cell.cssPosition.x
-            val offsetY = cell.cssPosition.y
-
-            // Map SlotType to HexagonSide (ported from ecKasseAnd)
-            val buttonSide = when(slotType) {
-                SlotType.FULL -> HexagonSide.FULL
-                SlotType.HALF_LEFT -> HexagonSide.LEFT
-                SlotType.HALF_RIGHT -> HexagonSide.RIGHT
-                else -> HexagonSide.FULL
-            }
-
-            // Half buttons are exactly half width minus 1dp for gap
-            val buttonWidth = if (buttonSide == HexagonSide.FULL) {
-                cellWidth
-            } else {
-                (cellWidth / 2) - 1.dp
             }
 
             HexagonalButton(
@@ -97,6 +121,83 @@ fun SelectionAreaSheet(
                     }
                 }
             )
+        }
+    }
+}
+
+/**
+ * Network indicator inside a HALF_LEFT hexagonal button.
+ * Shows connection icon, server hash, and latency.
+ */
+@Composable
+fun NetworkIndicatorButton(
+    modifier: Modifier = Modifier,
+    side: HexagonSide,
+    networkState: NetworkHealthState,
+    regStatus: String
+) {
+    val isApproved = regStatus == "active" || regStatus == "running"
+
+    val bgColor = when {
+        !isApproved -> Color(0xFF8B0000) // Dark red
+        !networkState.isConnected() -> Color(0xFF3a3a3a)
+        networkState.connectionType == ConnectionType.LOCAL_IP -> Color(0xFF1B5E20) // Dark green
+        else -> Color(0xFF5D4037) // Dark brown/yellow
+    }
+
+    val textColor = when {
+        !isApproved -> Color(0xFFF44336)
+        !networkState.isConnected() -> Color(0xFF9E9E9E)
+        networkState.connectionType == ConnectionType.LOCAL_IP -> Color(0xFF4CAF50)
+        else -> Color(0xFFFFEB3B)
+    }
+
+    Box(
+        modifier = modifier
+            .clip(HexagonShape(side))
+            .background(bgColor),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(2.dp)
+        ) {
+            // Connection icon
+            Text(
+                text = if (networkState.isConnected()) {
+                    if (networkState.connectionType == ConnectionType.LOCAL_IP) "🖥️" else "🌍"
+                } else "❌",
+                fontSize = 12.sp
+            )
+
+            if (networkState.isConnected()) {
+                // Server hash
+                Text(
+                    text = networkState.serverHash,
+                    color = textColor,
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+                // Latency
+                if (networkState.latencyMs > 0) {
+                    Text(
+                        text = "${networkState.latencyMs}ms",
+                        color = textColor.copy(alpha = 0.8f),
+                        fontSize = 7.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
+                    )
+                }
+            } else {
+                Text(
+                    text = "OFF",
+                    color = textColor,
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
