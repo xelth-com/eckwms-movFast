@@ -40,6 +40,11 @@ fun MainScreen(
 
     val density = LocalDensity.current
 
+    // Initialize network health monitoring (same as ScanScreen does)
+    LaunchedEffect(Unit) {
+        viewModel.onViewModelReady()
+    }
+
     // No Scaffold, no TopBar — console goes edge-to-edge from top
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val containerWidth = maxWidth
