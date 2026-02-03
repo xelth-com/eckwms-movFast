@@ -1,6 +1,7 @@
 package com.xelth.eckwms_movfast.ui.viewmodels
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
@@ -37,7 +38,8 @@ data class RepairSlot(
     val index: Int,
     var barcode: String? = null,
     var isBound: Boolean = false,
-    var isActive: Boolean = false
+    var isActive: Boolean = false,
+    var photo: Bitmap? = null
 )
 
 sealed class RepairAction {
@@ -119,13 +121,23 @@ class MainScreenViewModel : ViewModel() {
     private val _repairStatus = MutableLiveData<String>("Repair Mode Ready")
     val repairStatus: LiveData<String> = _repairStatus
 
-    private val slots = MutableList(16) { i -> RepairSlot(i) }
+    private val _navigateToCamera = MutableLiveData<Boolean>(false)
+    val navigateToCamera: LiveData<Boolean> = _navigateToCamera
+
+    private val _activeSlotPhoto = MutableLiveData<Bitmap?>(null)
+    val activeSlotPhoto: LiveData<Bitmap?> = _activeSlotPhoto
+
+    fun consumeNavigateToCamera() { _navigateToCamera.value = false }
+
+    // 18 slots to fill the 7-row grid (3 actions + 18 slots = 21 = 7 rows × 3)
+    private val slots = MutableList(18) { i -> RepairSlot(i) }
     private var activeSlotJob: Job? = null
     private var pendingAction: RepairAction = RepairAction.None
     private var slotWaitingForBind: Int? = null
     private var lastSentAction: LastRepairAction? = null
 
     init {
+        Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
         initializeGrid()
     }
 
@@ -151,6 +163,7 @@ class MainScreenViewModel : ViewModel() {
 
         val actualGridHeight = (numRows - 1) * effectiveRowHeight + buttonHeight
         gridTotalHeight = actualGridHeight.dp
+        Log.d("GridLayout", "container=${containerWidth}x${containerHeight} rows=$numRows btnW=$buttonWidth btnH=$buttonHeight rowH=$effectiveRowHeight gridH=$actualGridHeight consoleH=${containerHeight - actualGridHeight}")
 
         gridConfig = GridConfig(
             cellWidth = buttonWidth.dp,
@@ -233,15 +246,25 @@ class MainScreenViewModel : ViewModel() {
 
     fun enterRepairMode() {
         _isRepairMode.value = true
-        // Restore saved slots
+        // Restore saved bindings from persistence
         val saved = onLoadRepairSlots?.invoke() ?: emptyList()
-        slots.forEachIndexed { i, _ -> slots[i] = RepairSlot(i) }
-        saved.forEach { (index, barcode) ->
-            if (index in slots.indices) {
-                slots[index].barcode = barcode
-                slots[index].isBound = true
+        val savedMap = saved.toMap() // index -> barcode
+
+        // NON-DESTRUCTIVE: update existing slot objects instead of recreating them.
+        // This preserves in-memory photos and other transient state.
+        slots.forEach { slot ->
+            val savedBarcode = savedMap[slot.index]
+            if (savedBarcode != null) {
+                slot.barcode = savedBarcode
+                slot.isBound = true
+            } else if (!slot.isBound) {
+                // Slot not in saved data and not currently bound — ensure clean state
+                slot.barcode = null
+                slot.photo = null
             }
+            slot.isActive = false
         }
+
         val boundCount = slots.count { it.isBound }
         _repairStatus.value = if (boundCount > 0) "Restored $boundCount devices" else "Select a slot to bind device"
         addLog("Entered Repair Mode ($boundCount saved devices)")
@@ -285,6 +308,7 @@ class MainScreenViewModel : ViewModel() {
 
     private fun handleSlotClick(index: Int) {
         val slot = slots[index]
+        Log.d("RepairMode", "slotClick(#$index): bound=${slot.isBound}, barcode=${slot.barcode?.takeLast(6)}, waitBind=$slotWaitingForBind, pending=${pendingAction::class.simpleName}")
 
         // If we have a pending action, apply it to a bound slot
         if (pendingAction !is RepairAction.None) {
@@ -306,16 +330,24 @@ class MainScreenViewModel : ViewModel() {
     }
 
     fun onRepairScan(barcode: String) {
+        val slotsSummary = slots.filter { it.isBound }.joinToString { "#${it.index}=${it.barcode?.takeLast(6)}" }
+        Log.d("RepairMode", "onRepairScan: barcode=${barcode.takeLast(10)}, isRepairMode=${_isRepairMode.value}, waitBind=$slotWaitingForBind, bound=[$slotsSummary]")
         // Auto-enter repair mode if barcode matches a saved device
         if (_isRepairMode.value != true) {
             val savedSlots = onLoadRepairSlots?.invoke() ?: emptyList()
+            Log.d("RepairMode", "Saved slots: ${savedSlots.map { "${it.first}:${it.second.takeLast(6)}" }}")
             val match = savedSlots.find { it.second == barcode }
             if (match != null) {
+                Log.d("RepairMode", "MATCH found: slot #${match.first} -> entering repair mode")
+                addLog("Auto-repair: $barcode -> Slot #${match.first}")
                 enterRepairMode()
                 val slotIndex = match.first
                 if (slotIndex in slots.indices && slots[slotIndex].isBound) {
                     activateSlot(slotIndex)
+                    _repairStatus.value = "AUTO: ${barcode}"
                 }
+            } else {
+                Log.d("RepairMode", "No match in saved slots, ignoring (not in repair mode)")
             }
             return
         }
@@ -323,20 +355,28 @@ class MainScreenViewModel : ViewModel() {
         // 1. Binding mode
         if (slotWaitingForBind != null) {
             val index = slotWaitingForBind!!
+            Log.d("RepairMode", "BIND: slot #$index <- ${barcode.takeLast(10)}")
+            val dupes = slots.filter { it.barcode == barcode }
+            if (dupes.isNotEmpty()) {
+                Log.d("RepairMode", "BIND: clearing dupes: ${dupes.map { "#${it.index} photo=${it.photo != null}" }}")
+            }
             slots.forEach { if (it.barcode == barcode) clearSlot(it.index) }
             slots[index].barcode = barcode
             slots[index].isBound = true
             slotWaitingForBind = null
             persistSlots()
             activateSlot(index)
-            _repairStatus.value = "Bound: $barcode"
+            _repairStatus.value = "Bound: $barcode — Take ID photo"
             addLog("Slot #$index bound to $barcode")
+            // Auto-trigger camera for identification photo
+            _navigateToCamera.value = true
             return
         }
 
         // 2. Scan matches existing slot -> activate
         val existingSlot = slots.find { it.barcode == barcode }
         if (existingSlot != null) {
+            Log.d("RepairMode", "EXISTING: barcode matches slot #${existingSlot.index}, activating")
             activateSlot(existingSlot.index)
             return
         }
@@ -344,6 +384,7 @@ class MainScreenViewModel : ViewModel() {
         // 3. Active slot -> data scan
         val active = slots.find { it.isActive }
         if (active != null) {
+            Log.d("RepairMode", "DATA_SCAN: ${barcode.takeLast(10)} -> active slot #${active.index} (${active.barcode?.takeLast(6)})")
             sendPartScan(active.barcode!!, barcode)
             resetActiveTimer(active.index)
         } else {
@@ -356,7 +397,13 @@ class MainScreenViewModel : ViewModel() {
 
     fun onRepairPhotoCaptured(bitmap: Bitmap) {
         val active = slots.find { it.isActive }
+        Log.d("RepairMode", "onRepairPhotoCaptured: active=${active?.index}, bitmap.recycled=${bitmap.isRecycled}")
         if (active != null) {
+            // Copy bitmap — original may be recycled by BitmapCache
+            val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+            active.photo = copy
+            _activeSlotPhoto.value = copy
+            Log.d("RepairMode", "Photo stored in slot ${active.index}, copy=${copy.hashCode()}")
             uploadPhoto(active.barcode!!, bitmap)
             _repairStatus.value = "Photo sent -> ${active.barcode}"
         } else {
@@ -370,6 +417,9 @@ class MainScreenViewModel : ViewModel() {
         slots.forEach { it.isActive = false }
         slots[index].isActive = true
         _repairStatus.value = "Active: ${slots[index].barcode}"
+        val photo = slots[index].photo
+        Log.d("RepairMode", "activateSlot($index): photo=${if (photo != null) "exists (recycled=${photo.isRecycled})" else "null"}")
+        _activeSlotPhoto.value = photo
         renderRepairGrid()
         resetActiveTimer(index)
     }
@@ -433,11 +483,46 @@ class MainScreenViewModel : ViewModel() {
 
     private fun clearSlot(index: Int) {
         if (index in slots.indices) {
+            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}")
             slots[index].isBound = false
             slots[index].isActive = false
             slots[index].barcode = null
+            slots[index].photo?.recycle()
+            slots[index].photo = null
         }
         persistSlots()
+    }
+
+    /** Check if a slot action (e.g. "slot_3") refers to a bound slot */
+    fun isSlotBound(action: String): Boolean {
+        if (!action.startsWith("slot_")) return false
+        val index = action.removePrefix("slot_").toIntOrNull() ?: return false
+        return index in slots.indices && slots[index].isBound
+    }
+
+    /** Get the barcode of a slot for display in confirmation dialog */
+    fun getSlotBarcode(action: String): String {
+        val index = action.removePrefix("slot_").toIntOrNull() ?: return ""
+        return if (index in slots.indices) slots[index].barcode ?: "" else ""
+    }
+
+    /** Get action string of the currently active slot, or null */
+    fun getActiveSlotAction(): String? {
+        val active = slots.find { it.isActive && it.isBound } ?: return null
+        return "slot_${active.index}"
+    }
+
+    /** Public delete: clears slot, deactivates, updates UI */
+    fun deleteSlot(action: String) {
+        val index = action.removePrefix("slot_").toIntOrNull() ?: return
+        if (index !in slots.indices) return
+        val barcode = slots[index].barcode
+        activeSlotJob?.cancel()
+        clearSlot(index)
+        _activeSlotPhoto.value = null
+        _repairStatus.value = "Slot #${index + 1} cleared ($barcode)"
+        addLog("Deleted slot #$index ($barcode)")
+        renderRepairGrid()
     }
 
     private fun persistSlots() {
@@ -457,8 +542,6 @@ class MainScreenViewModel : ViewModel() {
         // UNDO button: active only when there's something to undo
         val undoColor = if (lastSentAction != null) "#FF9800" else "#37474F"
         uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to undoColor, "action" to "act_undo"))
-
-        uiItems.add(mapOf("type" to "button", "label" to "EXIT", "color" to "#F44336", "action" to "act_exit"))
 
         // Device slots
         slots.forEach { slot ->
@@ -484,6 +567,14 @@ class MainScreenViewModel : ViewModel() {
 
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
+
+        // EXIT button — HALF_RIGHT at row=1 (first odd row, top-right area)
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
+            200
+        )
+
         updateRenderCells()
     }
 

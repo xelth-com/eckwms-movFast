@@ -64,6 +64,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _scannedBarcode = MutableLiveData<String?>(null)
     val scannedBarcode: LiveData<String?> = _scannedBarcode
 
+    fun consumeScannedBarcode() { _scannedBarcode.value = null }
+
     private val _recoveryStatus = MutableLiveData<RecoveryStatus>()
     val recoveryStatus: LiveData<RecoveryStatus> = _recoveryStatus
 
@@ -154,6 +156,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val bmp = _repairPhotoBitmap.value
         _repairPhotoBitmap.postValue(null)
         return bmp
+    }
+
+    /** Route a camera-scanned barcode through the same path as hardware scanner */
+    fun onCameraBarcode(barcode: String) {
+        Log.d(TAG, "Camera barcode routed to repair: $barcode")
+        _scannedBarcode.postValue(barcode)
     }
 
     /** Send a repair event (barcode scan linked to a device) to the server */

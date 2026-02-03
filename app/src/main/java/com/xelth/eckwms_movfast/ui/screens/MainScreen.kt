@@ -8,27 +8,47 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xelth.eckwms_movfast.ui.dynamic.DynamicUiRenderer
 import com.xelth.eckwms_movfast.ui.screens.pos.components.ConsoleView
 import com.xelth.eckwms_movfast.ui.screens.pos.components.SelectionAreaSheet
 import com.xelth.eckwms_movfast.ui.viewmodels.MainScreenViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     navController: NavController,
@@ -51,6 +71,17 @@ fun MainScreen(
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
 
     val density = LocalDensity.current
+    val context = LocalContext.current
+
+    // State for the Intake Bottom Sheet
+    var showIntakeSheet by remember { mutableStateOf(false) }
+    var intakeConfigJson by remember { mutableStateOf("{}") }
+    var intakeLongPressAction by remember { mutableStateOf("") }
+    val intakeFormState = remember { mutableStateMapOf<String, Any>() }
+
+    // State for slot delete confirmation
+    var showDeleteSlotDialog by remember { mutableStateOf(false) }
+    var deleteSlotAction by remember { mutableStateOf("") }
 
     // Sync shared settings into MainScreenViewModel
     LaunchedEffect(sharedGridRowCount) {
@@ -83,11 +114,12 @@ fun MainScreen(
         }
     }
 
-    // Bridge: forward hardware scanner results to Repair Mode (or auto-enter if device matches)
+    // Bridge: forward scanner results to Repair Mode (or auto-enter if device matches)
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
             mainViewModel.onRepairScan(scannedBarcode!!)
+            viewModel.consumeScannedBarcode()
         }
     }
 
@@ -100,8 +132,18 @@ fun MainScreen(
         }
     }
 
+    // Auto-navigate to camera after slot binding
+    val shouldNavigateToCamera by mainViewModel.navigateToCamera.observeAsState(false)
+    LaunchedEffect(shouldNavigateToCamera) {
+        if (shouldNavigateToCamera) {
+            mainViewModel.consumeNavigateToCamera()
+            navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
+        }
+    }
+
     // No Scaffold, no TopBar — console goes edge-to-edge from top
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(bottom = navBarHeight)) {
         val containerWidth = maxWidth
         val containerHeight = maxHeight
         val gridRowCount by mainViewModel.gridRowCount.observeAsState(7)
@@ -127,17 +169,47 @@ fun MainScreen(
                     .background(if (isRepairMode) Color(0xFF263238) else Color(0xFF121212))
             ) {
                 if (isRepairMode) {
-                    // Repair Mode: show status text centered
+                    val activeSlotPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
+                    // Find active slot action for delete
+                    val activeSlotAction = mainViewModel.getActiveSlotAction()
+                    // Repair Mode: photo as dim background, status text on top
+                    // Long press on this panel → delete active slot
                     Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    if (activeSlotAction != null) {
+                                        deleteSlotAction = activeSlotAction
+                                        showDeleteSlotDialog = true
+                                    }
+                                }
+                            )
                     ) {
-                        Text(
-                            text = repairStatus,
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        // Background photo — full size, very dim
+                        if (activeSlotPhoto != null) {
+                            Image(
+                                bitmap = activeSlotPhoto!!.asImageBitmap(),
+                                contentDescription = "Device photo",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .alpha(0.12f),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        // Status text on top
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = repairStatus,
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 } else {
                     // Standard Console
@@ -179,11 +251,94 @@ fun MainScreen(
                             "navigate_settings" -> navController.navigate("settings")
                         }
                     },
+                    onButtonLongClick = { action ->
+                        mainViewModel.addLog("Long press: $action")
+                        intakeLongPressAction = action
+                        intakeFormState.clear()
+                        try {
+                            val inputStream = context.assets.open("workflows/device_intake.json")
+                            val json = inputStream.bufferedReader().use { it.readText() }
+                            intakeConfigJson = json
+                            showIntakeSheet = true
+                        } catch (e: Exception) {
+                            mainViewModel.addLog("Error loading intake config: ${e.message}")
+                        }
+                    },
                     onNetworkIndicatorClick = {
                         navController.navigate("pairingScreen")
                     }
                 )
             }
         }
+    }
+
+    // Intake ModalBottomSheet
+    if (showIntakeSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showIntakeSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 20.dp)
+            ) {
+                DynamicUiRenderer(
+                    layoutJson = intakeConfigJson,
+                    stateValues = intakeFormState.toMap(),
+                    onValueChange = { key, value ->
+                        intakeFormState[key] = value
+                    },
+                    onAction = { action, _ ->
+                        mainViewModel.addLog("Intake action: $action ($intakeLongPressAction)")
+                        when (action) {
+                            "save_intake_details" -> {
+                                val jsonPayload = org.json.JSONObject(intakeFormState as Map<*, *>).toString(2)
+                                mainViewModel.addLog("--- Intake Payload ---")
+                                mainViewModel.addLog(jsonPayload)
+                                mainViewModel.addLog("--- End Payload ---")
+                                viewModel.sendRepairEvent(
+                                    intakeLongPressAction,
+                                    "intake_save",
+                                    org.json.JSONObject(intakeFormState as Map<*, *>).toString()
+                                )
+                                showIntakeSheet = false
+                            }
+                            "capture_evidence_box", "capture_evidence_device" -> {
+                                showIntakeSheet = false
+                                navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
+                            }
+                            "scan_link_hwb", "scan_link_sn" -> {
+                                showIntakeSheet = false
+                                navController.navigate("cameraScanScreen?scan_mode=barcode")
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    // Delete slot confirmation dialog
+    if (showDeleteSlotDialog) {
+        val slotBarcode = mainViewModel.getSlotBarcode(deleteSlotAction)
+        AlertDialog(
+            onDismissRequest = { showDeleteSlotDialog = false },
+            title = { Text("Delete Slot?") },
+            text = { Text("Unbind device $slotBarcode and clear all data for this slot?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    mainViewModel.deleteSlot(deleteSlotAction)
+                    showDeleteSlotDialog = false
+                }) {
+                    Text("Delete", color = Color.Red)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteSlotDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
