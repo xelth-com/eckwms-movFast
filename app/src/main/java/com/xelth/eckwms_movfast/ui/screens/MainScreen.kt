@@ -112,6 +112,15 @@ fun MainScreen(
         mainViewModel.onLoadRepairSlots = {
             com.xelth.eckwms_movfast.utils.SettingsManager.loadRepairSlots()
         }
+        mainViewModel.onSaveRepairPhoto = { index, bitmap ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.saveRepairPhoto(index, bitmap)
+        }
+        mainViewModel.onLoadRepairPhoto = { index ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.loadRepairPhoto(index)
+        }
+        mainViewModel.onDeleteRepairPhoto = { index ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
+        }
     }
 
     // Bridge: forward scanner results to Repair Mode (or auto-enter if device matches)
@@ -160,23 +169,24 @@ fun MainScreen(
         // Console gets whatever is left above the grid
         val consoleHeight = (containerHeight - gridHeight).coerceAtLeast(60.dp)
 
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Console / Repair Status Header — fills top, flexible height
+        // Console extends 1/4 button height under the grid to fill hex gaps
+        val overlap = gridConfig.cellHeight / 4
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            // Console / Repair Status — extends slightly under grid
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(consoleHeight)
-                    .background(if (isRepairMode) Color(0xFF263238) else Color(0xFF121212))
+                    .height(consoleHeight + overlap)
+                    .align(Alignment.TopCenter)
+                    .background(if (isRepairMode) Color.Black else Color(0xFF121212))
             ) {
                 if (isRepairMode) {
                     val activeSlotPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
-                    // Find active slot action for delete
                     val activeSlotAction = mainViewModel.getActiveSlotAction()
-                    // Repair Mode: photo as dim background, status text on top
-                    // Long press on this panel → delete active slot
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
                             .combinedClickable(
                                 onClick = {},
                                 onLongClick = {
@@ -187,18 +197,16 @@ fun MainScreen(
                                 }
                             )
                     ) {
-                        // Background photo — full size, very dim
                         if (activeSlotPhoto != null) {
                             Image(
                                 bitmap = activeSlotPhoto!!.asImageBitmap(),
                                 contentDescription = "Device photo",
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .alpha(0.12f),
+                                    .alpha(0.2f),
                                 contentScale = ContentScale.Crop
                             )
                         }
-                        // Status text on top
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
@@ -212,22 +220,23 @@ fun MainScreen(
                         }
                     }
                 } else {
-                    // Standard Console
                     ConsoleView(
                         logs = consoleLogs,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight),
                         scannerEnabled = scannerEnabled,
                         onScannerToggle = { mainViewModel.toggleScanner() }
                     )
                 }
             }
 
-            // Grid area — exact computed height, buttons touch bottom edge
+            // Grid area — transparent background, hex gaps show console beneath
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(gridHeight)
-                    .background(Color.Black)
+                    .align(Alignment.BottomCenter)
             ) {
                 SelectionAreaSheet(
                     renderCells = renderCells,

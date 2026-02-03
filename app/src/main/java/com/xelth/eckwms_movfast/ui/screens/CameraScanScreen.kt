@@ -48,6 +48,8 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.xelth.eckwms_movfast.utils.BitmapCache
+import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
+import android.graphics.Matrix
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
@@ -115,6 +117,17 @@ fun BarcodeScanPreviewScreen(
 
     Log.d(TAG, "BarcodeScanPreviewScreen: Setting up camera for mode: $scanMode")
 
+    // Suspend hardware scanner to release camera resource
+    DisposableEffect(Unit) {
+        Log.d(TAG, "Suspending scan service to free camera")
+        XCScannerWrapper.suspendScanService()
+        onDispose {
+            Log.d(TAG, "Resuming scan service")
+            cameraExecutor.shutdown()
+            XCScannerWrapper.resumeScanService()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
@@ -171,12 +184,6 @@ fun BarcodeScanPreviewScreen(
             Text("Cancel")
         }
     }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            cameraExecutor.shutdown()
-        }
-    }
 }
 
 @Composable
@@ -191,6 +198,17 @@ fun ImageCapturePreviewScreen(
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
+
+    // Suspend hardware scanner to release camera resource
+    DisposableEffect(Unit) {
+        Log.d(TAG, "ImageCapture: Suspending scan service to free camera")
+        XCScannerWrapper.suspendScanService()
+        onDispose {
+            Log.d(TAG, "ImageCapture: Resuming scan service")
+            cameraExecutor.shutdown()
+            XCScannerWrapper.resumeScanService()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -253,9 +271,16 @@ fun ImageCapturePreviewScreen(
                                 object : ImageCapture.OnImageCapturedCallback() {
                                     override fun onCaptureSuccess(image: ImageProxy) {
                                         try {
-                                            // Convert ImageProxy to Bitmap
-                                            val bitmap = imageProxyToBitmap(image)
-                                            Log.d(TAG, "Image captured: ${bitmap.width}x${bitmap.height}")
+                                            // Convert ImageProxy to Bitmap, applying sensor rotation
+                                            val rawBitmap = imageProxyToBitmap(image)
+                                            val rotation = image.imageInfo.rotationDegrees
+                                            val bitmap = if (rotation != 0) {
+                                                val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                                                Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true).also {
+                                                    if (it !== rawBitmap) rawBitmap.recycle()
+                                                }
+                                            } else rawBitmap
+                                            Log.d(TAG, "Image captured: ${bitmap.width}x${bitmap.height} (rotation=$rotation)")
 
                                             // Store bitmap in cache to avoid TransactionTooLargeException
                                             BitmapCache.setCapturedImage(bitmap)
@@ -318,11 +343,6 @@ fun ImageCapturePreviewScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            cameraExecutor.shutdown()
-        }
-    }
 }
 
 /**

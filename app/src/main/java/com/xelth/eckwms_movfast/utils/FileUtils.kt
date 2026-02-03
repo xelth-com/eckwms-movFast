@@ -16,11 +16,11 @@ object FileUtils {
     fun saveBitmapToPictures(context: Context, bitmap: Bitmap, baseName: String): String? {
         val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         val dateString = sdf.format(Date())
-        val displayName = "${baseName}_${dateString}.png"
+        val displayName = "${baseName}_${dateString}.webp"
 
         val contentValues = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/webp")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/ScannerDiagnostics")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -37,7 +37,7 @@ object FileUtils {
 
         try {
             resolver.openOutputStream(uri)?.use { outputStream ->
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)) {
+                if (!bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 90, outputStream)) {
                     Log.e(TAG, "Failed to save bitmap.")
                     resolver.delete(uri, null, null)
                     return null

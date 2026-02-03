@@ -114,6 +114,9 @@ class MainScreenViewModel : ViewModel() {
     // Persistence callbacks (set by UI layer, backed by SettingsManager)
     var onSaveRepairSlots: ((List<Pair<Int, String>>) -> Unit)? = null
     var onLoadRepairSlots: (() -> List<Pair<Int, String>>)? = null
+    var onSaveRepairPhoto: ((Int, Bitmap) -> Unit)? = null
+    var onLoadRepairPhoto: ((Int) -> Bitmap?)? = null
+    var onDeleteRepairPhoto: ((Int) -> Unit)? = null
 
     private val _isRepairMode = MutableLiveData<Boolean>(false)
     val isRepairMode: LiveData<Boolean> = _isRepairMode
@@ -257,8 +260,12 @@ class MainScreenViewModel : ViewModel() {
             if (savedBarcode != null) {
                 slot.barcode = savedBarcode
                 slot.isBound = true
+                // Restore photo from disk if not already in memory
+                if (slot.photo == null) {
+                    slot.photo = onLoadRepairPhoto?.invoke(slot.index)
+                    if (slot.photo != null) Log.d("RepairMode", "Restored photo for slot #${slot.index} from disk")
+                }
             } else if (!slot.isBound) {
-                // Slot not in saved data and not currently bound — ensure clean state
                 slot.barcode = null
                 slot.photo = null
             }
@@ -402,6 +409,8 @@ class MainScreenViewModel : ViewModel() {
             // Copy bitmap — original may be recycled by BitmapCache
             val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
             active.photo = copy
+            // Persist to disk so photo survives process death
+            onSaveRepairPhoto?.invoke(active.index, copy)
             _activeSlotPhoto.value = copy
             Log.d("RepairMode", "Photo stored in slot ${active.index}, copy=${copy.hashCode()}")
             uploadPhoto(active.barcode!!, bitmap)
@@ -489,6 +498,7 @@ class MainScreenViewModel : ViewModel() {
             slots[index].barcode = null
             slots[index].photo?.recycle()
             slots[index].photo = null
+            onDeleteRepairPhoto?.invoke(index)
         }
         persistSlots()
     }

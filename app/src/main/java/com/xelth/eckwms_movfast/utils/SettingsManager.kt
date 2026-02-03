@@ -2,6 +2,11 @@ package com.xelth.eckwms_movfast.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
 
 object SettingsManager {
     private const val PREFS_NAME = "eckwms_settings"
@@ -11,7 +16,10 @@ object SettingsManager {
     private const val DEFAULT_SERVER_URL = "https://pda.repair"
     private lateinit var prefs: SharedPreferences
 
+    private lateinit var appContext: Context
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
@@ -189,5 +197,46 @@ object SettingsManager {
 
     fun clearRepairSlots() {
         prefs.edit().remove(KEY_REPAIR_SLOTS).commit()
+    }
+
+    // --- Repair Slot Photo Persistence ---
+
+    private fun repairPhotoDir(): File {
+        val dir = File(appContext.filesDir, "repair_photos")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun saveRepairPhoto(slotIndex: Int, bitmap: Bitmap) {
+        try {
+            val file = File(repairPhotoDir(), "slot_$slotIndex.webp")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
+            }
+            Log.d("SettingsManager", "Saved photo slot #$slotIndex (${file.length() / 1024}KB)")
+        } catch (e: Exception) {
+            Log.e("SettingsManager", "Failed to save photo slot #$slotIndex", e)
+        }
+    }
+
+    fun loadRepairPhoto(slotIndex: Int): Bitmap? {
+        val file = File(repairPhotoDir(), "slot_$slotIndex.webp")
+        // Migrate old JPEG files
+        if (!file.exists()) {
+            val oldJpeg = File(repairPhotoDir(), "slot_$slotIndex.jpg")
+            if (oldJpeg.exists()) oldJpeg.renameTo(file)
+        }
+        if (!file.exists()) return null
+        return try {
+            BitmapFactory.decodeFile(file.absolutePath)
+        } catch (e: Exception) {
+            Log.e("SettingsManager", "Failed to load photo slot #$slotIndex", e)
+            null
+        }
+    }
+
+    fun deleteRepairPhoto(slotIndex: Int) {
+        File(repairPhotoDir(), "slot_$slotIndex.webp").delete()
+        File(repairPhotoDir(), "slot_$slotIndex.jpg").delete() // cleanup old format
     }
 }
