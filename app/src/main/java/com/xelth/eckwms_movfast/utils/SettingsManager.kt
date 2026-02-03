@@ -27,7 +27,7 @@ object SettingsManager {
     fun getImageResolution(): Int = prefs.getInt(KEY_RESOLUTION, 1920)
 
     fun saveImageQuality(quality: Int) = prefs.edit().putInt(KEY_QUALITY, quality).apply()
-    fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 75)
+    fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 80)
 
     // Critical: Use commit() for immediate disk persistence
     // Ensure URL doesn't end with slash to allow clean concatenation
