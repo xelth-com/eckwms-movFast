@@ -1,0 +1,157 @@
+{
+  "title": "Receiving Workflow",
+  "steps": [
+    {
+      "id": "scan_postal",
+      "label": "1. Postal Code",
+      "type": "action",
+      "action": "capture_barcode",
+      "dataKey": "postal_barcode",
+      "colors": {
+        "pending": "#424242",
+        "active": "#FF9800",
+        "done": "#4CAF50"
+      }
+    },
+    {
+      "id": "client_info",
+      "label": "2. Client",
+      "type": "modal",
+      "dataKey": "client_details",
+      "autoOpen": true,
+      "colors": {
+        "pending": "#424242",
+        "active": "#FFCA28",
+        "done": "#4CAF50"
+      },
+      "uiSchema": {
+        "sections": [
+          {
+            "type": "section",
+            "title": "Shipment Info",
+            "components": [
+              {
+                "type": "info_row",
+                "label": "Postal Barcode",
+                "variable": "postal_barcode"
+              },
+              {
+                "type": "info_row",
+                "label": "Matched Shipment",
+                "variable": "matched_shipment"
+              },
+              {
+                "type": "text_input",
+                "key": "client_name",
+                "label": "Client Name",
+                "placeholder": "Enter client name"
+              },
+              {
+                "type": "text_input",
+                "key": "client_address",
+                "label": "Address",
+                "placeholder": "Enter address"
+              },
+              {
+                "type": "date_input",
+                "key": "arrival_date",
+                "label": "Arrival Date",
+                "default": "today"
+              }
+            ]
+          },
+          {
+            "type": "spacing",
+            "height": 12
+          },
+          {
+            "type": "button",
+            "label": "Continue",
+            "action": "close_modal",
+            "primary": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "photo_box",
+      "label": "3. Box Photo",
+      "type": "action",
+      "action": "capture_photo",
+      "dataKey": "box_photo",
+      "colors": {
+        "pending": "#424242",
+        "active": "#FF9800",
+        "done": "#4CAF50"
+      }
+    },
+    {
+      "id": "device_info",
+      "label": "4. Device",
+      "type": "modal",
+      "dataKey": "device_details",
+      "colors": {
+        "pending": "#424242",
+        "active": "#FFCA28",
+        "done": "#4CAF50"
+      },
+      "uiSchema": {
+        "sections": [
+          {
+            "type": "section",
+            "title": "Device Registration",
+            "components": [
+              {
+                "type": "info_row",
+                "label": "Serial Number",
+                "variable": "serial_number",
+                "action": "scan_serial"
+              },
+              {
+                "type": "boolean_toggle",
+                "key": "has_psu",
+                "label": "Power Supply Included?",
+                "default": false
+              },
+              {
+                "type": "boolean_toggle",
+                "key": "cables_included",
+                "label": "Cables Included?",
+                "default": false
+              },
+              {
+                "type": "single_choice",
+                "key": "packaging",
+                "label": "Packaging Condition",
+                "options": ["Original", "Generic", "Damaged", "None"],
+                "default": "Original"
+              }
+            ]
+          },
+          {
+            "type": "spacing",
+            "height": 12
+          },
+          {
+            "type": "button",
+            "label": "Continue",
+            "action": "close_modal",
+            "primary": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "photo_device",
+      "label": "5. Dev Photo",
+      "type": "action",
+      "action": "capture_photo",
+      "dataKey": "device_photo",
+      "colors": {
+        "pending": "#424242",
+        "active": "#FF9800",
+        "done": "#4CAF50"
+      }
+    }
+  ]
+}

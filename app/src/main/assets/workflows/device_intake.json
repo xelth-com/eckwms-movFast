@@ -1,0 +1,76 @@
+{
+  "title": "Device Intake & Inspection",
+  "sections": [
+    {
+      "type": "section",
+      "title": "Identification",
+      "components": [
+        {
+          "type": "info_row",
+          "label": "HWB (Tracking)",
+          "variable": "hwb_number",
+          "action": "scan_link_hwb"
+        },
+        {
+          "type": "info_row",
+          "label": "Serial Number",
+          "variable": "serial_number",
+          "action": "scan_link_sn"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "title": "Inbound Condition",
+      "components": [
+        {
+          "type": "boolean_toggle",
+          "key": "has_psu",
+          "label": "Power Supply Included?",
+          "default": false
+        },
+        {
+          "type": "single_choice",
+          "key": "packaging",
+          "label": "Packaging Condition",
+          "options": ["Original", "Generic", "Damaged", "None"],
+          "default": "Original"
+        },
+        {
+          "type": "boolean_toggle",
+          "key": "cables_included",
+          "label": "Cables Included?",
+          "default": false
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "title": "Evidence",
+      "components": [
+        {
+          "type": "button",
+          "label": "Take Box Photo",
+          "action": "capture_evidence_box",
+          "icon": "camera"
+        },
+        {
+          "type": "button",
+          "label": "Take Device Photo",
+          "action": "capture_evidence_device",
+          "icon": "camera"
+        }
+      ]
+    },
+    {
+      "type": "spacing",
+      "height": 20
+    },
+    {
+      "type": "button",
+      "label": "Save & Close",
+      "action": "save_intake_details",
+      "primary": true
+    }
+  ]
+}

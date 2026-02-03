@@ -139,6 +139,30 @@ class MainScreenViewModel : ViewModel() {
     private var slotWaitingForBind: Int? = null
     private var lastSentAction: LastRepairAction? = null
 
+    // --- RECEIVING MODE STATE ---
+
+    private val _isReceivingMode = MutableLiveData<Boolean>(false)
+    val isReceivingMode: LiveData<Boolean> = _isReceivingMode
+
+    private val _receivingStatus = MutableLiveData<String>("")
+    val receivingStatus: LiveData<String> = _receivingStatus
+
+    private var receivingSteps: List<Map<String, Any>> = emptyList()
+    private var currentStepIndex: Int = 0
+    val receivingData = mutableMapOf<String, Any>()
+
+    // Modal trigger — set to step's uiSchema JSON when a modal step is clicked
+    private val _showReceivingModal = MutableLiveData<String?>(null)
+    val showReceivingModal: LiveData<String?> = _showReceivingModal
+
+    fun dismissReceivingModal() { _showReceivingModal.value = null }
+
+    // Camera navigation for receiving — holds scan_mode string, null when not navigating
+    private val _receivingCameraNav = MutableLiveData<String?>(null)
+    val receivingCameraNav: LiveData<String?> = _receivingCameraNav
+
+    fun consumeReceivingCameraNav() { _receivingCameraNav.value = null }
+
     init {
         Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
         initializeGrid()
@@ -185,6 +209,8 @@ class MainScreenViewModel : ViewModel() {
 
         if (_isRepairMode.value == true) {
             renderRepairGrid()
+        } else if (_isReceivingMode.value == true) {
+            renderReceivingGrid()
         } else {
             initializeGrid()
         }
@@ -192,9 +218,11 @@ class MainScreenViewModel : ViewModel() {
 
     private fun initializeGrid() {
         val buttons = listOf(
-            MainMenuButton("scan", "Scan", "#4A90E2", "navigate_scan", PRIORITIES.SCAN_BUTTON),
-            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.RESTOCK_BUTTON),
             MainMenuButton("repair", "Repair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
+            MainMenuButton("receiving", "Receiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
+            MainMenuButton("photo", "Photo", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
+            MainMenuButton("scan", "Scan", "#00BCD4", "capture_barcode", PRIORITIES.SCAN_BUTTON),
+            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.RESTOCK_BUTTON),
             MainMenuButton("settings", "Settings", "#9013FE", "navigate_settings", PRIORITIES.SETTINGS_BUTTON)
         )
 
@@ -237,8 +265,17 @@ class MainScreenViewModel : ViewModel() {
             return handleRepairButtonClick(action)
         }
 
+        if (_isReceivingMode.value == true) {
+            return handleReceivingButtonClick(action)
+        }
+
         if (action == "navigate_repair") {
             enterRepairMode()
+            return "handled"
+        }
+
+        if (action == "navigate_receiving") {
+            enterReceivingMode()
             return "handled"
         }
 
@@ -328,6 +365,13 @@ class MainScreenViewModel : ViewModel() {
         }
 
         if (!slot.isBound) {
+            // Toggle: if already waiting for bind on this slot, cancel it
+            if (slotWaitingForBind == index) {
+                slotWaitingForBind = null
+                _repairStatus.value = "Cancelled"
+                renderRepairGrid()
+                return
+            }
             slotWaitingForBind = index
             _repairStatus.value = "Scan device barcode for Slot #${index + 1}"
             renderRepairGrid()
@@ -544,14 +588,12 @@ class MainScreenViewModel : ViewModel() {
     private fun renderRepairGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        // Action buttons (top row)
+        // Action buttons (top row): UNDO | PHOTO | SCAN (scan = top-right)
+        val undoColor = if (lastSentAction != null) "#FF9800" else "#37474F"
+        uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to undoColor, "action" to "act_undo"))
         val photoColor = if (pendingAction is RepairAction.PendingPhoto) "#FF9800" else "#9C27B0"
         uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to photoColor, "action" to "act_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
-
-        // UNDO button: active only when there's something to undo
-        val undoColor = if (lastSentAction != null) "#FF9800" else "#37474F"
-        uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to undoColor, "action" to "act_undo"))
 
         // Device slots
         slots.forEach { slot ->
@@ -579,6 +621,263 @@ class MainScreenViewModel : ViewModel() {
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — HALF_RIGHT at row=1 (first odd row, top-right area)
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
+            200
+        )
+
+        updateRenderCells()
+    }
+
+    // --- RECEIVING MODE LOGIC ---
+
+    fun loadReceivingWorkflow(context: android.content.Context) {
+        try {
+            val json = context.assets.open("workflows/receiving.json")
+                .bufferedReader().use { it.readText() }
+            val root = org.json.JSONObject(json)
+            val stepsArray = root.getJSONArray("steps")
+
+            val parsed = mutableListOf<Map<String, Any>>()
+            for (i in 0 until stepsArray.length()) {
+                val s = stepsArray.getJSONObject(i)
+                val m = mutableMapOf<String, Any>(
+                    "id" to s.getString("id"),
+                    "label" to s.getString("label"),
+                    "type" to s.getString("type"),
+                    "dataKey" to s.getString("dataKey")
+                )
+                if (s.has("action")) m["action"] = s.getString("action")
+                if (s.has("uiSchema")) m["uiSchema"] = s.getJSONObject("uiSchema").toString()
+                if (s.optBoolean("autoOpen", false)) m["autoOpen"] = true
+                if (s.has("colors")) {
+                    val c = s.getJSONObject("colors")
+                    m["colors"] = mapOf(
+                        "pending" to c.optString("pending", "#424242"),
+                        "active" to c.optString("active", "#FF9800"),
+                        "done" to c.optString("done", "#4CAF50")
+                    )
+                }
+                parsed.add(m)
+            }
+            receivingSteps = parsed
+            addLog("Loaded ${parsed.size} receiving steps")
+        } catch (e: Exception) {
+            addLog("Error loading receiving.json: ${e.message}")
+        }
+    }
+
+    fun enterReceivingMode() {
+        _isReceivingMode.value = true
+        currentStepIndex = 0
+        receivingData.clear()
+        _receivingStatus.value = if (receivingSteps.isNotEmpty())
+            "Step 1: ${receivingSteps[0]["label"]}" else "No steps loaded"
+        addLog("Entered Receiving Mode")
+        renderReceivingGrid()
+    }
+
+    fun exitReceivingMode() {
+        _isReceivingMode.value = false
+        currentStepIndex = 0
+        receivingData.clear()
+        _showReceivingModal.value = null
+        addLog("Exited Receiving Mode")
+        initializeGrid()
+    }
+
+    private fun handleReceivingButtonClick(action: String): String {
+        when {
+            action == "act_exit" -> {
+                exitReceivingMode()
+                return "handled"
+            }
+            action == "act_photo" -> return "capture_photo"
+            action == "act_scan" -> return "capture_barcode"
+            action == "act_save_receiving" -> {
+                saveReceivingWorkflow()
+                return "handled"
+            }
+            action.startsWith("step_") -> {
+                val stepId = action.removePrefix("step_")
+                handleStepClick(stepId)
+                return "handled"
+            }
+        }
+        return "handled"
+    }
+
+    private fun handleStepClick(stepId: String) {
+        val stepIndex = receivingSteps.indexOfFirst { (it["id"] as? String) == stepId }
+        if (stepIndex == -1) return
+
+        // Only allow clicking current step
+        if (stepIndex > currentStepIndex) {
+            _receivingStatus.value = "Complete step ${currentStepIndex + 1} first"
+            return
+        }
+        if (stepIndex < currentStepIndex) {
+            _receivingStatus.value = "Step ${stepIndex + 1} already done"
+            return
+        }
+
+        val step = receivingSteps[stepIndex]
+        when (step["type"] as? String) {
+            "action" -> {
+                val stepAction = step["action"] as? String
+                _receivingStatus.value = "Executing: ${step["label"]}"
+                val scanMode = if (stepAction == "capture_photo") "workflow_capture" else "barcode"
+                _receivingCameraNav.value = scanMode
+            }
+            "modal" -> {
+                val uiSchema = step["uiSchema"] as? String ?: return
+                _receivingStatus.value = "${step["label"]}"
+                _showReceivingModal.value = uiSchema
+            }
+        }
+    }
+
+    fun onReceivingScan(barcode: String) {
+        if (_isReceivingMode.value != true) return
+        if (currentStepIndex !in receivingSteps.indices) return
+
+        val step = receivingSteps[currentStepIndex]
+        val dataKey = step["dataKey"] as? String ?: return
+
+        receivingData[dataKey] = barcode
+        _receivingStatus.value = "✓ $dataKey: $barcode"
+        addLog("✓ $dataKey = $barcode")
+        advanceToNextStep()
+    }
+
+    fun onReceivingPhotoCaptured(bitmap: Bitmap) {
+        if (_isReceivingMode.value != true) return
+        if (currentStepIndex !in receivingSteps.indices) return
+
+        val step = receivingSteps[currentStepIndex]
+        val dataKey = step["dataKey"] as? String ?: return
+
+        val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+        receivingData[dataKey] = copy
+        _receivingStatus.value = "✓ $dataKey: photo ${copy.width}x${copy.height}"
+        addLog("✓ $dataKey = photo ${copy.width}x${copy.height}")
+        advanceToNextStep()
+    }
+
+    fun advanceToNextStep() {
+        currentStepIndex++
+        if (currentStepIndex >= receivingSteps.size) {
+            _receivingStatus.value = "All steps done — tap \uD83D\uDCBE SAVE"
+            addLog("--- Receiving Summary ---")
+            receivingData.forEach { (k, v) ->
+                val display = when (v) {
+                    is Bitmap -> "photo ${v.width}x${v.height}"
+                    else -> v.toString()
+                }
+                addLog("  $k: $display")
+            }
+        } else {
+            val next = receivingSteps[currentStepIndex]
+            _receivingStatus.value = "Step ${currentStepIndex + 1}: ${next["label"]}"
+
+            // Auto-open modal steps after a short delay (e.g. after scan → show client form)
+            if (next["autoOpen"] == true && next["type"] == "modal") {
+                viewModelScope.launch {
+                    delay(500) // Let camera screen finish closing
+                    val uiSchema = next["uiSchema"] as? String
+                    if (uiSchema != null) {
+                        _showReceivingModal.postValue(uiSchema)
+                    }
+                }
+            }
+        }
+        renderReceivingGrid()
+    }
+
+    fun setReceivingDataValue(key: String, value: Any) {
+        receivingData[key] = value
+    }
+
+    private fun saveReceivingWorkflow() {
+        addLog("=== SAVING RECEIVING ===")
+        val jsonData = org.json.JSONObject()
+        receivingData.forEach { (key, value) ->
+            when (value) {
+                is String -> jsonData.put(key, value)
+                is Boolean -> jsonData.put(key, value)
+                is Bitmap -> jsonData.put(key, "photo:${value.width}x${value.height}")
+                else -> jsonData.put(key, value.toString())
+            }
+        }
+        addLog(jsonData.toString(2))
+
+        try {
+            onRepairEventSend?.invoke("RECEIVING", "workflow_complete", jsonData.toString())
+            addLog("Sent workflow_complete event")
+        } catch (e: Exception) {
+            addLog("Send error: ${e.message}")
+        }
+
+        var photoCount = 0
+        receivingData.forEach { (key, value) ->
+            if (value is Bitmap) {
+                try {
+                    onRepairPhotoUpload?.invoke("RECEIVING:$key", value)
+                    photoCount++
+                    addLog("Uploaded photo: $key")
+                } catch (e: Exception) {
+                    addLog("Photo upload error: ${e.message}")
+                }
+            }
+        }
+        addLog("=== DONE ($photoCount photos) ===")
+        _receivingStatus.value = "✓ Saved! Exiting..."
+
+        viewModelScope.launch {
+            delay(2000)
+            exitReceivingMode()
+        }
+    }
+
+    private fun renderReceivingGrid() {
+        val uiItems = mutableListOf<Map<String, Any>>()
+
+        // Top row: UNDO-placeholder | PHOTO | SCAN
+        uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to "#37474F", "action" to "act_noop"))
+        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+
+        // Workflow step buttons
+        receivingSteps.forEachIndexed { index, step ->
+            val stepId = step["id"] as? String ?: "step_$index"
+            val label = step["label"] as? String ?: "Step ${index + 1}"
+            @Suppress("UNCHECKED_CAST")
+            val colors = step["colors"] as? Map<String, String>
+
+            val color = when {
+                index < currentStepIndex -> colors?.get("done") ?: "#4CAF50"
+                index == currentStepIndex -> colors?.get("active") ?: "#FF9800"
+                else -> colors?.get("pending") ?: "#424242"
+            }
+
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to label,
+                "color" to color,
+                "action" to "step_$stepId"
+            ))
+        }
+
+        // SAVE button when all steps done — bright blue to stand out from green done steps
+        if (currentStepIndex >= receivingSteps.size && receivingSteps.isNotEmpty()) {
+            uiItems.add(mapOf("type" to "button", "label" to "\uD83D\uDCBE SAVE", "color" to "#2196F3", "action" to "act_save_receiving"))
+        }
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
+
+        // EXIT at HALF_RIGHT row=1 last col (same as repair mode)
         val cols = gridManager.contentGrid.cols
         gridManager.contentGrid.placeContentAt(1, cols - 1,
             mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),

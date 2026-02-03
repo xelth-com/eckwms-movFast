@@ -66,6 +66,11 @@ fun MainScreen(
     val isRepairMode by mainViewModel.isRepairMode.observeAsState(false)
     val repairStatus by mainViewModel.repairStatus.observeAsState("")
 
+    // Receiving mode state
+    val isReceivingMode by mainViewModel.isReceivingMode.observeAsState(false)
+    val receivingStatus by mainViewModel.receivingStatus.observeAsState("")
+    val receivingModalJson by mainViewModel.showReceivingModal.observeAsState(null)
+
     // Read shared settings from ScanRecoveryViewModel
     val sharedGridRowCount by viewModel.gridRowCount.observeAsState(7)
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
@@ -82,6 +87,9 @@ fun MainScreen(
     // State for slot delete confirmation
     var showDeleteSlotDialog by remember { mutableStateOf(false) }
     var deleteSlotAction by remember { mutableStateOf("") }
+
+    // State for receiving workflow modal
+    val receivingModalFormState = remember { mutableStateMapOf<String, Any>() }
 
     // Sync shared settings into MainScreenViewModel
     LaunchedEffect(sharedGridRowCount) {
@@ -123,20 +131,43 @@ fun MainScreen(
         }
     }
 
+    // Load receiving workflow JSON
+    LaunchedEffect(Unit) {
+        mainViewModel.loadReceivingWorkflow(context)
+    }
+
+    // Receiving mode: camera navigation
+    val receivingCameraNav by mainViewModel.receivingCameraNav.observeAsState(null)
+    LaunchedEffect(receivingCameraNav) {
+        val scanMode = receivingCameraNav
+        if (scanMode != null) {
+            mainViewModel.consumeReceivingCameraNav()
+            navController.navigate("cameraScanScreen?scan_mode=$scanMode")
+        }
+    }
+
     // Bridge: forward scanner results to Repair Mode (or auto-enter if device matches)
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
-            mainViewModel.onRepairScan(scannedBarcode!!)
+            if (isReceivingMode) {
+                mainViewModel.onReceivingScan(scannedBarcode!!)
+            } else {
+                mainViewModel.onRepairScan(scannedBarcode!!)
+            }
             viewModel.consumeScannedBarcode()
         }
     }
 
     // Bridge: forward repair photo from ScanRecoveryViewModel to MainScreenViewModel
     val repairPhoto by viewModel.repairPhotoBitmap.observeAsState(null)
-    LaunchedEffect(repairPhoto, isRepairMode) {
-        if (isRepairMode && repairPhoto != null) {
-            mainViewModel.onRepairPhotoCaptured(repairPhoto!!)
+    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode) {
+        if (repairPhoto != null) {
+            if (isReceivingMode) {
+                mainViewModel.onReceivingPhotoCaptured(repairPhoto!!)
+            } else if (isRepairMode) {
+                mainViewModel.onRepairPhotoCaptured(repairPhoto!!)
+            }
             viewModel.consumeRepairPhotoBitmap()
         }
     }
@@ -150,9 +181,8 @@ fun MainScreen(
         }
     }
 
-    // No Scaffold, no TopBar — console goes edge-to-edge from top
-    val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(bottom = navBarHeight)) {
+    // No Scaffold, no TopBar — edge-to-edge layout, ignore nav bar insets
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val containerWidth = maxWidth
         val containerHeight = maxHeight
         val gridRowCount by mainViewModel.gridRowCount.observeAsState(7)
@@ -178,7 +208,7 @@ fun MainScreen(
                     .fillMaxWidth()
                     .height(consoleHeight + overlap)
                     .align(Alignment.TopCenter)
-                    .background(if (isRepairMode) Color.Black else Color(0xFF121212))
+                    .background(Color.Black)
             ) {
                 if (isRepairMode) {
                     val activeSlotPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
@@ -218,6 +248,37 @@ fun MainScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                } else if (isReceivingMode) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                            .background(Color.Black)
+                    ) {
+                        // Status bar
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = receivingStatus,
+                                color = Color(0xFFFF9800),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        // Console logs below status
+                        ConsoleView(
+                            logs = consoleLogs,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            scannerEnabled = false,
+                            onScannerToggle = {}
+                        )
                     }
                 } else {
                     ConsoleView(
@@ -319,6 +380,52 @@ fun MainScreen(
                             }
                             "scan_link_hwb", "scan_link_sn" -> {
                                 showIntakeSheet = false
+                                navController.navigate("cameraScanScreen?scan_mode=barcode")
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    // Receiving Workflow Step Modal
+    if (receivingModalJson != null) {
+        // Seed once when modal opens
+        LaunchedEffect(Unit) {
+            mainViewModel.receivingData.forEach { (k, v) ->
+                if (v is String) receivingModalFormState.putIfAbsent(k, v)
+            }
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = { mainViewModel.dismissReceivingModal() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 20.dp)
+            ) {
+                DynamicUiRenderer(
+                    layoutJson = receivingModalJson!!,
+                    stateValues = receivingModalFormState.toMap(),
+                    onValueChange = { key, value ->
+                        receivingModalFormState[key] = value
+                    },
+                    onAction = { action, _ ->
+                        mainViewModel.addLog("Receiving modal: $action")
+                        when (action) {
+                            "close_modal" -> {
+                                receivingModalFormState.forEach { (k, v) ->
+                                    mainViewModel.setReceivingDataValue(k, v)
+                                }
+                                mainViewModel.dismissReceivingModal()
+                                mainViewModel.advanceToNextStep()
+                                receivingModalFormState.clear()
+                            }
+                            "scan_serial" -> {
+                                mainViewModel.dismissReceivingModal()
                                 navController.navigate("cameraScanScreen?scan_mode=barcode")
                             }
                         }

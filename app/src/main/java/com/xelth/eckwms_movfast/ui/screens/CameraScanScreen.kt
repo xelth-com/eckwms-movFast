@@ -14,6 +14,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,10 +22,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +59,10 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.xelth.eckwms_movfast.utils.BitmapCache
 import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
+import com.xelth.eckwms_movfast.ui.screens.pos.components.HexagonalButton
+import com.xelth.eckwms_movfast.ui.screens.pos.components.HexagonSide
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import android.graphics.Matrix
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
@@ -177,12 +191,54 @@ fun BarcodeScanPreviewScreen(
             },
             modifier = Modifier.fillMaxSize()
         )
-        Button(
-            onClick = { navController.popBackStack() },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
-        ) {
-            Text("Cancel")
+
+        // QR + barcode overlay — semi-transparent scan target
+        Canvas(modifier = Modifier.fillMaxSize().alpha(0.12f)) {
+            val cx = size.width / 2
+            val cy = size.height / 2
+            val s = 280f // QR box size (2x)
+            val m = 40f  // module size
+            val color = Color.White
+            // Outer frame
+            drawRect(color, topLeft = Offset(cx - s, cy - s), size = androidx.compose.ui.geometry.Size(s * 2, s * 2), style = Stroke(4f))
+            // Corner finder patterns (3 corners)
+            val corners = listOf(
+                Offset(cx - s + m, cy - s + m),
+                Offset(cx + s - m * 4, cy - s + m),
+                Offset(cx - s + m, cy + s - m * 4)
+            )
+            corners.forEach { pos ->
+                drawRect(color, topLeft = pos, size = androidx.compose.ui.geometry.Size(m * 3, m * 3), style = Stroke(4f))
+                drawRect(color, topLeft = Offset(pos.x + m, pos.y + m), size = androidx.compose.ui.geometry.Size(m, m))
+            }
+            // EAN barcode stripes in center — stretched to nearly full QR width
+            val barY = cy - 40f
+            val barH = 80f
+            val totalBarWidth = s * 1.7f
+            val barWidths = listOf(3f, 2f, 5f, 2f, 3f, 6f, 2f, 4f, 2f, 5f, 3f, 2f, 6f, 3f, 2f, 4f, 3f, 5f, 2f, 3f, 4f, 2f, 5f, 3f, 6f, 2f, 3f, 4f, 2f, 5f)
+            val rawTotal = barWidths.sum() + barWidths.size
+            val scale = totalBarWidth / rawTotal
+            var barX = cx - totalBarWidth / 2
+            barWidths.forEachIndexed { i, w ->
+                val sw = w * scale
+                if (i % 2 == 0) drawRect(color, topLeft = Offset(barX, barY), size = androidx.compose.ui.geometry.Size(sw, barH))
+                barX += sw + scale
+            }
         }
+
+        // Cancel half-hex — bottom-right bookmark
+        HexagonalButton(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(y = (-20).dp)
+                .width(70.dp)
+                .height(80.dp)
+                .alpha(0.5f),
+            label = "✕",
+            colorHex = "#F44336",
+            side = HexagonSide.RIGHT,
+            onClick = { navController.popBackStack() }
+        )
     }
 }
 
@@ -248,23 +304,17 @@ fun ImageCapturePreviewScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Capture button UI
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (isCapturing) {
-                CircularProgressIndicator()
-                Text("Capturing...")
-            } else {
-                Button(
-                    onClick = {
-                        if (!isCapturing && imageCapture != null) {
-                            isCapturing = true
-                            Log.d(TAG, "Capturing image for $scanMode mode")
+        // Capture + Cancel hex bookmarks
+        if (isCapturing) {
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color = Color.White
+            )
+        } else {
+            val doCapture = {
+                if (!isCapturing && imageCapture != null) {
+                    isCapturing = true
+                    Log.d(TAG, "Capturing image for $scanMode mode")
 
                             imageCapture?.takePicture(
                                 cameraExecutor,
@@ -328,17 +378,35 @@ fun ImageCapturePreviewScreen(
                                 }
                             )
                         }
-                    },
-                    enabled = !isCapturing
-                ) {
-                    Text("Capture Image")
-                }
+                    }
 
-                Button(
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Capture half-hex bookmark — center-right
+                HexagonalButton(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(70.dp)
+                        .height(80.dp)
+                        .alpha(0.5f),
+                    label = "\uD83D\uDCF7",
+                    colorHex = "#00BCD4",
+                    side = HexagonSide.RIGHT,
+                    onClick = { doCapture() }
+                )
+
+                // Cancel half-hex bookmark — bottom-right
+                HexagonalButton(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(y = (-20).dp)
+                        .width(70.dp)
+                        .height(80.dp)
+                        .alpha(0.5f),
+                    label = "✕",
+                    colorHex = "#F44336",
+                    side = HexagonSide.RIGHT,
                     onClick = { navController.popBackStack() }
-                ) {
-                    Text("Cancel")
-                }
+                )
             }
         }
     }
