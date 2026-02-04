@@ -79,6 +79,10 @@ fun MainScreen(
     val receivingStatus by mainViewModel.receivingStatus.observeAsState("")
     val receivingModalJson by mainViewModel.showReceivingModal.observeAsState(null)
 
+    // Device Check mode state
+    val isDeviceCheckMode by mainViewModel.isDeviceCheckMode.observeAsState(false)
+    val deviceCheckStatus by mainViewModel.deviceCheckStatus.observeAsState("")
+
     // Read shared settings from ScanRecoveryViewModel
     val sharedGridRowCount by viewModel.gridRowCount.observeAsState(7)
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
@@ -160,12 +164,14 @@ fun MainScreen(
         }
     }
 
-    // Bridge: forward scanner results to Repair Mode (or auto-enter if device matches)
+    // Bridge: forward scanner results to appropriate mode
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
             if (isReceivingMode) {
                 mainViewModel.onReceivingScan(scannedBarcode!!)
+            } else if (isDeviceCheckMode) {
+                mainViewModel.onDeviceCheckScan(scannedBarcode!!)
             } else {
                 mainViewModel.onRepairScan(scannedBarcode!!)
             }
@@ -175,10 +181,12 @@ fun MainScreen(
 
     // Bridge: forward repair photo from ScanRecoveryViewModel to MainScreenViewModel
     val repairPhoto by viewModel.repairPhotoBitmap.observeAsState(null)
-    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode) {
+    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode, isDeviceCheckMode) {
         if (repairPhoto != null) {
             if (isReceivingMode) {
                 mainViewModel.onReceivingPhotoCaptured(repairPhoto!!)
+            } else if (isDeviceCheckMode) {
+                mainViewModel.onDeviceCheckPhotoCaptured(repairPhoto!!)
             } else if (isRepairMode) {
                 mainViewModel.onRepairPhotoCaptured(repairPhoto!!)
             }
@@ -258,6 +266,35 @@ fun MainScreen(
                             Text(
                                 text = repairStatus,
                                 color = Color.White,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else if (isDeviceCheckMode) {
+                    val activeSlotPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                    ) {
+                        if (activeSlotPhoto != null) {
+                            Image(
+                                bitmap = activeSlotPhoto!!.asImageBitmap(),
+                                contentDescription = "Device check photo",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .alpha(0.2f),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = deviceCheckStatus,
+                                color = Color(0xFF4CAF50),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )

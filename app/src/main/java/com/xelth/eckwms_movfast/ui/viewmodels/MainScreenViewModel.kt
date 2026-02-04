@@ -35,6 +35,28 @@ data class MainMenuButton(
     val priority: Int = PRIORITIES.DEFAULT
 )
 
+// --- Device Check Mode Data Models ---
+
+enum class DeviceCheckStep {
+    SCAN_BOX,
+    PHOTO_CONTENT,
+    SCAN_DEVICE,
+    PHOTO_CONDITION,
+    PHOTO_LEFTOVER,
+    COMPLETE
+}
+
+data class DeviceCheckSlot(
+    val index: Int,
+    var boxBarcode: String? = null,
+    var deviceBarcode: String? = null,
+    var contentPhoto: Bitmap? = null,
+    var conditionPhotos: MutableList<Bitmap> = mutableListOf(),
+    var leftoverPhoto: Bitmap? = null,
+    var currentStep: DeviceCheckStep = DeviceCheckStep.SCAN_BOX,
+    var isActive: Boolean = false
+)
+
 // --- Repair Mode Data Models ---
 
 data class RepairSlot(
@@ -185,6 +207,17 @@ class MainScreenViewModel : ViewModel() {
     private val _shipmentsError = MutableLiveData<String?>(null)
     val shipmentsError: LiveData<String?> = _shipmentsError
 
+    // --- DEVICE CHECK MODE STATE ---
+
+    private val _isDeviceCheckMode = MutableLiveData<Boolean>(false)
+    val isDeviceCheckMode: LiveData<Boolean> = _isDeviceCheckMode
+
+    private val _deviceCheckStatus = MutableLiveData<String>("Select a slot to start check")
+    val deviceCheckStatus: LiveData<String> = _deviceCheckStatus
+
+    // 3 Slots for parallel processing
+    private val deviceCheckSlots = MutableList(3) { i -> DeviceCheckSlot(i) }
+
     init {
         Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
         initializeGrid()
@@ -233,6 +266,8 @@ class MainScreenViewModel : ViewModel() {
             renderRepairGrid()
         } else if (_isReceivingMode.value == true) {
             renderReceivingGrid()
+        } else if (_isDeviceCheckMode.value == true) {
+            renderDeviceCheckGrid()
         } else {
             initializeGrid()
         }
@@ -242,6 +277,7 @@ class MainScreenViewModel : ViewModel() {
         val buttons = listOf(
             MainMenuButton("repair", "Repair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
             MainMenuButton("receiving", "Receiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
+            MainMenuButton("device_check", "Check Dev", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
             MainMenuButton("photo", "Photo", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
             MainMenuButton("scan", "Scan", "#00BCD4", "capture_barcode", PRIORITIES.SCAN_BUTTON),
             MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.RESTOCK_BUTTON),
@@ -291,6 +327,10 @@ class MainScreenViewModel : ViewModel() {
             return handleReceivingButtonClick(action)
         }
 
+        if (_isDeviceCheckMode.value == true) {
+            return handleDeviceCheckButtonClick(action)
+        }
+
         if (action == "navigate_repair") {
             enterRepairMode()
             return "handled"
@@ -298,6 +338,11 @@ class MainScreenViewModel : ViewModel() {
 
         if (action == "navigate_receiving") {
             enterReceivingMode()
+            return "handled"
+        }
+
+        if (action == "navigate_device_check") {
+            enterDeviceCheckMode()
             return "handled"
         }
 
@@ -1195,6 +1240,230 @@ class MainScreenViewModel : ViewModel() {
         )
 
         updateRenderCells()
+    }
+
+    // --- DEVICE CHECK MODE LOGIC ---
+
+    fun enterDeviceCheckMode() {
+        _isDeviceCheckMode.value = true
+        _deviceCheckStatus.value = "Select a slot to start"
+        addLog("Entered Device Check Mode")
+        renderDeviceCheckGrid()
+    }
+
+    fun exitDeviceCheckMode() {
+        _isDeviceCheckMode.value = false
+        deviceCheckSlots.forEach {
+            it.isActive = false
+        }
+        initializeGrid()
+    }
+
+    private fun handleDeviceCheckButtonClick(action: String): String {
+        when {
+            action == "act_exit" -> {
+                exitDeviceCheckMode()
+                return "handled"
+            }
+            action == "act_photo" -> return "capture_photo"
+            action == "act_scan" -> return "capture_barcode"
+            action == "act_finish_photos_step" -> {
+                advanceFromConditionPhotos()
+                return "handled"
+            }
+            action.startsWith("check_slot_") -> {
+                val index = action.removePrefix("check_slot_").toIntOrNull()
+                if (index != null && index in deviceCheckSlots.indices) {
+                    activateDeviceCheckSlot(index)
+                }
+                return "handled"
+            }
+        }
+        return "handled"
+    }
+
+    private fun activateDeviceCheckSlot(index: Int) {
+        deviceCheckSlots.forEach { it.isActive = false }
+        deviceCheckSlots[index].isActive = true
+        updateDeviceCheckStatus(deviceCheckSlots[index])
+
+        // Use the photo of the slot as the background if available
+        val photo = deviceCheckSlots[index].contentPhoto ?: deviceCheckSlots[index].conditionPhotos.firstOrNull()
+        _activeSlotPhoto.value = photo
+
+        renderDeviceCheckGrid()
+    }
+
+    private fun updateDeviceCheckStatus(slot: DeviceCheckSlot) {
+        val msg = when(slot.currentStep) {
+            DeviceCheckStep.SCAN_BOX -> "Slot #${slot.index+1}: Scan BOX Barcode"
+            DeviceCheckStep.PHOTO_CONTENT -> "Slot #${slot.index+1}: Take photo of CONTENT"
+            DeviceCheckStep.SCAN_DEVICE -> "Slot #${slot.index+1}: Scan DEVICE Barcode"
+            DeviceCheckStep.PHOTO_CONDITION -> "Slot #${slot.index+1}: Take CONDITION photos (${slot.conditionPhotos.size})"
+            DeviceCheckStep.PHOTO_LEFTOVER -> "Slot #${slot.index+1}: Take LEFTOVER photo"
+            DeviceCheckStep.COMPLETE -> "Slot #${slot.index+1}: Ready to Upload"
+        }
+        _deviceCheckStatus.value = msg
+    }
+
+    fun onDeviceCheckScan(barcode: String) {
+        val active = deviceCheckSlots.find { it.isActive }
+        if (active == null) {
+            _deviceCheckStatus.value = "Select a slot first!"
+            return
+        }
+
+        when (active.currentStep) {
+            DeviceCheckStep.SCAN_BOX -> {
+                active.boxBarcode = barcode
+                active.currentStep = DeviceCheckStep.PHOTO_CONTENT
+                addLog("Slot #${active.index+1}: Box scanned: $barcode")
+            }
+            DeviceCheckStep.SCAN_DEVICE -> {
+                if (barcode == active.boxBarcode) {
+                    active.deviceBarcode = barcode
+                    active.currentStep = DeviceCheckStep.PHOTO_CONDITION
+                    addLog("Slot #${active.index+1}: Device MATCHED!")
+                } else {
+                    addLog("Slot #${active.index+1}: MISMATCH! Box: ${active.boxBarcode}, Dev: $barcode")
+                    _deviceCheckStatus.value = "MISMATCH! Expecting: ${active.boxBarcode}"
+                    return // Do not advance
+                }
+            }
+            else -> {
+                addLog("Scan ignored in state ${active.currentStep}")
+            }
+        }
+        updateDeviceCheckStatus(active)
+        renderDeviceCheckGrid()
+    }
+
+    fun onDeviceCheckPhotoCaptured(bitmap: Bitmap) {
+        val active = deviceCheckSlots.find { it.isActive }
+        if (active == null) return
+
+        val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+
+        when (active.currentStep) {
+            DeviceCheckStep.PHOTO_CONTENT -> {
+                active.contentPhoto = copy
+                active.currentStep = DeviceCheckStep.SCAN_DEVICE
+                _activeSlotPhoto.value = copy // Show as background
+                addLog("Slot #${active.index+1}: Content photo taken")
+            }
+            DeviceCheckStep.PHOTO_CONDITION -> {
+                active.conditionPhotos.add(copy)
+                _activeSlotPhoto.value = copy
+                addLog("Slot #${active.index+1}: Condition photo #${active.conditionPhotos.size}")
+            }
+            DeviceCheckStep.PHOTO_LEFTOVER -> {
+                active.leftoverPhoto = copy
+                active.currentStep = DeviceCheckStep.COMPLETE
+                finishDeviceCheckSlot(active)
+                return
+            }
+            else -> {}
+        }
+        updateDeviceCheckStatus(active)
+        renderDeviceCheckGrid()
+    }
+
+    private fun finishDeviceCheckSlot(slot: DeviceCheckSlot) {
+        addLog("Finishing slot #${slot.index+1}")
+
+        // 1. Upload logic - create JSON payload
+        val payload = mapOf(
+            "box_barcode" to slot.boxBarcode,
+            "device_barcode" to slot.deviceBarcode,
+            "photo_count" to (1 + slot.conditionPhotos.size + (if(slot.leftoverPhoto!=null) 1 else 0))
+        )
+        val jsonStr = org.json.JSONObject(payload).toString()
+
+        onRepairEventSend?.invoke("DEVICE_CHECK", "check_complete", jsonStr)
+
+        // Upload photos
+        if (slot.contentPhoto != null) onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:CONTENT", slot.contentPhoto!!)
+        slot.conditionPhotos.forEachIndexed { i, bmp ->
+            onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:COND:$i", bmp)
+        }
+        if (slot.leftoverPhoto != null) onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:LEFTOVER", slot.leftoverPhoto!!)
+
+        // 2. Reset slot
+        slot.boxBarcode = null
+        slot.deviceBarcode = null
+        slot.contentPhoto = null
+        slot.conditionPhotos.clear()
+        slot.leftoverPhoto = null
+        slot.currentStep = DeviceCheckStep.SCAN_BOX
+        slot.isActive = false
+
+        _deviceCheckStatus.value = "Slot #${slot.index+1} uploaded & cleared"
+        _activeSlotPhoto.value = null
+        renderDeviceCheckGrid()
+    }
+
+    private fun renderDeviceCheckGrid() {
+        val uiItems = mutableListOf<Map<String, Any>>()
+
+        val active = deviceCheckSlots.find { it.isActive }
+        val currentStep = active?.currentStep
+
+        // Row 1: Actions (Dynamic based on step)
+        val photoLabel = if (currentStep == DeviceCheckStep.PHOTO_CONDITION) "ADD PHOTO" else "PHOTO"
+
+        // If we are in condition photo mode, we need a way to move to next step
+        if (currentStep == DeviceCheckStep.PHOTO_CONDITION) {
+            uiItems.add(mapOf("type" to "button", "label" to "FINISH\nPHOTOS", "color" to "#FF9800", "action" to "act_finish_photos_step"))
+        } else {
+            uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to "#37474F", "action" to "act_undo"))
+        }
+
+        uiItems.add(mapOf("type" to "button", "label" to photoLabel, "color" to "#9C27B0", "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+
+        // Row 2: Slots (3 slots)
+        deviceCheckSlots.forEach { slot ->
+            val color = when {
+                slot.isActive -> "#4CAF50" // Green active
+                slot.currentStep == DeviceCheckStep.COMPLETE -> "#2196F3" // Blue done
+                slot.boxBarcode != null -> "#FFEB3B" // Yellow in progress
+                else -> "#333333" // Grey empty
+            }
+
+            var label = "Empty"
+            if (slot.boxBarcode != null) {
+                label = slot.boxBarcode!!.takeLast(6)
+                if (slot.deviceBarcode != null) label += "\nMatched"
+            }
+
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to "Slot ${slot.index+1}\n$label",
+                "color" to color,
+                "action" to "check_slot_${slot.index}"
+            ))
+        }
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
+
+        // EXIT button
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
+            200
+        )
+
+        updateRenderCells()
+    }
+
+    private fun advanceFromConditionPhotos() {
+        val active = deviceCheckSlots.find { it.isActive } ?: return
+        if (active.currentStep == DeviceCheckStep.PHOTO_CONDITION) {
+            active.currentStep = DeviceCheckStep.PHOTO_LEFTOVER
+            updateDeviceCheckStatus(active)
+            renderDeviceCheckGrid()
+        }
     }
 
     // --- COMMON ---
