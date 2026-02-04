@@ -37,6 +37,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Hide gesture indicator bar — maximize usable screen area
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.hide(android.view.WindowInsets.Type.navigationBars())
+            window.insetsController?.systemBarsBehavior =
+                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
+
         setContent {
             EckwmsmovFastTheme {
                 val navController = rememberNavController()
@@ -88,11 +102,21 @@ class MainActivity : ComponentActivity() {
                                 if (success) {
                                     val bitmap = BitmapCache.getCapturedImage()
                                     if (bitmap != null) {
-                                        viewModel.setRepairPhotoBitmap(bitmap)
+                                        // Copy before clearing cache — cache may recycle the original
+                                        val copy = bitmap.copy(bitmap.config ?: android.graphics.Bitmap.Config.ARGB_8888, false)
                                         BitmapCache.clearCapturedImage()
+                                        viewModel.setRepairPhotoBitmap(copy)
                                     }
                                 }
                                 savedStateHandle.remove<Boolean>("captured_workflow_image")
+                            }
+
+                            // Handle camera barcode scan results (same path as hardware scanner)
+                            savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
+                                val barcode = data["barcode"] ?: return@let
+                                android.util.Log.d("MainMenu", "Camera barcode received: $barcode")
+                                viewModel.onCameraBarcode(barcode)
+                                savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
                             }
                         }
 

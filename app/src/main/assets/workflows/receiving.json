@@ -16,7 +16,7 @@
     {
       "id": "client_info",
       "label": "2. Client",
-      "type": "modal",
+      "type": "shipment_select",
       "dataKey": "client_details",
       "autoOpen": true,
       "colors": {
@@ -28,17 +28,12 @@
         "sections": [
           {
             "type": "section",
-            "title": "Shipment Info",
+            "title": "Manual Entry",
             "components": [
               {
                 "type": "info_row",
                 "label": "Postal Barcode",
                 "variable": "postal_barcode"
-              },
-              {
-                "type": "info_row",
-                "label": "Matched Shipment",
-                "variable": "matched_shipment"
               },
               {
                 "type": "text_input",

@@ -36,6 +36,7 @@ fun SelectionAreaSheet(
     networkState: NetworkHealthState = NetworkHealthState.Checking,
     regStatus: String = "unknown",
     onButtonClick: (String) -> Unit = {},
+    onButtonLongClick: (String) -> Unit = {},
     onNetworkIndicatorClick: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -115,6 +116,8 @@ fun SelectionAreaSheet(
                     }
                 }
 
+                val action = if (content is Map<*, *>) content["action"] as? String else null
+
                 HexagonalButton(
                     modifier = Modifier
                         .size(width = buttonWidth, height = cellHeight)
@@ -124,10 +127,10 @@ fun SelectionAreaSheet(
                     enabled = enabled,
                     side = buttonSide,
                     onClick = {
-                        if (enabled && content is Map<*, *>) {
-                            val action = content["action"] as? String
-                            if (action != null) onButtonClick(action)
-                        }
+                        if (enabled && action != null) onButtonClick(action)
+                    },
+                    onLongClick = {
+                        if (enabled && action != null) onButtonLongClick(action)
                     }
                 )
             }

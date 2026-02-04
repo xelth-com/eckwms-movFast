@@ -35,9 +35,14 @@ class GeometryRenderer(private val config: GridConfig) {
                     }
                 }
                 SlotType.HALF_LEFT, SlotType.HALF_RIGHT -> {
-                    // Half buttons are always static system buttons (ported from ecKasseAnd)
-                    metadata["isSystemButton"] = true
-                    "system" to mapOf("type" to "system", "side" to slot.slotType)
+                    if (!slot.isEmpty && slot.content != null) {
+                        // Content placed explicitly (e.g. EXIT button)
+                        metadata["priority"] = slot.priority
+                        "full" to slot.content
+                    } else {
+                        metadata["isSystemButton"] = true
+                        "system" to mapOf("type" to "system", "side" to slot.slotType)
+                    }
                 }
                 else -> "dead" to null
             }

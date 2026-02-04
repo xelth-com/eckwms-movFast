@@ -44,9 +44,17 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -129,6 +137,12 @@ fun MainScreen(
         mainViewModel.onDeleteRepairPhoto = { index ->
             com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
         }
+    }
+
+    // Wire shipment fetching callback
+    LaunchedEffect(Unit) {
+        val scanApiService = com.xelth.eckwms_movfast.api.ScanApiService(context)
+        mainViewModel.onFetchShipments = { limit -> scanApiService.getShipments(limit) }
     }
 
     // Load receiving workflow JSON
@@ -389,9 +403,160 @@ fun MainScreen(
         }
     }
 
-    // Receiving Workflow Step Modal
+    // Shipment Picker BottomSheet (swipeable list)
+    val showShipmentPicker by mainViewModel.showShipmentPicker.observeAsState(false)
+    if (showShipmentPicker) {
+        ModalBottomSheet(
+            onDismissRequest = { mainViewModel.dismissShipmentPicker() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            val shipments = remember { mainViewModel.getShipmentDisplayList() }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 20.dp)
+            ) {
+                // Header
+                Text(
+                    text = "Select Shipment  (long-press = manual)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+                HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
+
+                if (shipments.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No shipments loaded", color = Color.Gray)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(shipments) { item ->
+                            val bgColor = when {
+                                item.isMatched -> Color(0xFF1B5E20) // dark green for auto-match
+                                item.status == "delivered" || item.status == "cancelled" -> Color(0xFF212121)
+                                else -> Color(0xFF2E2E2E)
+                            }
+                            val statusIcon = when (item.status) {
+                                "delivered" -> "✅"
+                                "cancelled" -> "❌"
+                                "error" -> "⚠️"
+                                "shipped" -> "\uD83D\uDE9A"
+                                else -> "\uD83D\uDCE6"
+                            }
+
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .combinedClickable(
+                                        onClick = {
+                                            mainViewModel.selectShipment(item.id)
+                                        },
+                                        onLongClick = {
+                                            mainViewModel.openManualClientEntry()
+                                        }
+                                    ),
+                                colors = CardDefaults.cardColors(containerColor = bgColor)
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                    // Line 1: icon + tracking | product type | date
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "$statusIcon ${item.trackingNumber}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (item.productType.isNotEmpty()) {
+                                            Text(
+                                                text = item.productType,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFFFF9800),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    // Line 2: Sender (client) bold
+                                    Text(
+                                        text = item.senderName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFE0E0E0)
+                                    )
+                                    if (item.senderAddress.isNotEmpty()) {
+                                        Text(
+                                            text = item.senderAddress,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF999999)
+                                        )
+                                    }
+                                    // Line 3: Receiver
+                                    if (item.receiverName.isNotEmpty()) {
+                                        Text(
+                                            text = "\u2192 ${item.receiverName}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF80CBC4)
+                                        )
+                                        if (item.receiverAddress.isNotEmpty()) {
+                                            Text(
+                                                text = "  ${item.receiverAddress}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF777777)
+                                            )
+                                        }
+                                    }
+                                    // Line 4: status | received by | date | MATCH
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        val infoLeft = buildString {
+                                            append(item.status)
+                                            if (item.receivedBy.isNotEmpty()) append(" | ${item.receivedBy}")
+                                        }
+                                        Text(
+                                            text = infoLeft,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.Gray
+                                        )
+                                        Row {
+                                            if (item.isMatched) {
+                                                Text(
+                                                    text = "MATCH ",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color(0xFF4CAF50),
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Text(
+                                                text = item.date,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFFAAAAAA)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Receiving Workflow Step Modal (manual entry or device info)
     if (receivingModalJson != null) {
-        // Seed once when modal opens
         LaunchedEffect(Unit) {
             mainViewModel.receivingData.forEach { (k, v) ->
                 if (v is String) receivingModalFormState.putIfAbsent(k, v)

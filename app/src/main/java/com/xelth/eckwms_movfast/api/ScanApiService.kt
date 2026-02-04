@@ -553,6 +553,15 @@ class ScanApiService(private val context: Context) {
 
         Log.d(TAG, "uploadImage FIRST_ATTEMPT result: ${result::class.simpleName}, imageId: $imageId")
 
+        // 1.1 Auto-retry on 401 (token expired)
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            Log.w(TAG, "🔑 uploadImage 401 - attempting silent re-auth...")
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+            }
+        }
+
         // 2. If failed AND Active != Global, try Global immediately with SAME imageId
         if (result is ScanResult.Error && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global. ImageID: $imageId")
@@ -783,7 +792,26 @@ class ScanApiService(private val context: Context) {
                     )
                 }
                 HttpURLConnection.HTTP_UNAUTHORIZED -> {
-                    Log.w(TAG, "Device status check: 401 Unauthorized - need authentication")
+                    Log.w(TAG, "Device status check: 401 - attempting silent re-auth...")
+                    val newToken = performSilentAuth()
+                    if (newToken != null) {
+                        // Retry with new token
+                        connection.disconnect()
+                        val retryUrl = URL("${serverUrl.removeSuffix("/")}/api/status")
+                        val retryConn = retryUrl.openConnection() as HttpURLConnection
+                        retryConn.requestMethod = "GET"
+                        retryConn.setRequestProperty("Accept", "application/json")
+                        retryConn.setRequestProperty("Authorization", "Bearer $newToken")
+                        retryConn.connectTimeout = 5000
+                        retryConn.readTimeout = 5000
+                        val retryCode = retryConn.responseCode
+                        if (retryCode == HttpURLConnection.HTTP_OK) {
+                            val response = retryConn.inputStream.bufferedReader().use { it.readText() }
+                            Log.i(TAG, "✅ Device status check OK after re-auth")
+                            return@withContext ScanResult.Success(type = "device_status", message = "Server is running", data = response)
+                        }
+                        retryConn.disconnect()
+                    }
                     return@withContext ScanResult.Error("Authentication required")
                 }
                 HttpURLConnection.HTTP_FORBIDDEN -> {
@@ -967,6 +995,67 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error sending AI response: ${e.message}", e)
             ScanResult.Error(e.message ?: "Unknown error sending AI response")
+        }
+    }
+
+    /**
+     * Fetches recent shipments from the server for receiving workflow
+     * Implements Immediate Failover: Local -> Global
+     */
+    suspend fun getShipments(limit: Int = 100): ScanResult = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalGetShipments(activeUrl, limit)
+
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ getShipments failed on $activeUrl. Failover to Global.")
+            result = internalGetShipments(globalUrl, limit)
+        }
+
+        return@withContext result
+    }
+
+    private suspend fun internalGetShipments(baseUrl: String, limit: Int): ScanResult {
+        try {
+            val url = URL("$baseUrl/api/delivery/shipments?limit=$limit")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                Log.d(TAG, "Fetched shipments: ${response.take(200)}...")
+                return ScanResult.Success("shipments", "Fetched shipments", response)
+            } else if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    connection.disconnect()
+                    val retryUrl = URL("$baseUrl/api/delivery/shipments?limit=$limit")
+                    val retry = retryUrl.openConnection() as HttpURLConnection
+                    retry.requestMethod = "GET"
+                    retry.setRequestProperty("Accept", "application/json")
+                    retry.setRequestProperty("Authorization", "Bearer $newToken")
+                    retry.connectTimeout = 5000
+                    retry.readTimeout = 10000
+                    val retryCode = retry.responseCode
+                    if (retryCode == HttpURLConnection.HTTP_OK) {
+                        val response = retry.inputStream.bufferedReader().use { it.readText() }
+                        return ScanResult.Success("shipments", "Fetched shipments", response)
+                    }
+                    retry.disconnect()
+                }
+                return ScanResult.Error("401 Unauthorized")
+            } else {
+                return ScanResult.Error("HTTP $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching shipments from $baseUrl", e)
+            return ScanResult.Error(e.message ?: "Unknown error")
         }
     }
 
@@ -1163,9 +1252,28 @@ class ScanApiService(private val context: Context) {
 
         var result = internalSendRepairEvent(activeUrl, targetDeviceId, eventType, data)
 
+        // Auto-retry on 401 (token expired)
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            Log.w(TAG, "🔑 Repair event 401 - attempting silent re-auth...")
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                Log.i(TAG, "🔄 Token refreshed, retrying repair event...")
+                result = internalSendRepairEvent(activeUrl, targetDeviceId, eventType, data)
+            }
+        }
+
+        // Failover to Global
         if (result is ScanResult.Error && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Repair event to $activeUrl failed. Failover to Global.")
             result = internalSendRepairEvent(globalUrl, targetDeviceId, eventType, data)
+
+            // Auto-retry on 401 for Global too
+            if (result is ScanResult.Error && result.message.contains("401")) {
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    result = internalSendRepairEvent(globalUrl, targetDeviceId, eventType, data)
+                }
+            }
         }
 
         return@withContext result

@@ -1,7 +1,8 @@
 package com.xelth.eckwms_movfast.ui.screens.pos.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
@@ -17,6 +18,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HexagonalButton(
     modifier: Modifier = Modifier,
@@ -24,7 +26,8 @@ fun HexagonalButton(
     colorHex: String,
     enabled: Boolean = true,
     side: HexagonSide = HexagonSide.FULL,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     val backgroundColor = try {
         Color(android.graphics.Color.parseColor(colorHex))
@@ -37,7 +40,11 @@ fun HexagonalButton(
             .clip(HexagonShape(side))
             .alpha(if (enabled) 1f else 0.6f)
             .background(backgroundColor)
-            .clickable(enabled = enabled, onClick = onClick),
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (enabled) {

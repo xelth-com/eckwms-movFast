@@ -1,8 +1,11 @@
 package com.xelth.eckwms_movfast.ui.dynamic
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -332,6 +335,85 @@ fun RenderComponent(
                             selectedLabelColor = Color.White
                         )
                     )
+                }
+            }
+        }
+
+        "dropdown_select" -> {
+            val key = json.optString("key")
+            val label = json.optString("label")
+            val currentVal = stateValues[key]?.toString() ?: ""
+            val optionsJson = json.optJSONArray("options")
+
+            val options = remember(optionsJson?.toString()) {
+                val list = mutableListOf<Pair<String, String>>()
+                if (optionsJson != null) {
+                    for (i in 0 until optionsJson.length()) {
+                        val item = optionsJson.optJSONObject(i)
+                        if (item != null) {
+                            list.add(item.optString("label") to item.optString("value"))
+                        } else {
+                            val str = optionsJson.optString(i)
+                            list.add(str to str)
+                        }
+                    }
+                }
+                list
+            }
+
+            var expanded by remember { mutableStateOf(false) }
+            val displayLabel = options.find { it.second == currentVal }?.first ?: "Select..."
+
+            Column {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { expanded = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, Color.Gray)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = displayLabel,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier.fillMaxWidth(0.9f).heightIn(max = 300.dp)
+                    ) {
+                        options.forEach { (optLabel, optValue) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = optLabel,
+                                        fontWeight = if (optValue == currentVal) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                onClick = {
+                                    onValueChange(key, optValue)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }

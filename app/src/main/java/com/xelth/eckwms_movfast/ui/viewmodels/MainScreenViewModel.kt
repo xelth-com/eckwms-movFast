@@ -6,6 +6,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.GridConfig
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.GridManager
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.PRIORITIES
@@ -23,6 +24,8 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.floor
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class MainMenuButton(
     val id: String,
@@ -117,6 +120,8 @@ class MainScreenViewModel : ViewModel() {
     var onSaveRepairPhoto: ((Int, Bitmap) -> Unit)? = null
     var onLoadRepairPhoto: ((Int) -> Bitmap?)? = null
     var onDeleteRepairPhoto: ((Int) -> Unit)? = null
+    // Callback for fetching shipments (set by UI layer, backed by ScanApiService)
+    var onFetchShipments: (suspend (limit: Int) -> ScanResult)? = null
 
     private val _isRepairMode = MutableLiveData<Boolean>(false)
     val isRepairMode: LiveData<Boolean> = _isRepairMode
@@ -157,11 +162,24 @@ class MainScreenViewModel : ViewModel() {
 
     fun dismissReceivingModal() { _showReceivingModal.value = null }
 
+    // Shipment picker trigger — true when the shipment list should be shown
+    private val _showShipmentPicker = MutableLiveData<Boolean>(false)
+    val showShipmentPicker: LiveData<Boolean> = _showShipmentPicker
+
+    fun dismissShipmentPicker() { _showShipmentPicker.value = false }
+
     // Camera navigation for receiving — holds scan_mode string, null when not navigating
     private val _receivingCameraNav = MutableLiveData<String?>(null)
     val receivingCameraNav: LiveData<String?> = _receivingCameraNav
 
     fun consumeReceivingCameraNav() { _receivingCameraNav.value = null }
+
+    // Cached shipments for receiving dropdown
+    private var cachedShipments: List<Map<String, Any>> = emptyList()
+
+    // Signals that shipment data has been loaded (triggers UI recomposition)
+    private val _shipmentsLoaded = MutableLiveData<Boolean>(false)
+    val shipmentsLoaded: LiveData<Boolean> = _shipmentsLoaded
 
     init {
         Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
@@ -675,7 +693,240 @@ class MainScreenViewModel : ViewModel() {
         _receivingStatus.value = if (receivingSteps.isNotEmpty())
             "Step 1: ${receivingSteps[0]["label"]}" else "No steps loaded"
         addLog("Entered Receiving Mode")
+        fetchAndCacheShipments()
         renderReceivingGrid()
+    }
+
+    private fun fetchAndCacheShipments() {
+        viewModelScope.launch {
+            addLog("Fetching recent shipments...")
+            val fetchFn = onFetchShipments
+            if (fetchFn == null) {
+                addLog("No shipment fetcher configured")
+                return@launch
+            }
+            val result = fetchFn(100)
+            if (result is ScanResult.Success) {
+                try {
+                    val jsonArray = JSONArray(result.data)
+                    val list = mutableListOf<Map<String, Any>>()
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val map = mutableMapOf<String, Any>()
+                        val iter = obj.keys()
+                        while (iter.hasNext()) {
+                            val key = iter.next()
+                            map[key] = obj.get(key)
+                        }
+                        list.add(map)
+                    }
+
+                    // Server already returns smart-sorted (active first, then delivered)
+                    // Just use the order as-is
+                    cachedShipments = list
+
+                    addLog("Loaded ${cachedShipments.size} shipments")
+                    _shipmentsLoaded.postValue(true)
+                } catch (e: Exception) {
+                    addLog("Error parsing shipments: ${e.message}")
+                }
+            } else if (result is ScanResult.Error) {
+                addLog("Failed to fetch shipments: ${result.message}")
+            }
+        }
+    }
+
+    private fun tryAutoMatchShipment(barcode: String) {
+        val match = cachedShipments.find {
+            (it["trackingNumber"] as? String) == barcode
+        }
+
+        if (match != null) {
+            addLog("Auto-matched shipment ID: ${match["id"]}")
+            populateClientData(match)
+        } else {
+            addLog("No direct match for $barcode in ${cachedShipments.size} shipments")
+        }
+    }
+
+    private fun populateClientData(shipment: Map<String, Any>) {
+        val rawResponseStr = shipment["rawResponse"] as? String
+        var clientName = ""
+        var clientAddress = ""
+
+        if (rawResponseStr != null) {
+            try {
+                val raw = JSONObject(rawResponseStr)
+                // Client = sender (pickup)
+                clientName = raw.optString("pickup_name", "")
+                val name2 = raw.optString("pickup_name2", "")
+                if (name2.isNotEmpty() && name2 != clientName) clientName = "$clientName $name2".trim()
+                if (clientName.isEmpty()) {
+                    // Fallback to delivery/recipient for DHL
+                    clientName = raw.optString("delivery_name", raw.optString("recipient_name", ""))
+                }
+                val street = raw.optString("pickup_street", "")
+                val zip = raw.optString("pickup_zip", "")
+                val city = raw.optString("pickup_city", "")
+                clientAddress = listOf(street, "$zip $city".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+            } catch (_: Exception) {}
+        }
+
+        val shipmentId = (shipment["id"] as? Number)?.toString() ?: shipment["id"]?.toString() ?: ""
+        receivingData["selected_shipment_id"] = shipmentId
+        if (clientName.isNotEmpty()) receivingData["client_name"] = clientName
+        if (clientAddress.isNotEmpty()) receivingData["client_address"] = clientAddress
+    }
+
+    fun getShipmentOptions(): String {
+        val options = JSONArray()
+        // Manual entry option
+        val manualOpt = JSONObject()
+        manualOpt.put("label", "-- Manual Entry --")
+        manualOpt.put("value", "")
+        options.put(manualOpt)
+
+        cachedShipments.forEach { s ->
+            val id = (s["id"] as? Number)?.toString() ?: s["id"]?.toString() ?: ""
+            val track = s["trackingNumber"] as? String ?: "?"
+            val status = s["status"] as? String ?: "?"
+
+            var client = ""
+            val rawStr = s["rawResponse"] as? String
+            if (rawStr != null) {
+                try {
+                    val raw = JSONObject(rawStr)
+                    client = raw.optString("delivery_name", "")
+                    if (client.isEmpty()) client = raw.optString("recipient_name", "")
+                } catch (_: Exception) {}
+            }
+            if (client.isEmpty()) client = "Unknown"
+
+            val statusIcon = when (status) {
+                "delivered" -> "V"
+                "cancelled" -> "X"
+                "error" -> "!"
+                else -> "#"
+            }
+            val label = "[$statusIcon] $track - $client"
+
+            val opt = JSONObject()
+            opt.put("label", label)
+            opt.put("value", id)
+            options.put(opt)
+        }
+        return options.toString()
+    }
+
+    /**
+     * Called when user taps a shipment in the picker list.
+     * Auto-fills client data and advances to next step.
+     */
+    fun selectShipment(shipmentId: String) {
+        val shipment = cachedShipments.find {
+            (it["id"] as? Number)?.toString() == shipmentId || it["id"]?.toString() == shipmentId
+        }
+        if (shipment != null) {
+            populateClientData(shipment)
+            val track = shipment["trackingNumber"] as? String ?: "?"
+            addLog("Selected shipment: $track")
+            _receivingStatus.value = "✓ Shipment: $track"
+        }
+        _showShipmentPicker.value = false
+        advanceToNextStep()
+    }
+
+    /**
+     * Called on long-press in the shipment picker → open manual entry form.
+     */
+    fun openManualClientEntry() {
+        _showShipmentPicker.value = false
+        // Find the current step's uiSchema for manual entry
+        if (currentStepIndex in receivingSteps.indices) {
+            val step = receivingSteps[currentStepIndex]
+            val uiSchema = step["uiSchema"] as? String
+            if (uiSchema != null) {
+                _showReceivingModal.value = uiSchema
+            }
+        }
+    }
+
+    data class ShipmentDisplayItem(
+        val id: String,
+        val trackingNumber: String,
+        val senderName: String,       // pickup = client (отправитель)
+        val senderAddress: String,
+        val receiverName: String,     // delivery = получатель
+        val receiverAddress: String,
+        val productType: String,      // Overnight, X-Change, DHL Paket...
+        val receivedBy: String,       // кто принял (receiver field)
+        val status: String,
+        val date: String,
+        val isMatched: Boolean = false
+    )
+
+    fun getShipmentDisplayList(): List<ShipmentDisplayItem> {
+        val scannedBarcode = receivingData["postal_barcode"] as? String
+        return cachedShipments.map { s ->
+            val id = (s["id"] as? Number)?.toString() ?: s["id"]?.toString() ?: ""
+            val track = s["trackingNumber"] as? String ?: "?"
+            val status = s["status"] as? String ?: "?"
+
+            var senderName = ""
+            var senderAddr = ""
+            var receiverName = ""
+            var receiverAddr = ""
+            var productType = ""
+            var receivedBy = ""
+
+            val rawStr = s["rawResponse"] as? String
+            if (rawStr != null) {
+                try {
+                    val raw = JSONObject(rawStr)
+                    // Sender (pickup = client)
+                    senderName = raw.optString("pickup_name", "")
+                    val sName2 = raw.optString("pickup_name2", "")
+                    if (sName2.isNotEmpty() && sName2 != senderName) senderName = "$senderName $sName2".trim()
+                    val pStreet = raw.optString("pickup_street", "")
+                    val pZip = raw.optString("pickup_zip", "")
+                    val pCity = raw.optString("pickup_city", "")
+                    senderAddr = listOf(pStreet, "$pZip $pCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+                    // Receiver (delivery)
+                    receiverName = raw.optString("delivery_name", "")
+                    if (receiverName.isEmpty()) receiverName = raw.optString("recipient_name", "")
+                    val dStreet = raw.optString("delivery_street", raw.optString("recipient_street", ""))
+                    val dZip = raw.optString("delivery_zip", raw.optString("recipient_zip", ""))
+                    val dCity = raw.optString("delivery_city", raw.optString("recipient_city", ""))
+                    receiverAddr = listOf(dStreet, "$dZip $dCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+                    // Product type: OPAL=product_type, DHL=product
+                    productType = raw.optString("product_type", "")
+                    if (productType.isEmpty()) productType = raw.optString("product", "")
+
+                    // Who received it
+                    receivedBy = raw.optString("receiver", "")
+                    if (receivedBy.isEmpty()) receivedBy = raw.optString("delivered_to_name", "")
+                } catch (_: Exception) {}
+            }
+            if (senderName.isEmpty()) senderName = "Unknown"
+
+            // Date from lastActivityAt or createdAt
+            var dateStr = ""
+            val dateRaw = s["lastActivityAt"] as? String
+                ?: s["createdAt"] as? String ?: ""
+            if (dateRaw.length >= 10) {
+                try {
+                    dateStr = dateRaw.substring(8, 10) + "." + dateRaw.substring(5, 7) + "." + dateRaw.substring(2, 4)
+                } catch (_: Exception) {
+                    dateStr = dateRaw.take(10)
+                }
+            }
+
+            val isMatched = scannedBarcode != null && track == scannedBarcode
+
+            ShipmentDisplayItem(id, track, senderName, senderAddr, receiverName, receiverAddr, productType, receivedBy, status, dateStr, isMatched)
+        }
     }
 
     fun exitReceivingMode() {
@@ -735,6 +986,10 @@ class MainScreenViewModel : ViewModel() {
                 _receivingStatus.value = "${step["label"]}"
                 _showReceivingModal.value = uiSchema
             }
+            "shipment_select" -> {
+                _receivingStatus.value = "Select shipment or long-press for manual"
+                _showShipmentPicker.value = true
+            }
         }
     }
 
@@ -748,6 +1003,12 @@ class MainScreenViewModel : ViewModel() {
         receivingData[dataKey] = barcode
         _receivingStatus.value = "✓ $dataKey: $barcode"
         addLog("✓ $dataKey = $barcode")
+
+        // If postal barcode just scanned, try to auto-match a shipment
+        if (dataKey == "postal_barcode") {
+            tryAutoMatchShipment(barcode)
+        }
+
         advanceToNextStep()
     }
 
@@ -781,13 +1042,20 @@ class MainScreenViewModel : ViewModel() {
             val next = receivingSteps[currentStepIndex]
             _receivingStatus.value = "Step ${currentStepIndex + 1}: ${next["label"]}"
 
-            // Auto-open modal steps after a short delay (e.g. after scan → show client form)
-            if (next["autoOpen"] == true && next["type"] == "modal") {
+            // Auto-open steps after a short delay (e.g. after scan → show list/form)
+            if (next["autoOpen"] == true) {
                 viewModelScope.launch {
                     delay(500) // Let camera screen finish closing
-                    val uiSchema = next["uiSchema"] as? String
-                    if (uiSchema != null) {
-                        _showReceivingModal.postValue(uiSchema)
+                    when (next["type"]) {
+                        "modal" -> {
+                            val uiSchema = next["uiSchema"] as? String
+                            if (uiSchema != null) {
+                                _showReceivingModal.postValue(uiSchema)
+                            }
+                        }
+                        "shipment_select" -> {
+                            _showShipmentPicker.postValue(true)
+                        }
                     }
                 }
             }
@@ -797,6 +1065,20 @@ class MainScreenViewModel : ViewModel() {
 
     fun setReceivingDataValue(key: String, value: Any) {
         receivingData[key] = value
+
+        // If user selected a shipment from dropdown, populate client fields
+        if (key == "selected_shipment_id") {
+            val id = value.toString()
+            if (id.isNotEmpty()) {
+                val shipment = cachedShipments.find {
+                    (it["id"] as? Number)?.toString() == id || it["id"]?.toString() == id
+                }
+                if (shipment != null) {
+                    populateClientData(shipment)
+                    addLog("Shipment selected: $id")
+                }
+            }
+        }
     }
 
     private fun saveReceivingWorkflow() {
