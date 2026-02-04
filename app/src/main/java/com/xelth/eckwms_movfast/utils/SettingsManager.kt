@@ -199,6 +199,27 @@ object SettingsManager {
         prefs.edit().remove(KEY_REPAIR_SLOTS).commit()
     }
 
+    // --- Device Check Slot Persistence ---
+    private const val KEY_DEVICE_CHECK_SLOTS = "device_check_slots"
+
+    fun saveDeviceCheckSlots(slots: List<Pair<Int, String>>) {
+        val encoded = slots.joinToString(";") { "${it.first}:${it.second}" }
+        prefs.edit().putString(KEY_DEVICE_CHECK_SLOTS, encoded).commit()
+    }
+
+    fun loadDeviceCheckSlots(): List<Pair<Int, String>> {
+        val raw = prefs.getString(KEY_DEVICE_CHECK_SLOTS, "") ?: ""
+        if (raw.isEmpty()) return emptyList()
+        return raw.split(";").mapNotNull { entry ->
+            val parts = entry.split(":", limit = 2)
+            if (parts.size == 2) {
+                val index = parts[0].toIntOrNull()
+                val barcode = parts[1]
+                if (index != null && barcode.isNotEmpty()) Pair(index, barcode) else null
+            } else null
+        }
+    }
+
     // --- Repair Slot Photo Persistence ---
 
     private fun repairPhotoDir(): File {

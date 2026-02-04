@@ -37,24 +37,36 @@ data class MainMenuButton(
 
 // --- Device Check Mode Data Models ---
 
-enum class DeviceCheckStep {
-    SCAN_BOX,
-    PHOTO_CONTENT,
-    SCAN_DEVICE,
-    PHOTO_CONDITION,
-    PHOTO_LEFTOVER,
-    COMPLETE
+enum class DcStepId {
+    CONTENT_PHOTO,    // required, photo
+    SCAN_DEVICE,      // required, scan (validates barcode match)
+    IMPEDANCE_PHOTO,  // OPTIONAL, photo, saved separately for analysis
+    CONDITION_PHOTO,  // required, photo
+    LEFTOVER_PHOTO    // required, photo
 }
+
+data class DcStepDef(
+    val id: DcStepId,
+    val label: String,
+    val type: String,        // "photo" or "scan"
+    val required: Boolean,
+    val color: String        // color when targeted/active
+)
+
+val DC_STEPS = listOf(
+    DcStepDef(DcStepId.CONTENT_PHOTO,   "Content",   "photo", required = true,  color = "#9C27B0"),
+    DcStepDef(DcStepId.SCAN_DEVICE,     "Scan Dev",  "scan",  required = true,  color = "#00BCD4"),
+    DcStepDef(DcStepId.IMPEDANCE_PHOTO, "Impedance", "photo", required = false, color = "#FF9800"),
+    DcStepDef(DcStepId.CONDITION_PHOTO, "Condition",  "photo", required = true,  color = "#2196F3"),
+    DcStepDef(DcStepId.LEFTOVER_PHOTO,  "Leftover",   "photo", required = true,  color = "#4CAF50")
+)
 
 data class DeviceCheckSlot(
     val index: Int,
     var boxBarcode: String? = null,
     var deviceBarcode: String? = null,
-    var contentPhoto: Bitmap? = null,
-    var conditionPhotos: MutableList<Bitmap> = mutableListOf(),
-    var leftoverPhoto: Bitmap? = null,
-    var currentStep: DeviceCheckStep = DeviceCheckStep.SCAN_BOX,
-    var isActive: Boolean = false
+    var isActive: Boolean = false,
+    val stepData: MutableMap<DcStepId, Any> = mutableMapOf()
 )
 
 // --- Repair Mode Data Models ---
@@ -217,6 +229,12 @@ class MainScreenViewModel : ViewModel() {
 
     // 3 Slots for parallel processing
     private val deviceCheckSlots = MutableList(3) { i -> DeviceCheckSlot(i) }
+    private var targetedStep: DcStepId? = null
+    private var slotWaitingForInit: Int? = null  // slot waiting for box barcode scan
+
+    // Persistence callbacks (set by UI layer)
+    var onSaveDeviceCheckSlots: ((List<Pair<Int, String>>) -> Unit)? = null
+    var onLoadDeviceCheckSlots: (() -> List<Pair<Int, String>>)? = null
 
     init {
         Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
@@ -1246,17 +1264,54 @@ class MainScreenViewModel : ViewModel() {
 
     fun enterDeviceCheckMode() {
         _isDeviceCheckMode.value = true
-        _deviceCheckStatus.value = "Select a slot to start"
-        addLog("Entered Device Check Mode")
+        targetedStep = null
+        slotWaitingForInit = null
+        // Restore saved slot bindings
+        val saved = onLoadDeviceCheckSlots?.invoke() ?: emptyList()
+        val savedMap = saved.toMap()
+        deviceCheckSlots.forEach { slot ->
+            val savedBarcode = savedMap[slot.index]
+            if (savedBarcode != null && slot.boxBarcode == null) {
+                slot.boxBarcode = savedBarcode
+            }
+            slot.isActive = false
+        }
+        val boundCount = deviceCheckSlots.count { it.boxBarcode != null }
+        _deviceCheckStatus.value = if (boundCount > 0) "Restored $boundCount slots" else "Select a slot to start"
+        addLog("Entered Device Check Mode ($boundCount saved)")
         renderDeviceCheckGrid()
     }
 
     fun exitDeviceCheckMode() {
         _isDeviceCheckMode.value = false
-        deviceCheckSlots.forEach {
-            it.isActive = false
-        }
+        targetedStep = null
+        slotWaitingForInit = null
+        deviceCheckSlots.forEach { it.isActive = false }
         initializeGrid()
+    }
+
+    /**
+     * Cross-mode auto-enter: check if barcode matches a device check slot.
+     * If match, exit current mode, enter device check, activate slot.
+     * Returns true if handled.
+     */
+    fun checkDeviceCheckAutoEnter(barcode: String): Boolean {
+        val matchSlot = deviceCheckSlots.find { it.boxBarcode == barcode }
+        if (matchSlot == null) return false
+
+        // Exit whatever mode we're in
+        if (_isRepairMode.value == true) exitRepairMode()
+        if (_isReceivingMode.value == true) exitReceivingMode()
+        if (_isDeviceCheckMode.value != true) {
+            _isDeviceCheckMode.value = true
+            targetedStep = null
+            slotWaitingForInit = null
+        }
+
+        activateDeviceCheckSlot(matchSlot.index)
+        _deviceCheckStatus.value = "AUTO: ${barcode.takeLast(10)}"
+        addLog("Auto-enter device check: slot #${matchSlot.index+1}")
+        return true
     }
 
     private fun handleDeviceCheckButtonClick(action: String): String {
@@ -1267,15 +1322,41 @@ class MainScreenViewModel : ViewModel() {
             }
             action == "act_photo" -> return "capture_photo"
             action == "act_scan" -> return "capture_barcode"
-            action == "act_finish_photos_step" -> {
-                advanceFromConditionPhotos()
+            action == "act_upload_check" -> {
+                val active = deviceCheckSlots.find { it.isActive }
+                if (active != null) uploadDeviceCheck(active)
                 return "handled"
             }
             action.startsWith("check_slot_") -> {
                 val index = action.removePrefix("check_slot_").toIntOrNull()
                 if (index != null && index in deviceCheckSlots.indices) {
-                    activateDeviceCheckSlot(index)
+                    val slot = deviceCheckSlots[index]
+                    if (slot.boxBarcode == null) {
+                        // Empty slot — activate and wait for barcode init
+                        deviceCheckSlots.forEach { it.isActive = false }
+                        slot.isActive = true
+                        slotWaitingForInit = index
+                        targetedStep = null
+                        _deviceCheckStatus.value = "Slot #${index+1}: Scan BOX barcode"
+                        _activeSlotPhoto.value = null
+                    } else {
+                        // Initialized slot — activate and show steps
+                        activateDeviceCheckSlot(index)
+                    }
+                    renderDeviceCheckGrid()
                 }
+                return "handled"
+            }
+            action.startsWith("dc_step_") -> {
+                val stepName = action.removePrefix("dc_step_")
+                try {
+                    val stepId = DcStepId.valueOf(stepName)
+                    targetedStep = stepId
+                    val stepDef = DC_STEPS.first { it.id == stepId }
+                    val instruction = if (stepDef.type == "photo") "take PHOTO" else "SCAN barcode"
+                    _deviceCheckStatus.value = "Target: ${stepDef.label} — $instruction"
+                    renderDeviceCheckGrid()
+                } catch (_: Exception) {}
                 return "handled"
             }
         }
@@ -1285,169 +1366,232 @@ class MainScreenViewModel : ViewModel() {
     private fun activateDeviceCheckSlot(index: Int) {
         deviceCheckSlots.forEach { it.isActive = false }
         deviceCheckSlots[index].isActive = true
-        updateDeviceCheckStatus(deviceCheckSlots[index])
+        slotWaitingForInit = null
+        targetedStep = null
 
-        // Use the photo of the slot as the background if available
-        val photo = deviceCheckSlots[index].contentPhoto ?: deviceCheckSlots[index].conditionPhotos.firstOrNull()
+        val slot = deviceCheckSlots[index]
+        // Background photo: first available from stepData
+        val photo = slot.stepData[DcStepId.CONTENT_PHOTO] as? Bitmap
+            ?: slot.stepData[DcStepId.CONDITION_PHOTO] as? Bitmap
         _activeSlotPhoto.value = photo
+
+        val doneCount = slot.stepData.size
+        val requiredDone = DC_STEPS.filter { it.required }.count { slot.stepData.containsKey(it.id) }
+        val totalRequired = DC_STEPS.count { it.required }
+        _deviceCheckStatus.value = "Slot #${index+1}: ${slot.boxBarcode?.takeLast(8)} ($requiredDone/$totalRequired)"
 
         renderDeviceCheckGrid()
     }
 
-    private fun updateDeviceCheckStatus(slot: DeviceCheckSlot) {
-        val msg = when(slot.currentStep) {
-            DeviceCheckStep.SCAN_BOX -> "Slot #${slot.index+1}: Scan BOX Barcode"
-            DeviceCheckStep.PHOTO_CONTENT -> "Slot #${slot.index+1}: Take photo of CONTENT"
-            DeviceCheckStep.SCAN_DEVICE -> "Slot #${slot.index+1}: Scan DEVICE Barcode"
-            DeviceCheckStep.PHOTO_CONDITION -> "Slot #${slot.index+1}: Take CONDITION photos (${slot.conditionPhotos.size})"
-            DeviceCheckStep.PHOTO_LEFTOVER -> "Slot #${slot.index+1}: Take LEFTOVER photo"
-            DeviceCheckStep.COMPLETE -> "Slot #${slot.index+1}: Ready to Upload"
-        }
-        _deviceCheckStatus.value = msg
-    }
-
     fun onDeviceCheckScan(barcode: String) {
+        // 1. Auto-switch: if barcode matches another slot, activate it
+        val matchSlot = deviceCheckSlots.find { it.boxBarcode == barcode }
+        if (matchSlot != null) {
+            activateDeviceCheckSlot(matchSlot.index)
+            _deviceCheckStatus.value = "Switched: ${barcode.takeLast(10)}"
+            return
+        }
+
+        // 2. Slot init: active slot waiting for box barcode
+        if (slotWaitingForInit != null) {
+            val slot = deviceCheckSlots[slotWaitingForInit!!]
+            slot.boxBarcode = barcode
+            slotWaitingForInit = null
+            persistDeviceCheckSlots()
+            activateDeviceCheckSlot(slot.index)
+            _deviceCheckStatus.value = "Slot #${slot.index+1} initialized: ${barcode.takeLast(8)}"
+            addLog("DC Slot #${slot.index+1} init: $barcode")
+            return
+        }
+
+        // 3. Active slot — route to targeted step or smart default
         val active = deviceCheckSlots.find { it.isActive }
-        if (active == null) {
+        if (active == null || active.boxBarcode == null) {
             _deviceCheckStatus.value = "Select a slot first!"
             return
         }
 
-        when (active.currentStep) {
-            DeviceCheckStep.SCAN_BOX -> {
-                active.boxBarcode = barcode
-                active.currentStep = DeviceCheckStep.PHOTO_CONTENT
-                addLog("Slot #${active.index+1}: Box scanned: $barcode")
-            }
-            DeviceCheckStep.SCAN_DEVICE -> {
-                if (barcode == active.boxBarcode) {
-                    active.deviceBarcode = barcode
-                    active.currentStep = DeviceCheckStep.PHOTO_CONDITION
-                    addLog("Slot #${active.index+1}: Device MATCHED!")
-                } else {
-                    addLog("Slot #${active.index+1}: MISMATCH! Box: ${active.boxBarcode}, Dev: $barcode")
-                    _deviceCheckStatus.value = "MISMATCH! Expecting: ${active.boxBarcode}"
-                    return // Do not advance
-                }
-            }
-            else -> {
-                addLog("Scan ignored in state ${active.currentStep}")
-            }
+        val step = targetedStep ?: run {
+            // Smart default: if SCAN_DEVICE not done, target it
+            if (!active.stepData.containsKey(DcStepId.SCAN_DEVICE)) DcStepId.SCAN_DEVICE
+            else { _deviceCheckStatus.value = "Tap a step first"; return }
         }
-        updateDeviceCheckStatus(active)
+
+        if (step != DcStepId.SCAN_DEVICE) {
+            _deviceCheckStatus.value = "Scan only for Scan Dev step"
+            return
+        }
+
+        // Validate barcode match
+        if (barcode == active.boxBarcode) {
+            active.deviceBarcode = barcode
+            active.stepData[DcStepId.SCAN_DEVICE] = barcode
+            targetedStep = null
+            addLog("DC Slot #${active.index+1}: Device MATCHED!")
+            _deviceCheckStatus.value = "Slot #${active.index+1}: Device MATCHED!"
+        } else {
+            addLog("DC Slot #${active.index+1}: MISMATCH! Box=${active.boxBarcode}, Dev=$barcode")
+            _deviceCheckStatus.value = "MISMATCH! Expecting: ${active.boxBarcode}"
+        }
         renderDeviceCheckGrid()
     }
 
     fun onDeviceCheckPhotoCaptured(bitmap: Bitmap) {
         val active = deviceCheckSlots.find { it.isActive }
-        if (active == null) return
+        if (active == null || active.boxBarcode == null) return
 
         val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
 
-        when (active.currentStep) {
-            DeviceCheckStep.PHOTO_CONTENT -> {
-                active.contentPhoto = copy
-                active.currentStep = DeviceCheckStep.SCAN_DEVICE
-                _activeSlotPhoto.value = copy // Show as background
-                addLog("Slot #${active.index+1}: Content photo taken")
-            }
-            DeviceCheckStep.PHOTO_CONDITION -> {
-                active.conditionPhotos.add(copy)
-                _activeSlotPhoto.value = copy
-                addLog("Slot #${active.index+1}: Condition photo #${active.conditionPhotos.size}")
-            }
-            DeviceCheckStep.PHOTO_LEFTOVER -> {
-                active.leftoverPhoto = copy
-                active.currentStep = DeviceCheckStep.COMPLETE
-                finishDeviceCheckSlot(active)
-                return
-            }
-            else -> {}
+        // Determine target step
+        val step = targetedStep ?: run {
+            // Smart default: first incomplete required photo step
+            DC_STEPS.firstOrNull { it.type == "photo" && it.required && !active.stepData.containsKey(it.id) }?.id
+                ?: DC_STEPS.firstOrNull { it.type == "photo" && !active.stepData.containsKey(it.id) }?.id
+                ?: run { _deviceCheckStatus.value = "All photos taken!"; return }
         }
-        updateDeviceCheckStatus(active)
+
+        val stepDef = DC_STEPS.firstOrNull { it.id == step }
+        if (stepDef == null || stepDef.type != "photo") {
+            _deviceCheckStatus.value = "Selected step needs SCAN, not photo"
+            return
+        }
+
+        active.stepData[step] = copy
+        _activeSlotPhoto.value = copy
+        targetedStep = null
+        addLog("DC Slot #${active.index+1}: ${stepDef.label} photo taken")
+
+        val requiredDone = DC_STEPS.filter { it.required }.count { active.stepData.containsKey(it.id) }
+        val totalRequired = DC_STEPS.count { it.required }
+        _deviceCheckStatus.value = "Slot #${active.index+1}: ${stepDef.label} OK ($requiredDone/$totalRequired)"
+
+        if (isSlotReadyForUpload(active)) {
+            _deviceCheckStatus.value = "Slot #${active.index+1}: Ready to UPLOAD!"
+        }
         renderDeviceCheckGrid()
     }
 
-    private fun finishDeviceCheckSlot(slot: DeviceCheckSlot) {
-        addLog("Finishing slot #${slot.index+1}")
+    private fun isSlotReadyForUpload(slot: DeviceCheckSlot): Boolean {
+        if (slot.boxBarcode == null) return false
+        return DC_STEPS.filter { it.required }.all { slot.stepData.containsKey(it.id) }
+    }
 
-        // 1. Upload logic - create JSON payload
-        val payload = mapOf(
-            "box_barcode" to slot.boxBarcode,
-            "device_barcode" to slot.deviceBarcode,
-            "photo_count" to (1 + slot.conditionPhotos.size + (if(slot.leftoverPhoto!=null) 1 else 0))
-        )
-        val jsonStr = org.json.JSONObject(payload).toString()
+    private fun uploadDeviceCheck(slot: DeviceCheckSlot) {
+        addLog("Uploading device check slot #${slot.index+1}")
 
-        onRepairEventSend?.invoke("DEVICE_CHECK", "check_complete", jsonStr)
-
-        // Upload photos
-        if (slot.contentPhoto != null) onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:CONTENT", slot.contentPhoto!!)
-        slot.conditionPhotos.forEachIndexed { i, bmp ->
-            onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:COND:$i", bmp)
+        val payload = JSONObject().apply {
+            put("box_barcode", slot.boxBarcode)
+            put("device_barcode", slot.deviceBarcode)
+            put("has_impedance", slot.stepData.containsKey(DcStepId.IMPEDANCE_PHOTO))
+            put("step_count", slot.stepData.size)
         }
-        if (slot.leftoverPhoto != null) onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:LEFTOVER", slot.leftoverPhoto!!)
 
-        // 2. Reset slot
+        // 1. Send metadata event
+        onRepairEventSend?.invoke("DEVICE_CHECK", "check_complete", payload.toString())
+
+        // 2. Upload regular photos
+        val photoTags = listOf(
+            DcStepId.CONTENT_PHOTO to "CONTENT",
+            DcStepId.CONDITION_PHOTO to "CONDITION",
+            DcStepId.LEFTOVER_PHOTO to "LEFTOVER"
+        )
+        for ((stepId, tag) in photoTags) {
+            val bmp = slot.stepData[stepId] as? Bitmap
+            if (bmp != null) onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:$tag", bmp)
+        }
+
+        // 3. Impedance photo — saved separately with distinct event for analysis pipeline
+        val impedanceBmp = slot.stepData[DcStepId.IMPEDANCE_PHOTO] as? Bitmap
+        if (impedanceBmp != null) {
+            onRepairPhotoUpload?.invoke("CHECK:${slot.boxBarcode}:IMPEDANCE", impedanceBmp)
+            onRepairEventSend?.invoke("DEVICE_CHECK", "impedance_photo",
+                JSONObject().apply {
+                    put("box_barcode", slot.boxBarcode)
+                    put("device_barcode", slot.deviceBarcode)
+                }.toString()
+            )
+        }
+
+        // 4. Reset slot
+        slot.stepData.clear()
         slot.boxBarcode = null
         slot.deviceBarcode = null
-        slot.contentPhoto = null
-        slot.conditionPhotos.clear()
-        slot.leftoverPhoto = null
-        slot.currentStep = DeviceCheckStep.SCAN_BOX
         slot.isActive = false
-
-        _deviceCheckStatus.value = "Slot #${slot.index+1} uploaded & cleared"
+        targetedStep = null
         _activeSlotPhoto.value = null
+        persistDeviceCheckSlots()
+        _deviceCheckStatus.value = "Slot #${slot.index+1} uploaded & cleared"
+        addLog("DC Slot #${slot.index+1} uploaded & cleared")
         renderDeviceCheckGrid()
+    }
+
+    private fun persistDeviceCheckSlots() {
+        val bound = deviceCheckSlots.filter { it.boxBarcode != null }
+            .map { Pair(it.index, it.boxBarcode!!) }
+        onSaveDeviceCheckSlots?.invoke(bound)
     }
 
     private fun renderDeviceCheckGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
-
         val active = deviceCheckSlots.find { it.isActive }
-        val currentStep = active?.currentStep
 
-        // Row 1: Actions (Dynamic based on step)
-        val photoLabel = if (currentStep == DeviceCheckStep.PHOTO_CONDITION) "ADD PHOTO" else "PHOTO"
-
-        // If we are in condition photo mode, we need a way to move to next step
-        if (currentStep == DeviceCheckStep.PHOTO_CONDITION) {
-            uiItems.add(mapOf("type" to "button", "label" to "FINISH\nPHOTOS", "color" to "#FF9800", "action" to "act_finish_photos_step"))
+        // Row 1: Action buttons
+        val canUpload = active != null && isSlotReadyForUpload(active)
+        if (canUpload) {
+            uiItems.add(mapOf("type" to "button", "label" to "UPLOAD", "color" to "#2196F3", "action" to "act_upload_check"))
         } else {
             uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to "#37474F", "action" to "act_undo"))
         }
-
-        uiItems.add(mapOf("type" to "button", "label" to photoLabel, "color" to "#9C27B0", "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "act_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
-        // Row 2: Slots (3 slots)
+        // Row 2+: 3 Slots
         deviceCheckSlots.forEach { slot ->
             val color = when {
-                slot.isActive -> "#4CAF50" // Green active
-                slot.currentStep == DeviceCheckStep.COMPLETE -> "#2196F3" // Blue done
-                slot.boxBarcode != null -> "#FFEB3B" // Yellow in progress
-                else -> "#333333" // Grey empty
+                slot.isActive && slot.boxBarcode != null -> "#4CAF50"  // Green active+initialized
+                slot.isActive -> "#FFEB3B"  // Yellow waiting for init
+                slot.boxBarcode != null && isSlotReadyForUpload(slot) -> "#2196F3"  // Blue ready
+                slot.boxBarcode != null -> "#FF9800"  // Orange in progress
+                else -> "#333333"  // Grey empty
             }
-
-            var label = "Empty"
-            if (slot.boxBarcode != null) {
-                label = slot.boxBarcode!!.takeLast(6)
-                if (slot.deviceBarcode != null) label += "\nMatched"
+            val label = when {
+                slot.boxBarcode != null -> "Slot ${slot.index+1}\n${slot.boxBarcode!!.takeLast(6)}"
+                slot.isActive -> "Slot ${slot.index+1}\nSCAN..."
+                else -> "Slot ${slot.index+1}\n+"
             }
-
             uiItems.add(mapOf(
                 "type" to "button",
-                "label" to "Slot ${slot.index+1}\n$label",
+                "label" to label,
                 "color" to color,
                 "action" to "check_slot_${slot.index}"
             ))
         }
 
+        // Row 3+: Steps for active slot (only when initialized)
+        if (active != null && active.boxBarcode != null) {
+            DC_STEPS.forEach { stepDef ->
+                val isDone = active.stepData.containsKey(stepDef.id)
+                val isTargeted = targetedStep == stepDef.id
+                val color = when {
+                    isDone -> "#4CAF50"
+                    isTargeted -> stepDef.color
+                    else -> "#424242"
+                }
+                val prefix = if (!stepDef.required && !isDone) "* " else ""
+                val suffix = if (isDone) " OK" else ""
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to "$prefix${stepDef.label}$suffix",
+                    "color" to color,
+                    "action" to "dc_step_${stepDef.id.name}"
+                ))
+            }
+        }
+
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT button
+        // EXIT button at HALF_RIGHT
         val cols = gridManager.contentGrid.cols
         gridManager.contentGrid.placeContentAt(1, cols - 1,
             mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
@@ -1455,15 +1599,6 @@ class MainScreenViewModel : ViewModel() {
         )
 
         updateRenderCells()
-    }
-
-    private fun advanceFromConditionPhotos() {
-        val active = deviceCheckSlots.find { it.isActive } ?: return
-        if (active.currentStep == DeviceCheckStep.PHOTO_CONDITION) {
-            active.currentStep = DeviceCheckStep.PHOTO_LEFTOVER
-            updateDeviceCheckStatus(active)
-            renderDeviceCheckGrid()
-        }
     }
 
     // --- COMMON ---

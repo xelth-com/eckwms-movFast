@@ -141,6 +141,13 @@ fun MainScreen(
         mainViewModel.onDeleteRepairPhoto = { index ->
             com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
         }
+        // Device Check persistence
+        mainViewModel.onSaveDeviceCheckSlots = { slots ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.saveDeviceCheckSlots(slots)
+        }
+        mainViewModel.onLoadDeviceCheckSlots = {
+            com.xelth.eckwms_movfast.utils.SettingsManager.loadDeviceCheckSlots()
+        }
     }
 
     // Wire shipment fetching callback
@@ -164,10 +171,16 @@ fun MainScreen(
         }
     }
 
-    // Bridge: forward scanner results to appropriate mode
+    // Bridge: forward scanner results — device check auto-enter takes priority
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
+            // Cross-mode auto-enter: device check takes priority over ALL modes
+            if (mainViewModel.checkDeviceCheckAutoEnter(scannedBarcode!!)) {
+                viewModel.consumeScannedBarcode()
+                return@LaunchedEffect
+            }
+            // Then existing mode routing
             if (isReceivingMode) {
                 mainViewModel.onReceivingScan(scannedBarcode!!)
             } else if (isDeviceCheckMode) {
