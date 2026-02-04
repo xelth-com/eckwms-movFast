@@ -410,7 +410,10 @@ fun MainScreen(
             onDismissRequest = { mainViewModel.dismissShipmentPicker() },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ) {
-            val shipments = remember { mainViewModel.getShipmentDisplayList() }
+            // Observe shipment loading state to trigger recomposition
+            val shipmentsLoaded by mainViewModel.shipmentsLoaded.observeAsState(false)
+            val shipmentsError by mainViewModel.shipmentsError.observeAsState(null)
+            val shipments = remember(shipmentsLoaded) { mainViewModel.getShipmentDisplayList() }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -426,12 +429,24 @@ fun MainScreen(
                 )
                 HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
 
-                if (shipments.isEmpty()) {
+                if (shipmentsError != null) {
+                    // Show error message
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("No shipments loaded", color = Color.Gray)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("⚠️ Error loading shipments", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(shipmentsError!!, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                } else if (shipments.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No shipments available", color = Color.Gray)
                     }
                 } else {
                     LazyColumn(

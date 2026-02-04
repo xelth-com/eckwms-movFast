@@ -181,6 +181,10 @@ class MainScreenViewModel : ViewModel() {
     private val _shipmentsLoaded = MutableLiveData<Boolean>(false)
     val shipmentsLoaded: LiveData<Boolean> = _shipmentsLoaded
 
+    // Track shipment loading error state
+    private val _shipmentsError = MutableLiveData<String?>(null)
+    val shipmentsError: LiveData<String?> = _shipmentsError
+
     init {
         Log.d("MainViewModel", "ViewModel init (slots=${slots.size}, hashCode=${hashCode()})")
         initializeGrid()
@@ -700,9 +704,13 @@ class MainScreenViewModel : ViewModel() {
     private fun fetchAndCacheShipments() {
         viewModelScope.launch {
             addLog("Fetching recent shipments...")
+            _shipmentsError.postValue(null) // Clear previous errors
             val fetchFn = onFetchShipments
             if (fetchFn == null) {
-                addLog("No shipment fetcher configured")
+                val errMsg = "No shipment fetcher configured"
+                addLog(errMsg)
+                _shipmentsError.postValue(errMsg)
+                _shipmentsLoaded.postValue(true) // Still trigger recomposition
                 return@launch
             }
             val result = fetchFn(100)
@@ -726,17 +734,29 @@ class MainScreenViewModel : ViewModel() {
                     cachedShipments = list
 
                     addLog("Loaded ${cachedShipments.size} shipments")
+                    _shipmentsError.postValue(null) // Clear error on success
                     _shipmentsLoaded.postValue(true)
                 } catch (e: Exception) {
-                    addLog("Error parsing shipments: ${e.message}")
+                    val errMsg = "Error parsing shipments: ${e.message}"
+                    addLog(errMsg)
+                    _shipmentsError.postValue(errMsg)
+                    _shipmentsLoaded.postValue(true) // Still trigger recomposition
                 }
             } else if (result is ScanResult.Error) {
-                addLog("Failed to fetch shipments: ${result.message}")
+                val errMsg = "Failed to fetch shipments: ${result.message}"
+                addLog(errMsg)
+                _shipmentsError.postValue(errMsg)
+                _shipmentsLoaded.postValue(true) // Still trigger recomposition
             }
         }
     }
 
     private fun tryAutoMatchShipment(barcode: String) {
+        if (cachedShipments.isEmpty()) {
+            addLog("Cannot auto-match: no shipments loaded yet")
+            return
+        }
+
         val match = cachedShipments.find {
             (it["trackingNumber"] as? String) == barcode
         }
@@ -823,6 +843,12 @@ class MainScreenViewModel : ViewModel() {
      * Auto-fills client data and advances to next step.
      */
     fun selectShipment(shipmentId: String) {
+        if (cachedShipments.isEmpty()) {
+            addLog("Cannot select shipment: list is empty")
+            _showShipmentPicker.value = false
+            return
+        }
+
         val shipment = cachedShipments.find {
             (it["id"] as? Number)?.toString() == shipmentId || it["id"]?.toString() == shipmentId
         }
@@ -831,6 +857,8 @@ class MainScreenViewModel : ViewModel() {
             val track = shipment["trackingNumber"] as? String ?: "?"
             addLog("Selected shipment: $track")
             _receivingStatus.value = "✓ Shipment: $track"
+        } else {
+            addLog("Shipment $shipmentId not found in cache")
         }
         _showShipmentPicker.value = false
         advanceToNextStep()
