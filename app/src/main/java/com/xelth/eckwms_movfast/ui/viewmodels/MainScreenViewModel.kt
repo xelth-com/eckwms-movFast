@@ -293,13 +293,13 @@ class MainScreenViewModel : ViewModel() {
 
     private fun initializeGrid() {
         val buttons = listOf(
+            MainMenuButton("settings", "Settings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
+            MainMenuButton("photo", "Photo", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
+            MainMenuButton("scan", "Scan", "#00BCD4", "capture_barcode", PRIORITIES.DEFAULT),
             MainMenuButton("repair", "Repair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
             MainMenuButton("receiving", "Receiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
             MainMenuButton("device_check", "Check Dev", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
-            MainMenuButton("photo", "Photo", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
-            MainMenuButton("scan", "Scan", "#00BCD4", "capture_barcode", PRIORITIES.SCAN_BUTTON),
-            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.RESTOCK_BUTTON),
-            MainMenuButton("settings", "Settings", "#9013FE", "navigate_settings", PRIORITIES.SETTINGS_BUTTON)
+            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -1546,13 +1546,13 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Row 2+: 3 Slots
+        // Colors: grey=inactive, yellow=initializing, blue=initialized-not-done, green=ready
         deviceCheckSlots.forEach { slot ->
             val color = when {
-                slot.isActive && slot.boxBarcode != null -> "#4CAF50"  // Green active+initialized
-                slot.isActive -> "#FFEB3B"  // Yellow waiting for init
-                slot.boxBarcode != null && isSlotReadyForUpload(slot) -> "#2196F3"  // Blue ready
-                slot.boxBarcode != null -> "#FF9800"  // Orange in progress
-                else -> "#333333"  // Grey empty
+                isSlotReadyForUpload(slot) -> "#4CAF50"  // Green: all required steps done
+                slot.isActive && slot.boxBarcode == null -> "#FFEB3B"  // Yellow: waiting for init barcode
+                slot.boxBarcode != null -> "#2196F3"  // Blue: initialized, steps in progress
+                else -> "#333333"  // Grey: empty/inactive
             }
             val label = when {
                 slot.boxBarcode != null -> "Slot ${slot.index+1}\n${slot.boxBarcode!!.takeLast(6)}"
@@ -1568,14 +1568,15 @@ class MainScreenViewModel : ViewModel() {
         }
 
         // Row 3+: Steps for active slot (only when initialized)
+        // Colors: grey=not done, yellow=targeted, green=done
         if (active != null && active.boxBarcode != null) {
             DC_STEPS.forEach { stepDef ->
                 val isDone = active.stepData.containsKey(stepDef.id)
                 val isTargeted = targetedStep == stepDef.id
                 val color = when {
-                    isDone -> "#4CAF50"
-                    isTargeted -> stepDef.color
-                    else -> "#424242"
+                    isDone -> "#4CAF50"       // Green: step completed
+                    isTargeted -> "#FFEB3B"   // Yellow: targeted for next action
+                    else -> "#424242"         // Grey: not started
                 }
                 val prefix = if (!stepDef.required && !isDone) "* " else ""
                 val suffix = if (isDone) " OK" else ""
