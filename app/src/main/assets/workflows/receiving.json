@@ -82,57 +82,27 @@
     },
     {
       "id": "device_info",
-      "label": "4. Device",
-      "type": "modal",
+      "label": "4. Contents",
+      "type": "contents_grid",
       "dataKey": "device_details",
       "colors": {
         "pending": "#424242",
         "active": "#FFCA28",
         "done": "#4CAF50"
       },
-      "uiSchema": {
-        "sections": [
-          {
-            "type": "section",
-            "title": "Device Registration",
-            "components": [
-              {
-                "type": "info_row",
-                "label": "Serial Number",
-                "variable": "serial_number",
-                "action": "scan_serial"
-              },
-              {
-                "type": "boolean_toggle",
-                "key": "has_psu",
-                "label": "Power Supply Included?",
-                "default": false
-              },
-              {
-                "type": "boolean_toggle",
-                "key": "cables_included",
-                "label": "Cables Included?",
-                "default": false
-              },
-              {
-                "type": "single_choice",
-                "key": "packaging",
-                "label": "Packaging Condition",
-                "options": ["Original", "Generic", "Damaged", "None"],
-                "default": "Original"
-              }
-            ]
-          },
-          {
-            "type": "spacing",
-            "height": 12
-          },
-          {
-            "type": "button",
-            "label": "Continue",
-            "action": "close_modal",
-            "primary": true
-          }
+      "items": [
+        {"key": "device", "label": "Device", "scannable": true},
+        {"key": "psu", "label": "Power Supply", "scannable": true},
+        {"key": "cable", "label": "Cable", "scannable": false}
+      ],
+      "packaging": {
+        "key": "packaging",
+        "label": "Packaging",
+        "options": [
+          {"value": "client_box", "label": "Client Box"},
+          {"value": "our_box", "label": "Our Box"},
+          {"value": "transport_box", "label": "Transport Box"},
+          {"value": "none", "label": "None"}
         ]
       }
     },

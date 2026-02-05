@@ -85,6 +85,10 @@ fun CameraScanScreen(
                 Log.d(TAG, "Using BarcodeScanPreviewScreen for barcode mode")
                 BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode)
             }
+            "barcode_continuous" -> {
+                Log.d(TAG, "Using BarcodeScanPreviewScreen for continuous barcode mode")
+                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode, continuous = true)
+            }
             "pairing" -> {
                 Log.d(TAG, "Using BarcodeScanPreviewScreen for pairing mode")
                 BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode)
@@ -92,6 +96,10 @@ fun CameraScanScreen(
             "single_recovery", "multi_recovery", "multi_recovery_continue", "direct_upload", "workflow_capture" -> {
                 Log.d(TAG, "Using ImageCapturePreviewScreen for $scanMode mode")
                 ImageCapturePreviewScreen(navController = navController, scanMode = scanMode)
+            }
+            "workflow_capture_continuous" -> {
+                Log.d(TAG, "Using ImageCapturePreviewScreen for continuous capture mode")
+                ImageCapturePreviewScreen(navController = navController, scanMode = scanMode, continuous = true)
             }
             else -> {
                 Log.d(TAG, "Unknown scan_mode: $scanMode, defaulting to BarcodeScanPreviewScreen")
@@ -123,13 +131,18 @@ fun CameraPermissionScreen(onRequestPermission: () -> Unit) {
 @Composable
 fun BarcodeScanPreviewScreen(
     navController: NavController,
-    scanMode: String = "barcode"
+    scanMode: String = "barcode",
+    continuous: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    var scanCount by remember { mutableStateOf(0) }
+    var lastBarcode by remember { mutableStateOf("") }
+    // Cooldown to avoid scanning same barcode repeatedly
+    var lastScanTime by remember { mutableStateOf(0L) }
 
-    Log.d(TAG, "BarcodeScanPreviewScreen: Setting up camera for mode: $scanMode")
+    Log.d(TAG, "BarcodeScanPreviewScreen: Setting up camera for mode: $scanMode, continuous: $continuous")
 
     // Suspend hardware scanner to release camera resource
     DisposableEffect(Unit) {
@@ -160,15 +173,33 @@ fun BarcodeScanPreviewScreen(
                             .build()
                             .also {
                                 it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcode, type ->
-                                    Log.d(TAG, "BarcodeScanPreviewScreen: Barcode detected! Value: $barcode, Type: $type, ScanMode: $scanMode")
-                                    cameraExecutor.shutdown()
-                                    ContextCompat.getMainExecutor(ctx).execute {
-                                        Log.d(TAG, "BarcodeScanPreviewScreen: Returning barcode to previous screen")
-                                        navController.previousBackStackEntry?.savedStateHandle?.set(
-                                            "scanned_barcode_data",
-                                            mapOf("barcode" to barcode, "type" to type, "scanMode" to scanMode)
-                                        )
-                                        navController.popBackStack()
+                                    val now = System.currentTimeMillis()
+                                    if (continuous) {
+                                        // Continuous mode: send barcode but keep scanning
+                                        // Cooldown: skip same barcode within 2 seconds
+                                        if (barcode == lastBarcode && now - lastScanTime < 2000) return@BarcodeAnalyzer
+                                        lastBarcode = barcode
+                                        lastScanTime = now
+                                        scanCount++
+                                        Log.d(TAG, "Continuous scan #$scanCount: $barcode")
+                                        ContextCompat.getMainExecutor(ctx).execute {
+                                            navController.previousBackStackEntry?.savedStateHandle?.set(
+                                                "scanned_barcode_data",
+                                                mapOf("barcode" to barcode, "type" to type, "scanMode" to scanMode)
+                                            )
+                                        }
+                                        // Don't pop back stack — keep scanning
+                                    } else {
+                                        // Single mode: scan once and close
+                                        Log.d(TAG, "BarcodeScanPreviewScreen: Barcode detected! Value: $barcode, Type: $type, ScanMode: $scanMode")
+                                        cameraExecutor.shutdown()
+                                        ContextCompat.getMainExecutor(ctx).execute {
+                                            navController.previousBackStackEntry?.savedStateHandle?.set(
+                                                "scanned_barcode_data",
+                                                mapOf("barcode" to barcode, "type" to type, "scanMode" to scanMode)
+                                            )
+                                            navController.popBackStack()
+                                        }
                                     }
                                 })
                             }
@@ -226,6 +257,19 @@ fun BarcodeScanPreviewScreen(
             }
         }
 
+        // Continuous mode indicator
+        if (continuous && scanCount > 0) {
+            Text(
+                text = "Scans: $scanCount\nLast: ${lastBarcode.takeLast(15)}",
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+                    .padding(top = 32.dp)
+            )
+        }
+
         // Cancel half-hex — bottom-right bookmark
         HexagonalButton(
             modifier = Modifier
@@ -233,8 +277,8 @@ fun BarcodeScanPreviewScreen(
                 .offset(y = (-20).dp)
                 .width(70.dp)
                 .height(80.dp)
-                .alpha(0.5f),
-            label = "✕",
+                .alpha(if (continuous) 0.9f else 0.5f),
+            label = "\u2715",
             colorHex = "#F44336",
             side = HexagonSide.RIGHT,
             onClick = { navController.popBackStack() }
@@ -245,7 +289,8 @@ fun BarcodeScanPreviewScreen(
 @Composable
 fun ImageCapturePreviewScreen(
     navController: NavController,
-    scanMode: String
+    scanMode: String,
+    continuous: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -343,7 +388,7 @@ fun ImageCapturePreviewScreen(
                                                         "single_recovery" -> "captured_recovery_image"
                                                         "multi_recovery", "multi_recovery_continue" -> "captured_session_image"
                                                         "direct_upload" -> "captured_direct_upload_image"
-                                                        "workflow_capture" -> "captured_workflow_image"
+                                                        "workflow_capture", "workflow_capture_continuous" -> "captured_workflow_image"
                                                         else -> "captured_recovery_image"
                                                     }
 
@@ -352,8 +397,13 @@ fun ImageCapturePreviewScreen(
                                                         true // Just signal that capture succeeded
                                                     )
 
-                                                    // Navigate back on main thread
-                                                    navController.popBackStack()
+                                                    if (continuous) {
+                                                        // Stay open — reset capturing flag for next photo
+                                                        isCapturing = false
+                                                    } else {
+                                                        // Navigate back on main thread
+                                                        navController.popBackStack()
+                                                    }
                                                 } catch (e: Exception) {
                                                     Log.e(TAG, "Error during navigation", e)
                                                     isCapturing = false
