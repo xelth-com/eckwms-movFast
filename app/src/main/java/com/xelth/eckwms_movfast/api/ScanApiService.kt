@@ -7,12 +7,15 @@ import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 import java.util.zip.CRC32
+import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
+import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.scanners.ScannerManager
 
 /**
@@ -1366,6 +1369,146 @@ class ScanApiService(private val context: Context) {
             Log.e(TAG, "Repair event exception: ${e.message}")
             return ScanResult.Error("Network error: ${e.message}")
         }
+    }
+
+    /**
+     * Fetch all products from server for offline cache.
+     * Server returns raw JSON array of ProductProduct objects.
+     * Implements failover: Local -> Global
+     */
+    suspend fun fetchProducts(): List<ProductEntity> = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalFetchProducts(activeUrl)
+        if (result.isEmpty() && activeUrl != globalUrl) {
+            Log.w(TAG, "fetchProducts failed on $activeUrl, failover to global")
+            result = internalFetchProducts(globalUrl)
+        }
+        return@withContext result
+    }
+
+    private suspend fun internalFetchProducts(baseUrl: String): List<ProductEntity> {
+        try {
+            val url = URL("$baseUrl/api/items")
+            Log.d(TAG, "Fetching products from: $url")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonArray = JSONArray(response)
+                val list = mutableListOf<ProductEntity>()
+
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    // Odoo can return "false" instead of null for empty fields
+                    val barcode = obj.opt("barcode")?.let {
+                        if (it is Boolean || it.toString() == "false") null else it.toString()
+                    }
+                    val defaultCode = obj.opt("default_code")?.let {
+                        if (it is Boolean || it.toString() == "false") "" else it.toString()
+                    } ?: ""
+
+                    list.add(ProductEntity(
+                        id = obj.getLong("id"),
+                        defaultCode = defaultCode,
+                        name = obj.optString("name", ""),
+                        barcode = barcode,
+                        listPrice = obj.optDouble("list_price", 0.0),
+                        weight = obj.optDouble("weight", 0.0),
+                        active = obj.optBoolean("active", true)
+                    ))
+                }
+                Log.i(TAG, "Fetched ${list.size} products from $baseUrl")
+                return list
+            } else if (connection.responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    return internalFetchProducts(baseUrl) // retry once
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching products from $baseUrl", e)
+        }
+        return emptyList()
+    }
+
+    /**
+     * Fetch all warehouse locations from server for offline cache.
+     * Server returns raw JSON array of StockLocation objects.
+     * Implements failover: Local -> Global
+     */
+    suspend fun fetchLocations(): List<LocationEntity> = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalFetchLocations(activeUrl)
+        if (result.isEmpty() && activeUrl != globalUrl) {
+            Log.w(TAG, "fetchLocations failed on $activeUrl, failover to global")
+            result = internalFetchLocations(globalUrl)
+        }
+        return@withContext result
+    }
+
+    private suspend fun internalFetchLocations(baseUrl: String): List<LocationEntity> {
+        try {
+            val url = URL("$baseUrl/api/warehouse")
+            Log.d(TAG, "Fetching locations from: $url")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonArray = JSONArray(response)
+                val list = mutableListOf<LocationEntity>()
+
+                // Recursively flatten location tree (server may return nested children)
+                fun parseLocation(obj: JSONObject, parentId: Long?) {
+                    val barcode = obj.opt("barcode")?.let {
+                        if (it is Boolean || it.toString() == "false") null else it.toString()
+                    }
+                    list.add(LocationEntity(
+                        id = obj.getLong("id"),
+                        name = obj.optString("name", ""),
+                        completeName = obj.optString("complete_name", ""),
+                        barcode = barcode,
+                        usage = obj.optString("usage", ""),
+                        parentId = parentId,
+                        active = obj.optBoolean("active", true)
+                    ))
+                    // Parse children if present
+                    val children = obj.optJSONArray("children")
+                    if (children != null) {
+                        for (j in 0 until children.length()) {
+                            parseLocation(children.getJSONObject(j), obj.getLong("id"))
+                        }
+                    }
+                }
+
+                for (i in 0 until jsonArray.length()) {
+                    parseLocation(jsonArray.getJSONObject(i), null)
+                }
+                Log.i(TAG, "Fetched ${list.size} locations from $baseUrl")
+                return list
+            } else if (connection.responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                val newToken = performSilentAuth()
+                if (newToken != null) {
+                    return internalFetchLocations(baseUrl)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching locations from $baseUrl", e)
+        }
+        return emptyList()
     }
 
     /**

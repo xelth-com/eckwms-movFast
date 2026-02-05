@@ -21,6 +21,7 @@ import com.xelth.eckwms_movfast.ui.screens.MainScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
+import com.xelth.eckwms_movfast.ui.screens.DatabaseViewerScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.screens.WarehouseMapScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
@@ -212,7 +213,16 @@ class MainActivity : ComponentActivity() {
                             onOpenImageViewer = { navController.navigate("imageViewer") },
                             onNavigateToCamera = { scanMode ->
                                 navController.navigate("cameraScanScreen?scan_mode=$scanMode")
+                            },
+                            onNavigateToDatabase = {
+                                navController.navigate("databaseViewer")
                             }
+                        )
+                    }
+
+                    composable("databaseViewer") {
+                        DatabaseViewerScreen(
+                            onBack = { navController.popBackStack() }
                         )
                     }
 

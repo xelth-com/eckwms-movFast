@@ -100,7 +100,8 @@ fun ScannerSettingsScreen(
     viewModel: com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel,
     onNavigateBack: () -> Unit,
     onOpenImageViewer: () -> Unit,
-    onNavigateToCamera: (String) -> Unit = {}
+    onNavigateToCamera: (String) -> Unit = {},
+    onNavigateToDatabase: () -> Unit = {}
 ) {
     // Наблюдаем за последним отсканированным штрих-кодом
     val latestScanResult by scannerManager.scanResult.observeAsState()
@@ -315,6 +316,36 @@ fun ScannerSettingsScreen(
 
             // 6. Image Settings Section
             ImageSettingsSection(viewModel = viewModel)
+
+            // Offline Database Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Offline Database",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "View and sync local cache for offline work (products, locations)",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(
+                        onClick = onNavigateToDatabase,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Open Database Viewer")
+                    }
+                }
+            }
 
             // Interface Settings Card
             Card(
