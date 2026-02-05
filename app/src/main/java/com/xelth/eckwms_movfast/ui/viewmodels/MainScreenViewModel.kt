@@ -2171,6 +2171,31 @@ class MainScreenViewModel : ViewModel() {
     fun onInventoryScan(barcode: String) {
         val cleanCode = barcode.trim()
 
+        // --- SECURITY FILTER ---
+
+        // 1. Check for Trusted Link Barcodes (eck1.com, eck2.com, eck3.com)
+        val isLinkBarcode = cleanCode.startsWith("eck1.com", ignoreCase = true) ||
+                            cleanCode.startsWith("eck2.com", ignoreCase = true) ||
+                            cleanCode.startsWith("eck3.com", ignoreCase = true) ||
+                            cleanCode.startsWith("http://eck", ignoreCase = true) ||
+                            cleanCode.startsWith("https://eck", ignoreCase = true)
+
+        // 2. Check for Spoofing Attempts on Internal ID format
+        // Our internal IDs are EXACTLY 19 chars: prefix (i/b/p/l) + 18 digits
+        // Example: i000000000000000001
+        // Block only exact format matches to prevent injection
+        val isPotentialSpoof = !isLinkBarcode &&
+                               cleanCode.length == 19 &&
+                               cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
+
+        if (isPotentialSpoof) {
+            addLog("⛔ SECURITY: Spoofed internal ID rejected")
+            _inventoryStatus.value = "⛔ REJECTED"
+            return
+        }
+
+        // --- END SECURITY FILTER ---
+
         // MANUAL MODE: SET LOC was pressed — any barcode becomes location
         if (waitingForManualLocation) {
             waitingForManualLocation = false
@@ -2190,8 +2215,13 @@ class MainScreenViewModel : ViewModel() {
             return
         }
 
-        // Smart Logic: Check if it's our Place Code (starts with 'p' or 'P' or 'LOC-')
-        val isOurPlaceCode = cleanCode.startsWith("p", ignoreCase = true) || cleanCode.startsWith("LOC-", ignoreCase = true)
+        // Smart Logic: Check if it's our Place Code
+        // - Link barcode containing /p/ or /place/ = trusted place
+        // - Starts with 'p' (but NOT fake internal ID like p000...) = our place code
+        // - Starts with 'LOC-' = legacy location format
+        val isOurPlaceCode = (isLinkBarcode && (cleanCode.contains("/p/") || cleanCode.contains("/place/"))) ||
+                             (!isLinkBarcode && cleanCode.startsWith("p", ignoreCase = true) && !cleanCode.matches(Regex("^p0{3,}.*", RegexOption.IGNORE_CASE))) ||
+                             cleanCode.startsWith("LOC-", ignoreCase = true)
 
         if (isOurPlaceCode) {
             // --- OUR LOCATION SCAN (smart flow) ---
