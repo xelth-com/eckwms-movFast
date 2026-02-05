@@ -2216,12 +2216,20 @@ class MainScreenViewModel : ViewModel() {
         }
 
         // Smart Logic: Check if it's our Place Code
-        // - Link barcode containing /p/ or /place/ = trusted place
-        // - Starts with 'p' (but NOT fake internal ID like p000...) = our place code
-        // - Starts with 'LOC-' = legacy location format
-        val isOurPlaceCode = (isLinkBarcode && (cleanCode.contains("/p/") || cleanCode.contains("/place/"))) ||
-                             (!isLinkBarcode && cleanCode.startsWith("p", ignoreCase = true) && !cleanCode.matches(Regex("^p0{3,}.*", RegexOption.IGNORE_CASE))) ||
-                             cleanCode.startsWith("LOC-", ignoreCase = true)
+        // STRICTER RULES to avoid false positives (e.g. external parts like "P12345"):
+        // 1. Link Barcode containing /p/ or /place/ → ALWAYS Place (trusted)
+        // 2. Raw Barcode starting with "LOC-" → ALWAYS Place (legacy format)
+        // 3. Raw Barcode starting with "p-" (hyphen mandatory) → Place
+        // 4. Raw Barcode matching ^p[0-9]{5,}$ (e.g. p00001) → Internal place format
+        val isLinkPlace = isLinkBarcode && (cleanCode.contains("/p/") || cleanCode.contains("/place/"))
+        val isRawPlace = !isLinkBarcode && (
+            cleanCode.startsWith("LOC-", ignoreCase = true) ||
+            cleanCode.startsWith("p-", ignoreCase = true) ||
+            cleanCode.matches(Regex("^p[0-9]{5,}$", RegexOption.IGNORE_CASE))
+        )
+        val isOurPlaceCode = isLinkPlace || isRawPlace
+
+        addLog("Scan: $cleanCode | Link=$isLinkBarcode | Place=$isOurPlaceCode")
 
         if (isOurPlaceCode) {
             // --- OUR LOCATION SCAN (smart flow) ---
@@ -2230,24 +2238,24 @@ class MainScreenViewModel : ViewModel() {
                 currentInventoryLocation = cleanCode
                 lastScannedInventoryItem = ""
                 _inventoryItemPhoto.value = null
-                _inventoryStatus.value = "LOC: $cleanCode — scan items"
-                addLog("Location set: $cleanCode")
+                _inventoryStatus.value = "LOC: $cleanCode"
+                addLog("📍 Location SET: $cleanCode")
                 renderInventoryGrid()
             } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
                 // Scanned SAME location again -> Auto-Submit (close session)
-                addLog("Same location scanned. Auto-submitting...")
+                addLog("📍 Same location re-scanned → SUBMIT")
                 submitInventory()
             } else {
                 // Scanned DIFFERENT p-location -> Submit current, Start new
-                addLog("New location detected. Submitting previous...")
+                addLog("📍 New location: $cleanCode (was: $currentInventoryLocation)")
                 submitInventoryAndStartNew(cleanCode)
             }
         } else {
             // --- ITEM/BOX SCAN (or external barcode) ---
             if (currentInventoryLocation.isEmpty()) {
                 // No location set — prompt to use SET LOC for external codes
-                addLog("⚠️ Unknown code: $cleanCode — use SET LOC for external locations")
-                _inventoryStatus.value = "⚠️ SET LOC first (or scan p-code)"
+                addLog("⚠️ Item without location: $cleanCode")
+                _inventoryStatus.value = "⚠️ Scan Location first!"
             } else {
                 // Add item to current session
                 val itemType = if (inventoryBoxMode) "box" else "item"
@@ -2270,9 +2278,9 @@ class MainScreenViewModel : ViewModel() {
                 lastScannedInventoryItem = cleanCode
                 _inventoryItemPhoto.value = entry.photo
 
-                val typeLabel = if (entry.type == "box") "BOX" else "ITEM"
-                addLog("Counted $typeLabel: $cleanCode (${entry.quantity})")
-                _inventoryStatus.value = "[$currentInventoryLocation] +$cleanCode ($typeLabel)"
+                val typeLabel = if (entry.type == "box") "📦" else "➕"
+                addLog("$typeLabel $cleanCode x${entry.quantity}")
+                _inventoryStatus.value = "$typeLabel $cleanCode"
                 updateInventoryConsole()
             }
         }
@@ -2329,7 +2337,7 @@ class MainScreenViewModel : ViewModel() {
                 }
             }
 
-            addLog("Submitted: ${inventoryItems.size} items @ $currentInventoryLocation")
+            addLog("✅ SUBMITTED: ${inventoryItems.size} items @ $currentInventoryLocation")
         }
 
         // Start new session
@@ -2337,8 +2345,8 @@ class MainScreenViewModel : ViewModel() {
         lastScannedInventoryItem = ""
         _inventoryItemPhoto.value = null
         currentInventoryLocation = newLocation
-        _inventoryStatus.value = "LOC: $newLocation — scan items"
-        addLog("New location set: $newLocation")
+        _inventoryStatus.value = "LOC: $newLocation"
+        addLog("📍 Location SET: $newLocation")
         updateInventoryConsole()
         renderInventoryGrid()
     }
@@ -2395,8 +2403,8 @@ class MainScreenViewModel : ViewModel() {
             }
         }
 
-        addLog("Inventory submitted: ${inventoryItems.size} items @ $currentInventoryLocation")
-        _inventoryStatus.value = "Submitted!"
+        addLog("✅ SUBMITTED: ${inventoryItems.size} items @ $currentInventoryLocation")
+        _inventoryStatus.value = "✅ Submitted ${inventoryItems.size} items"
 
         inventoryItems.clear()
         currentInventoryLocation = ""
