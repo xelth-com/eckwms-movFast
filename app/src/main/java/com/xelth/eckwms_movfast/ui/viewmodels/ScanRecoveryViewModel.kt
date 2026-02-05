@@ -663,6 +663,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         return
                     }
 
+                    // Cache warehouse info for smart client detection
+                    val warehouse = jsonResponse.optJSONObject("warehouse")
+                    if (warehouse != null) {
+                        val whName = warehouse.optString("name", "")
+                        val whStreet = warehouse.optString("street", "")
+                        val whZip = warehouse.optString("zip", "")
+                        val whCity = warehouse.optString("city", "")
+                        val whAddress = listOf(whStreet, "$whZip $whCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+                        if (whName.isNotEmpty()) {
+                            com.xelth.eckwms_movfast.utils.SettingsManager.saveWarehouseInfo(whName, whAddress)
+                        }
+                    }
+
                     // Only update if status changed
                     if (_deviceRegistrationStatus.value != status) {
                         _deviceRegistrationStatus.postValue(status)
@@ -1292,10 +1305,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addLog("[Audit] Logged scan #$scanId to audit trail")
 
             // 2. Routing Logic (Router)
+
+            // Link Barcodes (eck1.com, eck2.com, eck3.com) are encrypted location/item tags
+            // They should NEVER trigger pairing — pass them to active mode (Inventory/Restock)
+            val isLinkBarcode = barcode.startsWith("eck1.com", ignoreCase = true) ||
+                                barcode.startsWith("eck2.com", ignoreCase = true) ||
+                                barcode.startsWith("eck3.com", ignoreCase = true) ||
+                                barcode.startsWith("http://eck", ignoreCase = true) ||
+                                barcode.startsWith("https://eck", ignoreCase = true)
+
             when {
-                // A. System Codes (Executed Locally)
-                barcode.startsWith("ECK") -> {
-                    android.util.Log.e("AUTO_PAIR", "=== ECK CODE DETECTED ===")
+                // A. System Codes (Executed Locally) — but NOT Link Barcodes
+                barcode.startsWith("ECK") && !isLinkBarcode -> {
+                    android.util.Log.e("AUTO_PAIR", "=== ECK PAIRING CODE DETECTED ===")
                     android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
                     addLog("[Router] → ROUTE A: System code (ECK Pairing)")
 
