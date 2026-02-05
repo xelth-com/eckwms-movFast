@@ -253,12 +253,30 @@ class MainScreenViewModel : ViewModel() {
     private val _isInventoryMode = MutableLiveData<Boolean>(false)
     val isInventoryMode: LiveData<Boolean> = _isInventoryMode
 
-    private val inventoryItems = mutableMapOf<String, Int>()
+    // Item barcode -> InventoryEntry (qty, type, photo)
+    data class InventoryEntry(
+        var quantity: Int = 1,
+        var type: String = "item",  // "item" or "box"
+        var photo: Bitmap? = null
+    )
+    private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
     private val _inventoryStatus = MutableLiveData<String>("Ready to count")
     val inventoryStatus: LiveData<String> = _inventoryStatus
 
+    // Current item photo for console background
+    private val _inventoryItemPhoto = MutableLiveData<Bitmap?>(null)
+    val inventoryItemPhoto: LiveData<Bitmap?> = _inventoryItemPhoto
+
     private var currentInventoryLocation: String = ""
+    private var lastScannedInventoryItem: String = ""  // for photo attachment
+    private var waitingForManualLocation: Boolean = false  // SET LOC was pressed, next scan = location
+    private var inventoryBoxMode: Boolean = false  // toggle: false=items, true=boxes (for external barcodes)
+
+    // Persistence callbacks for item photos (global, by internal ID)
+    // Internal ID prefix defines type: i=item, b=box, p=place, l=label
+    var onSaveItemPhoto: ((internalId: String, bitmap: Bitmap) -> Unit)? = null
+    var onLoadItemPhoto: ((internalId: String) -> Bitmap?)? = null
 
     // --- DEVICE CHECK MODE STATE ---
 
@@ -2091,6 +2109,8 @@ class MainScreenViewModel : ViewModel() {
         _isDeviceCheckMode.value = false
 
         currentInventoryLocation = ""
+        waitingForManualLocation = false
+        inventoryItems.clear()
         updateInventoryConsole()
         renderInventoryGrid()
         addLog("Entered Inventory Mode")
@@ -2098,6 +2118,7 @@ class MainScreenViewModel : ViewModel() {
 
     fun exitInventoryMode() {
         _isInventoryMode.value = false
+        waitingForManualLocation = false
         initializeGrid()
     }
 
@@ -2114,39 +2135,182 @@ class MainScreenViewModel : ViewModel() {
             "act_clear_inventory" -> {
                 inventoryItems.clear()
                 currentInventoryLocation = ""
+                lastScannedInventoryItem = ""
+                _inventoryItemPhoto.value = null
                 _inventoryStatus.value = "Cleared"
                 updateInventoryConsole()
                 renderInventoryGrid()
                 return "handled"
             }
             "act_set_location" -> {
-                _inventoryStatus.value = "Scan location barcode..."
+                waitingForManualLocation = true
+                _inventoryStatus.value = "Scan ANY barcode as location..."
+                addLog("Manual location mode — next scan = location")
                 return "capture_barcode"
             }
+            "act_toggle_box" -> {
+                inventoryBoxMode = !inventoryBoxMode
+                val mode = if (inventoryBoxMode) "BOX" else "ITEM"
+                _inventoryStatus.value = "Mode: $mode"
+                addLog("Switched to $mode mode")
+                renderInventoryGrid()
+                return "handled"
+            }
             "act_scan" -> return "capture_barcode"
+            "act_photo" -> {
+                if (lastScannedInventoryItem.isEmpty()) {
+                    _inventoryStatus.value = "Scan item first, then photo"
+                    return "handled"
+                }
+                return "capture_photo"
+            }
         }
         return "handled"
     }
 
     fun onInventoryScan(barcode: String) {
-        val cleanCode = barcode.trim().uppercase()
+        val cleanCode = barcode.trim()
 
-        // Если локация не установлена — первый скан это локация
-        if (currentInventoryLocation.isEmpty()) {
-            currentInventoryLocation = cleanCode
-            _inventoryStatus.value = "Location: $cleanCode"
-            addLog("Location set: $cleanCode")
-            updateInventoryConsole()
-            renderInventoryGrid()
+        // MANUAL MODE: SET LOC was pressed — any barcode becomes location
+        if (waitingForManualLocation) {
+            waitingForManualLocation = false
+            if (currentInventoryLocation.isNotEmpty() && inventoryItems.isNotEmpty()) {
+                // Submit previous session first
+                submitInventoryAndStartNew(cleanCode)
+            } else {
+                currentInventoryLocation = cleanCode
+                inventoryItems.clear()
+                lastScannedInventoryItem = ""
+                _inventoryItemPhoto.value = null
+                _inventoryStatus.value = "LOC: $cleanCode (manual) — scan items"
+                addLog("Manual location set: $cleanCode")
+                updateInventoryConsole()
+                renderInventoryGrid()
+            }
             return
         }
 
-        // Иначе это товар/устройство
-        val currentQty = inventoryItems[cleanCode] ?: 0
-        inventoryItems[cleanCode] = currentQty + 1
-        addLog("Counted: $cleanCode (${inventoryItems[cleanCode]})")
-        _inventoryStatus.value = "[$currentInventoryLocation] +$cleanCode"
+        // Smart Logic: Check if it's our Place Code (starts with 'p' or 'P' or 'LOC-')
+        val isOurPlaceCode = cleanCode.startsWith("p", ignoreCase = true) || cleanCode.startsWith("LOC-", ignoreCase = true)
+
+        if (isOurPlaceCode) {
+            // --- OUR LOCATION SCAN (smart flow) ---
+            if (currentInventoryLocation.isEmpty()) {
+                // Start new session
+                currentInventoryLocation = cleanCode
+                lastScannedInventoryItem = ""
+                _inventoryItemPhoto.value = null
+                _inventoryStatus.value = "LOC: $cleanCode — scan items"
+                addLog("Location set: $cleanCode")
+                renderInventoryGrid()
+            } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
+                // Scanned SAME location again -> Auto-Submit (close session)
+                addLog("Same location scanned. Auto-submitting...")
+                submitInventory()
+            } else {
+                // Scanned DIFFERENT p-location -> Submit current, Start new
+                addLog("New location detected. Submitting previous...")
+                submitInventoryAndStartNew(cleanCode)
+            }
+        } else {
+            // --- ITEM/BOX SCAN (or external barcode) ---
+            if (currentInventoryLocation.isEmpty()) {
+                // No location set — prompt to use SET LOC for external codes
+                addLog("⚠️ Unknown code: $cleanCode — use SET LOC for external locations")
+                _inventoryStatus.value = "⚠️ SET LOC first (or scan p-code)"
+            } else {
+                // Add item to current session
+                val itemType = if (inventoryBoxMode) "box" else "item"
+                val entry = inventoryItems.getOrPut(cleanCode) {
+                    InventoryEntry(quantity = 0, type = itemType)
+                }
+                entry.quantity++
+
+                // Try to load existing photo using pseudo-internal ID (prefix + barcode)
+                if (entry.photo == null) {
+                    val itemId = "i$cleanCode"
+                    val boxId = "b$cleanCode"
+                    val existingPhoto = onLoadItemPhoto?.invoke(itemId)
+                        ?: onLoadItemPhoto?.invoke(boxId)
+                    if (existingPhoto != null) {
+                        entry.photo = existingPhoto
+                    }
+                }
+
+                lastScannedInventoryItem = cleanCode
+                _inventoryItemPhoto.value = entry.photo
+
+                val typeLabel = if (entry.type == "box") "BOX" else "ITEM"
+                addLog("Counted $typeLabel: $cleanCode (${entry.quantity})")
+                _inventoryStatus.value = "[$currentInventoryLocation] +$cleanCode ($typeLabel)"
+                updateInventoryConsole()
+            }
+        }
+    }
+
+    /** Attach photo to the last scanned inventory item */
+    fun onInventoryPhotoCaptured(bitmap: Bitmap) {
+        if (lastScannedInventoryItem.isEmpty()) {
+            addLog("No item to attach photo to")
+            _inventoryStatus.value = "Scan item first!"
+            return
+        }
+
+        val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+        val entry = inventoryItems[lastScannedInventoryItem]
+        if (entry != null) {
+            entry.photo = copy
+            _inventoryItemPhoto.value = copy
+            // Persist globally using pseudo-internal ID (prefix + barcode)
+            val prefix = if (entry.type == "box") "b" else "i"
+            val internalId = "$prefix$lastScannedInventoryItem"
+            onSaveItemPhoto?.invoke(internalId, copy)
+            val typeLabel = if (entry.type == "box") "BOX" else "ITEM"
+            addLog("Photo saved: $internalId")
+            _inventoryStatus.value = "Photo → $lastScannedInventoryItem"
+        }
+    }
+
+    /** Submit current inventory and immediately start new session with given location */
+    private fun submitInventoryAndStartNew(newLocation: String) {
+        if (currentInventoryLocation.isNotEmpty() && inventoryItems.isNotEmpty()) {
+            // Build and send payload for current session
+            val itemsArray = JSONArray()
+            inventoryItems.forEach { (barcode, entry) ->
+                val itemObj = JSONObject()
+                itemObj.put("barcode", barcode)
+                itemObj.put("quantity", entry.quantity)
+                itemObj.put("type", entry.type)
+                itemObj.put("has_photo", entry.photo != null)
+                itemsArray.put(itemObj)
+            }
+
+            val payload = JSONObject()
+            payload.put("location", currentInventoryLocation)
+            payload.put("items", itemsArray)
+            payload.put("timestamp", System.currentTimeMillis())
+
+            onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+
+            // Upload photos for items that have them
+            inventoryItems.forEach { (barcode, entry) ->
+                if (entry.photo != null) {
+                    onRepairPhotoUpload?.invoke("ITEM:$barcode", entry.photo!!)
+                }
+            }
+
+            addLog("Submitted: ${inventoryItems.size} items @ $currentInventoryLocation")
+        }
+
+        // Start new session
+        inventoryItems.clear()
+        lastScannedInventoryItem = ""
+        _inventoryItemPhoto.value = null
+        currentInventoryLocation = newLocation
+        _inventoryStatus.value = "LOC: $newLocation — scan items"
+        addLog("New location set: $newLocation")
         updateInventoryConsole()
+        renderInventoryGrid()
     }
 
     private fun updateInventoryConsole() {
@@ -2155,10 +2319,15 @@ class MainScreenViewModel : ViewModel() {
         } else {
             "--- SCAN LOCATION FIRST ---"
         }
-        val items = inventoryItems.entries.map { (item, qty) ->
-            "%-15s : %d".format(item, qty)
+        val items = inventoryItems.entries.map { (barcode, entry) ->
+            val typeIcon = if (entry.type == "box") "📦" else "•"
+            val photoIcon = if (entry.photo != null) "📷" else ""
+            "$typeIcon %-12s : %d $photoIcon".format(barcode.takeLast(12), entry.quantity)
         }.sorted()
-        val summary = "Items: ${inventoryItems.size} | Total: ${inventoryItems.values.sum()}"
+        val totalQty = inventoryItems.values.sumOf { it.quantity }
+        val boxCount = inventoryItems.values.count { it.type == "box" }
+        val itemCount = inventoryItems.values.count { it.type == "item" }
+        val summary = "Items: $itemCount | Boxes: $boxCount | Total: $totalQty"
         _consoleLogs.postValue(listOf(header) + items + listOf("", summary))
     }
 
@@ -2173,10 +2342,12 @@ class MainScreenViewModel : ViewModel() {
         }
 
         val itemsArray = JSONArray()
-        inventoryItems.forEach { (item, qty) ->
+        inventoryItems.forEach { (barcode, entry) ->
             val itemObj = JSONObject()
-            itemObj.put("barcode", item)
-            itemObj.put("quantity", qty)
+            itemObj.put("barcode", barcode)
+            itemObj.put("quantity", entry.quantity)
+            itemObj.put("type", entry.type)
+            itemObj.put("has_photo", entry.photo != null)
             itemsArray.put(itemObj)
         }
 
@@ -2187,11 +2358,20 @@ class MainScreenViewModel : ViewModel() {
 
         onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
 
+        // Upload photos for items that have them
+        inventoryItems.forEach { (barcode, entry) ->
+            if (entry.photo != null) {
+                onRepairPhotoUpload?.invoke("ITEM:$barcode", entry.photo!!)
+            }
+        }
+
         addLog("Inventory submitted: ${inventoryItems.size} items @ $currentInventoryLocation")
         _inventoryStatus.value = "Submitted!"
 
         inventoryItems.clear()
         currentInventoryLocation = ""
+        lastScannedInventoryItem = ""
+        _inventoryItemPhoto.value = null
         updateInventoryConsole()
 
         viewModelScope.launch {
@@ -2206,13 +2386,21 @@ class MainScreenViewModel : ViewModel() {
     private fun renderInventoryGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        // Кнопка локации меняет цвет в зависимости от состояния
+        // Row 1: LOC | PHOTO | SCAN
         val locationColor = if (currentInventoryLocation.isEmpty()) "#FF5722" else "#4CAF50"
         val locationLabel = if (currentInventoryLocation.isEmpty()) "SET LOC" else currentInventoryLocation.takeLast(8)
-
         uiItems.add(mapOf("type" to "button", "label" to locationLabel, "color" to locationColor, "action" to "act_set_location"))
-        uiItems.add(mapOf("type" to "button", "label" to "SUBMIT", "color" to "#2196F3", "action" to "act_submit_inventory"))
+
+        // PHOTO button - enabled only if item is scanned
+        val photoColor = if (lastScannedInventoryItem.isNotEmpty()) "#9C27B0" else "#424242"
+        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to photoColor, "action" to "act_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+
+        // Row 2: BOX toggle | SUBMIT | CLEAR
+        val boxColor = if (inventoryBoxMode) "#FF9800" else "#424242"
+        val boxLabel = if (inventoryBoxMode) "📦 BOX" else "• ITEM"
+        uiItems.add(mapOf("type" to "button", "label" to boxLabel, "color" to boxColor, "action" to "act_toggle_box"))
+        uiItems.add(mapOf("type" to "button", "label" to "SUBMIT", "color" to "#2196F3", "action" to "act_submit_inventory"))
         uiItems.add(mapOf("type" to "button", "label" to "CLEAR", "color" to "#D32F2F", "action" to "act_clear_inventory"))
 
         gridManager.clearAndReset()

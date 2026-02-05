@@ -158,6 +158,14 @@ fun MainScreen(
         mainViewModel.onLoadDeviceCheckSlots = {
             com.xelth.eckwms_movfast.utils.SettingsManager.loadDeviceCheckSlots()
         }
+        // Item photo persistence (global, by internal ID)
+        // Internal ID prefix defines type: i=item, b=box, p=place, l=label
+        mainViewModel.onSaveItemPhoto = { internalId, bitmap ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.saveItemPhoto(internalId, bitmap)
+        }
+        mainViewModel.onLoadItemPhoto = { internalId ->
+            com.xelth.eckwms_movfast.utils.SettingsManager.loadItemPhoto(internalId)
+        }
     }
 
     // Wire shipment fetching callback
@@ -208,9 +216,11 @@ fun MainScreen(
 
     // Bridge: forward repair photo from ScanRecoveryViewModel to MainScreenViewModel
     val repairPhoto by viewModel.repairPhotoBitmap.observeAsState(null)
-    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode, isDeviceCheckMode) {
+    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode, isDeviceCheckMode, isInventoryMode) {
         if (repairPhoto != null) {
-            if (isReceivingMode) {
+            if (isInventoryMode) {
+                mainViewModel.onInventoryPhotoCaptured(repairPhoto!!)
+            } else if (isReceivingMode) {
                 mainViewModel.onReceivingPhotoCaptured(repairPhoto!!)
             } else if (isDeviceCheckMode) {
                 mainViewModel.onDeviceCheckPhotoCaptured(repairPhoto!!)
@@ -356,32 +366,46 @@ fun MainScreen(
                         )
                     }
                 } else if (isInventoryMode) {
-                    Column(
+                    val inventoryItemPhoto by mainViewModel.inventoryItemPhoto.observeAsState(null)
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(consoleHeight + overlap)
                             .background(Color.Black)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val status by mainViewModel.inventoryStatus.observeAsState("Inventory Mode")
-                            Text(
-                                text = status,
-                                color = Color(0xFF795548),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                        // Background photo of current item
+                        if (inventoryItemPhoto != null) {
+                            Image(
+                                bitmap = inventoryItemPhoto!!.asImageBitmap(),
+                                contentDescription = "Item photo",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .alpha(0.2f),
+                                contentScale = ContentScale.Crop
                             )
                         }
-                        ConsoleView(
-                            logs = consoleLogs,
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            scannerEnabled = false,
-                            onScannerToggle = {}
-                        )
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val status by mainViewModel.inventoryStatus.observeAsState("Inventory Mode")
+                                Text(
+                                    text = status,
+                                    color = Color(0xFFFFC107),  // Amber
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            ConsoleView(
+                                logs = consoleLogs,
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                scannerEnabled = false,
+                                onScannerToggle = {}
+                            )
+                        }
                     }
                 } else if (isReceivingMode) {
                     Column(

@@ -93,6 +93,16 @@ object SettingsManager {
     fun saveDeviceStatus(status: String) = prefs.edit().putString(KEY_DEVICE_STATUS, status).apply()
     fun getDeviceStatus(): String = prefs.getString(KEY_DEVICE_STATUS, "unknown") ?: "unknown"
 
+    // Warehouse info (from server status endpoint, for client detection)
+    private const val KEY_WAREHOUSE_NAME = "warehouse_name"
+    private const val KEY_WAREHOUSE_ADDRESS = "warehouse_address"
+    fun saveWarehouseInfo(name: String, address: String) = prefs.edit()
+        .putString(KEY_WAREHOUSE_NAME, name.trim())
+        .putString(KEY_WAREHOUSE_ADDRESS, address.trim())
+        .apply()
+    fun getWarehouseName(): String = prefs.getString(KEY_WAREHOUSE_NAME, "") ?: ""
+    fun getWarehouseAddress(): String = prefs.getString(KEY_WAREHOUSE_ADDRESS, "") ?: ""
+
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
     fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
@@ -259,5 +269,136 @@ object SettingsManager {
     fun deleteRepairPhoto(slotIndex: Int) {
         File(repairPhotoDir(), "slot_$slotIndex.webp").delete()
         File(repairPhotoDir(), "slot_$slotIndex.jpg").delete() // cleanup old format
+    }
+
+    // --- Item Photos (global, by internal ID) ---
+    // Filename format: {internalId}__{timestamp}_{checksum}.webp
+    // Internal ID prefix defines type: i=item, b=box, p=place, l=label
+    // Example: i0000000000000000001__1738764521000_A7F3.webp
+    // Checksum: CRC16 of "{internalId}__{timestamp}" for validation
+
+    private fun itemPhotoDir(): File {
+        val dir = File(appContext.filesDir, "item_photos")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /** Sanitize ID to safe filename (alphanumeric only) */
+    private fun sanitizeForFilename(input: String): String {
+        return input.replace(Regex("[^a-zA-Z0-9]"), "").take(64)
+    }
+
+    /** CRC16-CCITT checksum for filename validation */
+    private fun crc16(data: String): String {
+        var crc = 0xFFFF
+        for (byte in data.toByteArray(Charsets.UTF_8)) {
+            crc = crc xor (byte.toInt() and 0xFF)
+            for (i in 0 until 8) {
+                crc = if (crc and 1 != 0) (crc shr 1) xor 0xA001 else crc shr 1
+            }
+        }
+        return String.format("%04X", crc and 0xFFFF)
+    }
+
+    /** Build structured filename: {id}__{timestamp}_{crc}.webp */
+    private fun buildPhotoFilename(internalId: String): String {
+        val sanitized = sanitizeForFilename(internalId)
+        val timestamp = System.currentTimeMillis()
+        val base = "${sanitized}__$timestamp"
+        val checksum = crc16(base)
+        return "${base}_$checksum"
+    }
+
+    /** Parse and validate filename, returns (internalId, timestamp) or null if invalid */
+    fun parsePhotoFilename(filename: String): Pair<String, Long>? {
+        val name = filename.removeSuffix(".webp")
+        // Format: {id}__{timestamp}_{crc}
+        val doubleSplit = name.split("__")
+        if (doubleSplit.size != 2) return null
+
+        val internalId = doubleSplit[0]
+        val suffixParts = doubleSplit[1].split("_")
+        if (suffixParts.size != 2) return null
+
+        val timestamp = suffixParts[0].toLongOrNull() ?: return null
+        val checksum = suffixParts[1]
+
+        // Validate checksum
+        val base = "${internalId}__$timestamp"
+        if (crc16(base) != checksum) {
+            Log.w("SettingsManager", "Invalid checksum for $filename")
+            return null
+        }
+
+        return Pair(internalId, timestamp)
+    }
+
+    /** Get type from internal ID prefix */
+    fun getTypeFromInternalId(internalId: String): String {
+        return when {
+            internalId.startsWith("i", ignoreCase = true) -> "item"
+            internalId.startsWith("b", ignoreCase = true) -> "box"
+            internalId.startsWith("p", ignoreCase = true) -> "place"
+            internalId.startsWith("l", ignoreCase = true) -> "label"
+            else -> "unknown"
+        }
+    }
+
+    /** Save photo with structured filename. Returns filename for reference. */
+    fun saveItemPhoto(internalId: String, bitmap: Bitmap): String? {
+        return try {
+            val filename = buildPhotoFilename(internalId)
+            val file = File(itemPhotoDir(), "$filename.webp")
+
+            // Delete old photos for this ID (keep only latest)
+            deleteOldPhotosForId(internalId)
+
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
+            }
+            Log.d("SettingsManager", "Saved photo: $filename.webp (${file.length() / 1024}KB)")
+            "$filename.webp"
+        } catch (e: Exception) {
+            Log.e("SettingsManager", "Failed to save photo: $internalId", e)
+            null
+        }
+    }
+
+    /** Delete older photos for the same internal ID (keep storage clean) */
+    private fun deleteOldPhotosForId(internalId: String) {
+        val sanitized = sanitizeForFilename(internalId)
+        val prefix = "${sanitized}__"
+        itemPhotoDir().listFiles()?.filter { it.name.startsWith(prefix) }?.forEach { file ->
+            file.delete()
+            Log.d("SettingsManager", "Deleted old photo: ${file.name}")
+        }
+    }
+
+    /** Load latest photo for internal ID (validates checksum) */
+    fun loadItemPhoto(internalId: String): Bitmap? {
+        val sanitized = sanitizeForFilename(internalId)
+        val prefix = "${sanitized}__"
+
+        // Find most recent valid file
+        val file = itemPhotoDir().listFiles()
+            ?.filter { it.name.startsWith(prefix) && it.name.endsWith(".webp") }
+            ?.filter { parsePhotoFilename(it.name) != null }  // validate checksum
+            ?.maxByOrNull { it.lastModified() }
+
+        if (file == null) return null
+
+        return try {
+            BitmapFactory.decodeFile(file.absolutePath)
+        } catch (e: Exception) {
+            Log.e("SettingsManager", "Failed to load photo: ${file.name}", e)
+            null
+        }
+    }
+
+    /** List all photos with metadata (for recovery/cleanup UI) */
+    fun listAllItemPhotos(): List<Pair<String, Long>> {
+        return itemPhotoDir().listFiles()
+            ?.mapNotNull { parsePhotoFilename(it.name) }
+            ?: emptyList()
     }
 }
