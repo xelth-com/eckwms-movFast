@@ -195,12 +195,24 @@ private fun ProductList(products: List<ProductEntity>) {
                             )
                         }
                     }
-                    if (p.listPrice > 0) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        // Stock quantity
                         Text(
-                            text = "%.2f".format(p.listPrice),
+                            text = "Qty: ${p.qtyAvailable.toInt()}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFFFB74D)
+                            fontWeight = FontWeight.Bold,
+                            color = if (p.qtyAvailable > 0) Color(0xFF4CAF50) else Color(0xFFFF5722)
                         )
+                        if (p.listPrice > 0) {
+                            Text(
+                                text = "%.2f".format(p.listPrice),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFFFB74D)
+                            )
+                        }
                     }
                 }
             }

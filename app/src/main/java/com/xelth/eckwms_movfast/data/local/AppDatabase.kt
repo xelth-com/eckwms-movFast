@@ -19,7 +19,7 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         ProductEntity::class,
         LocationEntity::class
     ],
-    version = 4,  // Added ProductEntity and LocationEntity for offline cache
+    version = 5,  // Added qtyAvailable to ProductEntity
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

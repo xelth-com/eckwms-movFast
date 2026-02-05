@@ -1419,6 +1419,7 @@ class ScanApiService(private val context: Context) {
                         defaultCode = defaultCode,
                         name = obj.optString("name", ""),
                         barcode = barcode,
+                        qtyAvailable = obj.optDouble("qty_available", 0.0),
                         listPrice = obj.optDouble("list_price", 0.0),
                         weight = obj.optDouble("weight", 0.0),
                         active = obj.optBoolean("active", true)

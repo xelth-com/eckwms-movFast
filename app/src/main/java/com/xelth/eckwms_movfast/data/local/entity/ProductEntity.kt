@@ -9,6 +9,7 @@ data class ProductEntity(
     val defaultCode: String,    // SKU (default_code in Odoo)
     val name: String,
     val barcode: String?,       // EAN13, nullable in Odoo
+    val qtyAvailable: Double = 0.0, // Stock on hand (aggregated from stock_quant)
     val listPrice: Double = 0.0,
     val weight: Double = 0.0,
     val active: Boolean = true,
