@@ -1,12 +1,14 @@
 package com.xelth.eckwms_movfast.utils
 
 import android.util.Log
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import org.bouncycastle.crypto.engines.AESEngine
+import org.bouncycastle.crypto.modes.GCMBlockCipher
+import org.bouncycastle.crypto.params.AEADParameters
+import org.bouncycastle.crypto.params.KeyParameter
 
 /**
  * Утилита для дешифровки ECK Smart QR-кодов (AES-192-GCM + Base32).
+ * Использует Bouncy Castle для поддержки нестандартного 16-байтового nonce.
  * Алгоритм совместим с реализацией на Node.js и Go серверах.
  *
  * Формат URL: ECKn.COM/{DATA:56}{IV:9}{SUFFIX:2} = 76 символов
@@ -21,7 +23,6 @@ object EckSecurityManager {
     init {
         for (i in BASE32_CHARS.indices) {
             BASE32_LOOKUP[BASE32_CHARS[i].code] = i
-            // Также поддерживаем lowercase
             BASE32_LOOKUP[BASE32_CHARS[i].lowercaseChar().code] = i
         }
     }
@@ -61,50 +62,38 @@ object EckSecurityManager {
 
             // 4. Парсинг структуры URL
             // Префикс (9: "ECKn.COM/") + Данные (56) + IV (9) + Суффикс (2) = 76
-            val base32Data = cleanCode.substring(9, 65)  // 56 символов Base32 = 35 байт
-            val base32Iv = cleanCode.substring(65, 74)   // 9 символов Base32 IV
-            val suffix = cleanCode.substring(74, 76)     // 2 символа суффикс
+            val base32Data = cleanCode.substring(9, 65)  // 56 символов Base32
+            val base32Iv = cleanCode.substring(65, 74)   // 9 символов ASCII IV
 
-            Log.d(TAG, "Parsing: data=${base32Data.take(10)}..., iv=$base32Iv, suffix=$suffix")
-
-            // 5. Декодирование Base32 → байты
-            // 56 символов Base32 = 56 * 5 / 8 = 35 байт (19 encrypted + 16 auth tag)
+            // 5. Декодирование Base32 → байты (56 символов = 35 байт)
             val decodedData = base32DecodeFixed(base32Data)
             if (decodedData.size < 35) {
                 Log.e(TAG, "Decoded data too short: ${decodedData.size}")
                 return null
             }
 
-            // 6. Разделяем encrypted message и auth tag
-            // Auth tag - последние 16 байт
-            val authTagLength = 16
-            val encryptedMessage = decodedData.copyOfRange(0, decodedData.size - authTagLength)
-            val authTag = decodedData.copyOfRange(decodedData.size - authTagLength, decodedData.size)
-
-            Log.d(TAG, "Encrypted: ${encryptedMessage.size} bytes, AuthTag: ${authTag.size} bytes")
-
-            // 7. Реконструкция IV
-            // В Node.js: Buffer.concat([betIv, betIv], 16) - берёт 9 байт IV + первые 7 байт повторно
-            // Но betIv - это ASCII байты Base32 символов, а не декодированные байты!
+            // 6. Реконструкция IV (16 байт из 9 ASCII символов)
+            // Go: copy(iv[:9], betIv) + copy(iv[9:], betIv[:7])
             val ivBytes = base32Iv.toByteArray(Charsets.US_ASCII)
             val iv = ByteArray(16)
-            System.arraycopy(ivBytes, 0, iv, 0, minOf(9, ivBytes.size))
-            for (i in 0 until 7) {
-                iv[9 + i] = ivBytes[i % ivBytes.size]
-            }
+            System.arraycopy(ivBytes, 0, iv, 0, 9)
+            System.arraycopy(ivBytes, 0, iv, 9, 7)
 
-            // 8. Дешифровка AES-192-GCM
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val secretKey = SecretKeySpec(keyBytes, "AES")
-            val spec = GCMParameterSpec(128, iv) // 128 bit = 16 byte tag
+            // DEBUG
+            Log.e(TAG, "Key (first 8): ${keyBytes.take(8).joinToString("") { "%02x".format(it) }}")
+            Log.e(TAG, "IV: ${iv.joinToString("") { "%02x".format(it) }}")
+            Log.e(TAG, "Data (35 bytes): ${decodedData.joinToString("") { "%02x".format(it) }}")
 
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+            // 7. Дешифровка с Bouncy Castle (поддерживает 16-байтовый nonce)
+            val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
+            val params = AEADParameters(KeyParameter(keyBytes), 128, iv, null)
+            cipher.init(false, params)
 
-            // Для GCM в Android нужно передать ciphertext + authTag вместе
-            val cipherTextWithTag = encryptedMessage + authTag
-            val decryptedBytes = cipher.doFinal(cipherTextWithTag)
+            val outputBytes = ByteArray(cipher.getOutputSize(decodedData.size))
+            var len = cipher.processBytes(decodedData, 0, decodedData.size, outputBytes, 0)
+            len += cipher.doFinal(outputBytes, len)
 
-            val result = String(decryptedBytes, Charsets.UTF_8)
+            val result = String(outputBytes, 0, len, Charsets.UTF_8)
             Log.d(TAG, "Decryption SUCCESS: $result")
             return result
 
@@ -116,7 +105,7 @@ object EckSecurityManager {
 
     /**
      * Декодирует Base32 строку фиксированной длины (56 символов → 35 байт)
-     * Алгоритм из Node.js betrugerToHex: каждые 8 символов Base32 = 5 байт
+     * Алгоритм из Node.js/Go: каждые 8 символов Base32 = 5 байт
      */
     private fun base32DecodeFixed(input: String): ByteArray {
         val iterations = input.length / 8  // 56 / 8 = 7 итераций
@@ -132,13 +121,12 @@ object EckSecurityManager {
             val b6 = BASE32_LOOKUP[input[i * 8 + 6].code]
             val b7 = BASE32_LOOKUP[input[i * 8 + 7].code]
 
-            // Проверка на невалидные символы
             if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0 || b4 < 0 || b5 < 0 || b6 < 0 || b7 < 0) {
                 Log.e(TAG, "Invalid Base32 character at iteration $i")
                 return ByteArray(0)
             }
 
-            // Преобразование 8 x 5-bit → 5 x 8-bit (из Node.js betrugerToHex)
+            // 8 x 5-bit → 5 x 8-bit (из Node.js/Go betrugerToHex/fromBase32)
             output[i * 5 + 0] = ((b0 shl 3) or (b1 shr 2)).toByte()
             output[i * 5 + 1] = ((b1 shl 6) or (b2 shl 1) or (b3 shr 4)).toByte()
             output[i * 5 + 2] = ((b3 shl 4) or (b4 shr 1)).toByte()

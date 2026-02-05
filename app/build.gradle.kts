@@ -72,6 +72,9 @@ dependencies {
     implementation(files("libs/xcscanner_qrcode_v1.3.56.1.7-release.aar"))
     implementation("com.google.accompanist:accompanist-permissions:0.31.1-alpha")
 
+    // Bouncy Castle for AES-GCM with non-standard 16-byte nonce
+    implementation("org.bouncycastle:bcprov-jdk18on:1.77")
+
     // Jetpack Compose Navigation
     implementation("androidx.navigation:navigation-compose:2.7.0")
     // Your existing Compose dependencies

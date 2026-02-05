@@ -2187,7 +2187,8 @@ class MainScreenViewModel : ViewModel() {
                 effectiveCode = decryptedPath
             } else {
                 android.util.Log.e("INVENTORY", "🔒 Decryption failed")
-                addLog("🔒 Encrypted (key missing?)")
+                addLog("⚠️ KEY MISMATCH - check server sync")
+                _inventoryStatus.value = "⚠️ Ключ не совпадает!"
             }
         } else {
             addLog(">>> $cleanCode")
@@ -2235,9 +2236,10 @@ class MainScreenViewModel : ViewModel() {
 
         // Smart Logic: Check if it's our Place Code
         // Use effectiveCode (decrypted path) for type detection
-        // Decrypted paths: /p/... = place, /i/... = item, /b/... = box
-        val isDecryptedPlace = decryptedPath?.startsWith("/p/") == true
-        val isDecryptedItem = decryptedPath?.startsWith("/i/") == true || decryptedPath?.startsWith("/b/") == true
+        // Decrypted format: p000... = place, i000... = item, b000... = box (19 chars: prefix + 18 digits)
+        val isDecryptedPlace = decryptedPath?.startsWith("p", ignoreCase = true) == true
+        val isDecryptedItem = decryptedPath?.startsWith("i", ignoreCase = true) == true ||
+                              decryptedPath?.startsWith("b", ignoreCase = true) == true
 
         // Fallback for non-encrypted codes
         val isLinkPlace = isLinkBarcode && !isEncryptedEck &&
