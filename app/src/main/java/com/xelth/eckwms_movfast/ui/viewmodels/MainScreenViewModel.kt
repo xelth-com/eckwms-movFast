@@ -76,7 +76,8 @@ data class RepairSlot(
     var barcode: String? = null,
     var isBound: Boolean = false,
     var isActive: Boolean = false,
-    var photo: Bitmap? = null
+    var photo: Bitmap? = null,                          // background photo (first photo sent)
+    val allPhotos: MutableList<Bitmap> = mutableListOf() // all photos for avatar picker (max 20)
 )
 
 sealed class RepairAction {
@@ -178,6 +179,14 @@ class MainScreenViewModel : ViewModel() {
     private var slotWaitingForBind: Int? = null
     private var lastSentAction: LastRepairAction? = null
 
+    // Deactivation timer: doubles on each action, resets on slot switch
+    private var activeSlotTimeoutMs = INITIAL_SLOT_TIMEOUT_MS
+
+    companion object {
+        private const val INITIAL_SLOT_TIMEOUT_MS = 60_000L
+        private const val MAX_SLOT_TIMEOUT_MS = 15 * 60_000L // 15 min cap
+    }
+
     // --- RECEIVING MODE STATE ---
 
     private val _isReceivingMode = MutableLiveData<Boolean>(false)
@@ -189,6 +198,13 @@ class MainScreenViewModel : ViewModel() {
     private var receivingSteps: List<Map<String, Any>> = emptyList()
     private var currentStepIndex: Int = 0
     val receivingData = mutableMapOf<String, Any>()
+
+    // Contents grid state (for step 4 "Contents")
+    private val contentsToggles = mutableMapOf<String, Boolean>()   // device→true, psu→false...
+    private val contentsBarcodes = mutableMapOf<String, String>()   // device→"SN123"...
+    private var activeContentItem: String? = null                    // last toggled-ON item for scan
+    private var packagingSubLevel = false                           // true = showing packaging options
+    private var selectedPackaging: String? = null
 
     // Modal trigger — set to step's uiSchema JSON when a modal step is clicked
     private val _showReceivingModal = MutableLiveData<String?>(null)
@@ -210,6 +226,9 @@ class MainScreenViewModel : ViewModel() {
 
     // Cached shipments for receiving dropdown
     private var cachedShipments: List<Map<String, Any>> = emptyList()
+    // Cached warehouse info for smart client detection (from server config)
+    private var warehouseName: String = ""
+    private var warehouseAddress: String = ""
 
     // Signals that shipment data has been loaded (triggers UI recomposition)
     private val _shipmentsLoaded = MutableLiveData<Boolean>(false)
@@ -218,6 +237,28 @@ class MainScreenViewModel : ViewModel() {
     // Track shipment loading error state
     private val _shipmentsError = MutableLiveData<String?>(null)
     val shipmentsError: LiveData<String?> = _shipmentsError
+
+    // --- RESTOCK MODE STATE ---
+
+    private val _isRestockMode = MutableLiveData<Boolean>(false)
+    val isRestockMode: LiveData<Boolean> = _isRestockMode
+
+    private val restockItems = mutableMapOf<String, Int>()
+
+    private val _restockStatus = MutableLiveData<String>("Ready to scan parts")
+    val restockStatus: LiveData<String> = _restockStatus
+
+    // --- INVENTORY MODE STATE ---
+
+    private val _isInventoryMode = MutableLiveData<Boolean>(false)
+    val isInventoryMode: LiveData<Boolean> = _isInventoryMode
+
+    private val inventoryItems = mutableMapOf<String, Int>()
+
+    private val _inventoryStatus = MutableLiveData<String>("Ready to count")
+    val inventoryStatus: LiveData<String> = _inventoryStatus
+
+    private var currentInventoryLocation: String = ""
 
     // --- DEVICE CHECK MODE STATE ---
 
@@ -282,6 +323,10 @@ class MainScreenViewModel : ViewModel() {
 
         if (_isRepairMode.value == true) {
             renderRepairGrid()
+        } else if (_isRestockMode.value == true) {
+            renderRestockGrid()
+        } else if (_isInventoryMode.value == true) {
+            renderInventoryGrid()
         } else if (_isReceivingMode.value == true) {
             renderReceivingGrid()
         } else if (_isDeviceCheckMode.value == true) {
@@ -299,7 +344,8 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("repair", "Repair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
             MainMenuButton("receiving", "Receiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
             MainMenuButton("device_check", "Check Dev", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
-            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT)
+            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT),
+            MainMenuButton("inventory", "Inventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -337,6 +383,14 @@ class MainScreenViewModel : ViewModel() {
     fun onButtonClick(action: String): String {
         addLog("Button clicked: $action")
 
+        if (_isRestockMode.value == true) {
+            return handleRestockButtonClick(action)
+        }
+
+        if (_isInventoryMode.value == true) {
+            return handleInventoryButtonClick(action)
+        }
+
         if (_isRepairMode.value == true) {
             return handleRepairButtonClick(action)
         }
@@ -364,7 +418,30 @@ class MainScreenViewModel : ViewModel() {
             return "handled"
         }
 
+        if (action == "navigate_restock") {
+            enterRestockMode()
+            return "handled"
+        }
+
+        if (action == "navigate_inventory") {
+            enterInventoryMode()
+            return "handled"
+        }
+
         return action
+    }
+
+    /**
+     * Handle long-press on grid buttons.
+     * Returns navigation action string or "handled".
+     */
+    fun onButtonLongClick(action: String): String {
+        addLog("Long press: $action")
+        return when (action) {
+            "act_photo" -> "capture_photo_continuous"
+            "act_scan" -> "capture_barcode_continuous"
+            else -> onButtonClick(action) // fallback to normal click
+        }
     }
 
     // --- REPAIR MODE LOGIC ---
@@ -385,7 +462,11 @@ class MainScreenViewModel : ViewModel() {
                 // Restore photo from disk if not already in memory
                 if (slot.photo == null) {
                     slot.photo = onLoadRepairPhoto?.invoke(slot.index)
-                    if (slot.photo != null) Log.d("RepairMode", "Restored photo for slot #${slot.index} from disk")
+                    if (slot.photo != null) {
+                        // Also add to allPhotos so it appears in the avatar picker
+                        if (slot.allPhotos.isEmpty()) slot.allPhotos.add(slot.photo!!)
+                        Log.d("RepairMode", "Restored photo for slot #${slot.index} from disk")
+                    }
                 }
             } else if (!slot.isBound) {
                 slot.barcode = null
@@ -537,13 +618,20 @@ class MainScreenViewModel : ViewModel() {
         if (active != null) {
             // Copy bitmap — original may be recycled by BitmapCache
             val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-            active.photo = copy
-            // Persist to disk so photo survives process death
-            onSaveRepairPhoto?.invoke(active.index, copy)
-            _activeSlotPhoto.value = copy
-            Log.d("RepairMode", "Photo stored in slot ${active.index}, copy=${copy.hashCode()}")
+            // Track all photos for avatar picker (limit 20)
+            if (active.allPhotos.size < 20) active.allPhotos.add(copy)
+            // First photo becomes the background, subsequent don't change it
+            if (active.photo == null) {
+                active.photo = copy
+                onSaveRepairPhoto?.invoke(active.index, copy)
+                _activeSlotPhoto.value = copy
+                Log.d("RepairMode", "First photo → background for slot ${active.index}")
+            } else {
+                Log.d("RepairMode", "Photo #${active.allPhotos.size} for slot ${active.index} (background unchanged)")
+            }
             uploadPhoto(active.barcode!!, bitmap)
-            _repairStatus.value = "Photo sent -> ${active.barcode}"
+            _repairStatus.value = "Photo sent -> ${active.barcode} (#${active.allPhotos.size})"
+            resetActiveTimer(active.index)
         } else {
             pendingAction = RepairAction.PendingPhoto(bitmap)
             _repairStatus.value = "Photo taken. Select slot to attach."
@@ -554,20 +642,30 @@ class MainScreenViewModel : ViewModel() {
     private fun activateSlot(index: Int) {
         slots.forEach { it.isActive = false }
         slots[index].isActive = true
+        activeSlotTimeoutMs = INITIAL_SLOT_TIMEOUT_MS // reset timeout for new slot
         _repairStatus.value = "Active: ${slots[index].barcode}"
         val photo = slots[index].photo
         Log.d("RepairMode", "activateSlot($index): photo=${if (photo != null) "exists (recycled=${photo.isRecycled})" else "null"}")
         _activeSlotPhoto.value = photo
         renderRepairGrid()
-        resetActiveTimer(index)
+        startActiveTimer(index)
     }
 
+    /** Restart timer AND double its duration (called on each action with active slot) */
     private fun resetActiveTimer(index: Int) {
+        activeSlotTimeoutMs = (activeSlotTimeoutMs * 2).coerceAtMost(MAX_SLOT_TIMEOUT_MS)
+        Log.d("RepairMode", "Timer reset: ${activeSlotTimeoutMs / 1000}s for slot #$index")
+        startActiveTimer(index)
+    }
+
+    /** Start deactivation timer at current duration (without doubling) */
+    private fun startActiveTimer(index: Int) {
         activeSlotJob?.cancel()
         activeSlotJob = viewModelScope.launch {
-            delay(60_000L)
+            delay(activeSlotTimeoutMs)
             if (index in slots.indices && slots[index].isActive) {
                 slots[index].isActive = false
+                _activeSlotPhoto.postValue(null)
                 _repairStatus.postValue("Timeout. Slot deactivated.")
                 renderRepairGrid()
             }
@@ -621,12 +719,14 @@ class MainScreenViewModel : ViewModel() {
 
     private fun clearSlot(index: Int) {
         if (index in slots.indices) {
-            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}")
+            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}, allPhotos=${slots[index].allPhotos.size}")
             slots[index].isBound = false
             slots[index].isActive = false
             slots[index].barcode = null
             slots[index].photo?.recycle()
             slots[index].photo = null
+            slots[index].allPhotos.forEach { it.recycle() }
+            slots[index].allPhotos.clear()
             onDeleteRepairPhoto?.invoke(index)
         }
         persistSlots()
@@ -649,6 +749,23 @@ class MainScreenViewModel : ViewModel() {
     fun getActiveSlotAction(): String? {
         val active = slots.find { it.isActive && it.isBound } ?: return null
         return "slot_${active.index}"
+    }
+
+    /** Get all photos for the active slot (for background picker) */
+    fun getActiveSlotPhotos(): List<Bitmap> {
+        val active = slots.find { it.isActive && it.isBound } ?: return emptyList()
+        return active.allPhotos.toList()
+    }
+
+    /** Change background photo of active slot to one from its allPhotos list */
+    fun changeSlotBackground(photoIndex: Int) {
+        val active = slots.find { it.isActive && it.isBound } ?: return
+        if (photoIndex !in active.allPhotos.indices) return
+        val newBg = active.allPhotos[photoIndex]
+        active.photo = newBg
+        onSaveRepairPhoto?.invoke(active.index, newBg)
+        _activeSlotPhoto.value = newBg
+        addLog("Background changed to photo #${photoIndex + 1} for slot #${active.index}")
     }
 
     /** Public delete: clears slot, deactivates, updates UI */
@@ -744,6 +861,37 @@ class MainScreenViewModel : ViewModel() {
                         "done" to c.optString("done", "#4CAF50")
                     )
                 }
+                // Parse contents_grid items and packaging
+                if (s.has("items")) {
+                    val itemsArr = s.getJSONArray("items")
+                    val items = mutableListOf<Map<String, Any>>()
+                    for (j in 0 until itemsArr.length()) {
+                        val item = itemsArr.getJSONObject(j)
+                        items.add(mapOf(
+                            "key" to item.getString("key"),
+                            "label" to item.getString("label"),
+                            "scannable" to item.optBoolean("scannable", false)
+                        ))
+                    }
+                    m["items"] = items
+                }
+                if (s.has("packaging")) {
+                    val pkg = s.getJSONObject("packaging")
+                    val opts = pkg.getJSONArray("options")
+                    val options = mutableListOf<Map<String, String>>()
+                    for (j in 0 until opts.length()) {
+                        val opt = opts.getJSONObject(j)
+                        options.add(mapOf(
+                            "value" to opt.getString("value"),
+                            "label" to opt.getString("label")
+                        ))
+                    }
+                    m["packaging"] = mapOf(
+                        "key" to pkg.getString("key"),
+                        "label" to pkg.getString("label"),
+                        "options" to options
+                    )
+                }
                 parsed.add(m)
             }
             receivingSteps = parsed
@@ -766,6 +914,14 @@ class MainScreenViewModel : ViewModel() {
 
     private fun fetchAndCacheShipments() {
         viewModelScope.launch {
+            // Load warehouse info for smart client detection
+            warehouseName = com.xelth.eckwms_movfast.utils.SettingsManager.getWarehouseName()
+            warehouseAddress = com.xelth.eckwms_movfast.utils.SettingsManager.getWarehouseAddress()
+            if (warehouseName.isNotEmpty()) {
+                addLog("Warehouse: $warehouseName ($warehouseAddress)")
+            } else {
+                addLog("Warning: warehouse info not available yet (client detection will use fallback)")
+            }
             addLog("Fetching recent shipments...")
             _shipmentsError.postValue(null) // Clear previous errors
             val fetchFn = onFetchShipments
@@ -825,10 +981,119 @@ class MainScreenViewModel : ViewModel() {
         }
 
         if (match != null) {
-            addLog("Auto-matched shipment ID: ${match["id"]}")
+            val track = match["trackingNumber"] as? String ?: "?"
+            addLog("Auto-match: barcode $barcode -> shipment #${match["id"]} ($track)")
             populateClientData(match)
         } else {
-            addLog("No direct match for $barcode in ${cachedShipments.size} shipments")
+            addLog("No auto-match for $barcode in ${cachedShipments.size} shipments")
+        }
+    }
+
+    /**
+     * Levenshtein edit distance between two strings (case-insensitive).
+     */
+    private fun levenshtein(a: String, b: String): Int {
+        val s = a.lowercase().trim()
+        val t = b.lowercase().trim()
+        val m = s.length
+        val n = t.length
+        val dp = Array(m + 1) { IntArray(n + 1) }
+        for (i in 0..m) dp[i][0] = i
+        for (j in 0..n) dp[0][j] = j
+        for (i in 1..m) for (j in 1..n) {
+            dp[i][j] = if (s[i - 1] == t[j - 1]) dp[i - 1][j - 1]
+            else minOf(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1
+        }
+        return dp[m][n]
+    }
+
+    /**
+     * Check if a name looks like our company using Levenshtein distance.
+     * Returns true if similarity ratio > 0.5 (i.e. distance < half the max length).
+     */
+    private fun looksLikeOurCompany(name: String): Boolean {
+        if (warehouseName.isEmpty() || name.isEmpty()) return false
+        val dist = levenshtein(name, warehouseName)
+        val maxLen = maxOf(name.length, warehouseName.length)
+        return dist.toDouble() / maxLen < 0.5
+    }
+
+    /**
+     * Extract both pickup and delivery data from rawResponse,
+     * then use Levenshtein to determine which is the client (not us).
+     * Returns Pair(clientName, clientAddress).
+     */
+    private fun detectClient(raw: JSONObject): Pair<String, String> {
+        // Extract pickup (sender) info
+        var pickupName = raw.optString("pickup_name", "")
+        val pName2 = raw.optString("pickup_name2", "")
+        if (pName2.isNotEmpty() && pName2 != pickupName) pickupName = "$pickupName $pName2".trim()
+        val pStreet = raw.optString("pickup_street", "")
+        val pZip = raw.optString("pickup_zip", "")
+        val pCity = raw.optString("pickup_city", "")
+        val pickupAddr = listOf(pStreet, "$pZip $pCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+        // Extract delivery (receiver) info
+        var deliveryName = raw.optString("delivery_name", "")
+        if (deliveryName.isEmpty()) deliveryName = raw.optString("recipient_name", "")
+        val dStreet = raw.optString("delivery_street", raw.optString("recipient_street", ""))
+        val dZip = raw.optString("delivery_zip", raw.optString("recipient_zip", ""))
+        val dCity = raw.optString("delivery_city", raw.optString("recipient_city", ""))
+        val deliveryAddr = listOf(dStreet, "$dZip $dCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+        // Smart detection: which one is our company?
+        val pickupIsUs = looksLikeOurCompany(pickupName)
+        val deliveryIsUs = looksLikeOurCompany(deliveryName)
+
+        val pickupDist = if (warehouseName.isNotEmpty() && pickupName.isNotEmpty()) levenshtein(pickupName, warehouseName) else -1
+        val deliveryDist = if (warehouseName.isNotEmpty() && deliveryName.isNotEmpty()) levenshtein(deliveryName, warehouseName) else -1
+
+        addLog("Pickup '$pickupName' dist=$pickupDist ${if (pickupIsUs) "(=US)" else ""} | Delivery '$deliveryName' dist=$deliveryDist ${if (deliveryIsUs) "(=US)" else ""}")
+
+        return when {
+            // Pickup is us → client is delivery
+            pickupIsUs && !deliveryIsUs -> {
+                addLog("Client = Delivery (pickup matches our company)")
+                Pair(deliveryName, deliveryAddr)
+            }
+            // Delivery is us → client is pickup (normal inbound)
+            deliveryIsUs && !pickupIsUs -> {
+                addLog("Client = Pickup (delivery matches our company)")
+                Pair(pickupName, pickupAddr)
+            }
+            // Both match or neither matches → fallback to pickup as client
+            else -> {
+                addLog("Client = Pickup (fallback)")
+                Pair(pickupName.ifEmpty { deliveryName }, if (pickupName.isNotEmpty()) pickupAddr else deliveryAddr)
+            }
+        }
+    }
+
+    /**
+     * Silent version of detectClient (no addLog) for use in list builders.
+     */
+    private fun detectClientSilent(raw: JSONObject): Pair<String, String> {
+        var pickupName = raw.optString("pickup_name", "")
+        val pName2 = raw.optString("pickup_name2", "")
+        if (pName2.isNotEmpty() && pName2 != pickupName) pickupName = "$pickupName $pName2".trim()
+        val pStreet = raw.optString("pickup_street", "")
+        val pZip = raw.optString("pickup_zip", "")
+        val pCity = raw.optString("pickup_city", "")
+        val pickupAddr = listOf(pStreet, "$pZip $pCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+        var deliveryName = raw.optString("delivery_name", "")
+        if (deliveryName.isEmpty()) deliveryName = raw.optString("recipient_name", "")
+        val dStreet = raw.optString("delivery_street", raw.optString("recipient_street", ""))
+        val dZip = raw.optString("delivery_zip", raw.optString("recipient_zip", ""))
+        val dCity = raw.optString("delivery_city", raw.optString("recipient_city", ""))
+        val deliveryAddr = listOf(dStreet, "$dZip $dCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+
+        val pickupIsUs = looksLikeOurCompany(pickupName)
+        val deliveryIsUs = looksLikeOurCompany(deliveryName)
+        return when {
+            pickupIsUs && !deliveryIsUs -> Pair(deliveryName, deliveryAddr)
+            deliveryIsUs && !pickupIsUs -> Pair(pickupName, pickupAddr)
+            else -> Pair(pickupName.ifEmpty { deliveryName }, if (pickupName.isNotEmpty()) pickupAddr else deliveryAddr)
         }
     }
 
@@ -840,18 +1105,9 @@ class MainScreenViewModel : ViewModel() {
         if (rawResponseStr != null) {
             try {
                 val raw = JSONObject(rawResponseStr)
-                // Client = sender (pickup)
-                clientName = raw.optString("pickup_name", "")
-                val name2 = raw.optString("pickup_name2", "")
-                if (name2.isNotEmpty() && name2 != clientName) clientName = "$clientName $name2".trim()
-                if (clientName.isEmpty()) {
-                    // Fallback to delivery/recipient for DHL
-                    clientName = raw.optString("delivery_name", raw.optString("recipient_name", ""))
-                }
-                val street = raw.optString("pickup_street", "")
-                val zip = raw.optString("pickup_zip", "")
-                val city = raw.optString("pickup_city", "")
-                clientAddress = listOf(street, "$zip $city".trim()).filter { it.isNotEmpty() }.joinToString(", ")
+                val (name, addr) = detectClient(raw)
+                clientName = name
+                clientAddress = addr
             } catch (_: Exception) {}
         }
 
@@ -859,6 +1115,7 @@ class MainScreenViewModel : ViewModel() {
         receivingData["selected_shipment_id"] = shipmentId
         if (clientName.isNotEmpty()) receivingData["client_name"] = clientName
         if (clientAddress.isNotEmpty()) receivingData["client_address"] = clientAddress
+        addLog("Client: $clientName | $clientAddress")
     }
 
     fun getShipmentOptions(): String {
@@ -879,8 +1136,8 @@ class MainScreenViewModel : ViewModel() {
             if (rawStr != null) {
                 try {
                     val raw = JSONObject(rawStr)
-                    client = raw.optString("delivery_name", "")
-                    if (client.isEmpty()) client = raw.optString("recipient_name", "")
+                    val (detectedClient, _) = detectClientSilent(raw)
+                    client = detectedClient
                 } catch (_: Exception) {}
             }
             if (client.isEmpty()) client = "Unknown"
@@ -916,9 +1173,9 @@ class MainScreenViewModel : ViewModel() {
             (it["id"] as? Number)?.toString() == shipmentId || it["id"]?.toString() == shipmentId
         }
         if (shipment != null) {
-            populateClientData(shipment)
             val track = shipment["trackingNumber"] as? String ?: "?"
-            addLog("Selected shipment: $track")
+            addLog("Shipment selected from list: #$shipmentId ($track)")
+            populateClientData(shipment)
             _receivingStatus.value = "✓ Shipment: $track"
         } else {
             addLog("Shipment $shipmentId not found in cache")
@@ -945,10 +1202,12 @@ class MainScreenViewModel : ViewModel() {
     data class ShipmentDisplayItem(
         val id: String,
         val trackingNumber: String,
-        val senderName: String,       // pickup = client (отправитель)
+        val senderName: String,       // pickup (raw)
         val senderAddress: String,
-        val receiverName: String,     // delivery = получатель
+        val receiverName: String,     // delivery (raw)
         val receiverAddress: String,
+        val clientName: String,       // smart-detected client (not us)
+        val clientAddress: String,    // smart-detected client address
         val productType: String,      // Overnight, X-Change, DHL Paket...
         val receivedBy: String,       // кто принял (receiver field)
         val status: String,
@@ -967,6 +1226,8 @@ class MainScreenViewModel : ViewModel() {
             var senderAddr = ""
             var receiverName = ""
             var receiverAddr = ""
+            var clientName = ""
+            var clientAddr = ""
             var productType = ""
             var receivedBy = ""
 
@@ -974,7 +1235,7 @@ class MainScreenViewModel : ViewModel() {
             if (rawStr != null) {
                 try {
                     val raw = JSONObject(rawStr)
-                    // Sender (pickup = client)
+                    // Sender (pickup)
                     senderName = raw.optString("pickup_name", "")
                     val sName2 = raw.optString("pickup_name2", "")
                     if (sName2.isNotEmpty() && sName2 != senderName) senderName = "$senderName $sName2".trim()
@@ -991,6 +1252,15 @@ class MainScreenViewModel : ViewModel() {
                     val dCity = raw.optString("delivery_city", raw.optString("recipient_city", ""))
                     receiverAddr = listOf(dStreet, "$dZip $dCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
 
+                    // Smart client detection via Levenshtein
+                    val pickupIsUs = looksLikeOurCompany(senderName)
+                    val deliveryIsUs = looksLikeOurCompany(receiverName)
+                    when {
+                        pickupIsUs && !deliveryIsUs -> { clientName = receiverName; clientAddr = receiverAddr }
+                        deliveryIsUs && !pickupIsUs -> { clientName = senderName; clientAddr = senderAddr }
+                        else -> { clientName = senderName.ifEmpty { receiverName }; clientAddr = if (senderName.isNotEmpty()) senderAddr else receiverAddr }
+                    }
+
                     // Product type: OPAL=product_type, DHL=product
                     productType = raw.optString("product_type", "")
                     if (productType.isEmpty()) productType = raw.optString("product", "")
@@ -1001,6 +1271,7 @@ class MainScreenViewModel : ViewModel() {
                 } catch (_: Exception) {}
             }
             if (senderName.isEmpty()) senderName = "Unknown"
+            if (clientName.isEmpty()) clientName = senderName
 
             // Date from lastActivityAt or createdAt
             var dateStr = ""
@@ -1016,7 +1287,7 @@ class MainScreenViewModel : ViewModel() {
 
             val isMatched = scannedBarcode != null && track == scannedBarcode
 
-            ShipmentDisplayItem(id, track, senderName, senderAddr, receiverName, receiverAddr, productType, receivedBy, status, dateStr, isMatched)
+            ShipmentDisplayItem(id, track, senderName, senderAddr, receiverName, receiverAddr, clientName, clientAddr, productType, receivedBy, status, dateStr, isMatched)
         }
     }
 
@@ -1024,6 +1295,11 @@ class MainScreenViewModel : ViewModel() {
         _isReceivingMode.value = false
         currentStepIndex = 0
         receivingData.clear()
+        contentsToggles.clear()
+        contentsBarcodes.clear()
+        activeContentItem = null
+        packagingSubLevel = false
+        selectedPackaging = null
         _showReceivingModal.value = null
         addLog("Exited Receiving Mode")
         initializeGrid()
@@ -1031,14 +1307,62 @@ class MainScreenViewModel : ViewModel() {
 
     private fun handleReceivingButtonClick(action: String): String {
         when {
+            action == "act_noop" -> return "handled"
+            action == "act_back_contents" -> {
+                packagingSubLevel = false
+                addLog("Back to contents")
+                renderReceivingGrid()
+                return "handled"
+            }
             action == "act_exit" -> {
                 exitReceivingMode()
                 return "handled"
             }
             action == "act_photo" -> return "capture_photo"
-            action == "act_scan" -> return "capture_barcode"
+            action == "act_scan" -> {
+                // In contents step, scan associates barcode with active item
+                val isContentsStep = currentStepIndex in receivingSteps.indices &&
+                    receivingSteps[currentStepIndex]["type"] == "contents_grid"
+                if (isContentsStep && activeContentItem != null) {
+                    addLog("Scanning for: $activeContentItem")
+                }
+                return "capture_barcode"
+            }
             action == "act_save_receiving" -> {
                 saveReceivingWorkflow()
+                return "handled"
+            }
+            action == "act_contents_ok" -> {
+                confirmContentsStep()
+                return "handled"
+            }
+            action == "act_packaging" -> {
+                packagingSubLevel = true
+                addLog("Packaging options opened")
+                renderReceivingGrid()
+                return "handled"
+            }
+            action.startsWith("act_pkg_") -> {
+                val value = action.removePrefix("act_pkg_")
+                selectedPackaging = value
+                packagingSubLevel = false
+                addLog("Packaging: $value")
+                renderReceivingGrid()
+                return "handled"
+            }
+            action.startsWith("act_toggle_") -> {
+                val key = action.removePrefix("act_toggle_")
+                val wasOn = contentsToggles[key] == true
+                contentsToggles[key] = !wasOn
+                if (!wasOn) {
+                    activeContentItem = key
+                    addLog("$key: ON (active for scan)")
+                } else {
+                    contentsBarcodes.remove(key)
+                    if (activeContentItem == key) activeContentItem = null
+                    addLog("$key: OFF")
+                }
+                renderReceivingGrid()
                 return "handled"
             }
             action.startsWith("step_") -> {
@@ -1048,6 +1372,29 @@ class MainScreenViewModel : ViewModel() {
             }
         }
         return "handled"
+    }
+
+    private fun confirmContentsStep() {
+        // Save all contents data to receivingData
+        contentsToggles.forEach { (key, isOn) ->
+            receivingData["${key}_included"] = isOn
+            val barcode = contentsBarcodes[key]
+            if (barcode != null) receivingData["${key}_barcode"] = barcode
+        }
+        if (selectedPackaging != null) {
+            receivingData["packaging"] = selectedPackaging!!
+        }
+
+        // Log summary
+        val summary = contentsToggles.entries.joinToString(", ") { (k, v) ->
+            val bc = contentsBarcodes[k]
+            if (v) "$k=ON${if (bc != null) "($bc)" else ""}" else "$k=OFF"
+        }
+        addLog("Contents confirmed: $summary, packaging=${selectedPackaging ?: "not set"}")
+
+        // Reset contents state and advance
+        packagingSubLevel = false
+        advanceToNextStep()
     }
 
     private fun handleStepClick(stepId: String) {
@@ -1081,6 +1428,19 @@ class MainScreenViewModel : ViewModel() {
                 _receivingStatus.value = "Select shipment or long-press for manual"
                 _showShipmentPicker.value = true
             }
+            "contents_grid" -> {
+                // Contents grid is rendered inline — just update status
+                _receivingStatus.value = "${step["label"]} — toggle items, then OK"
+                addLog("Entering Contents step")
+                // Initialize toggles from items definition
+                @Suppress("UNCHECKED_CAST")
+                val items = step["items"] as? List<Map<String, Any>> ?: emptyList()
+                items.forEach { item ->
+                    val key = item["key"] as? String ?: return@forEach
+                    if (!contentsToggles.containsKey(key)) contentsToggles[key] = false
+                }
+                renderReceivingGrid()
+            }
         }
     }
 
@@ -1089,15 +1449,33 @@ class MainScreenViewModel : ViewModel() {
         if (currentStepIndex !in receivingSteps.indices) return
 
         val step = receivingSteps[currentStepIndex]
+
+        // Contents grid: associate barcode with active item
+        if (step["type"] == "contents_grid") {
+            val item = activeContentItem
+            if (item != null) {
+                contentsBarcodes[item] = barcode
+                contentsToggles[item] = true
+                addLog("$item barcode scanned: $barcode")
+                _receivingStatus.value = "\u2713 $item: $barcode"
+                renderReceivingGrid()
+            } else {
+                addLog("Barcode scanned but no active item selected: $barcode")
+                _receivingStatus.value = "Select an item first, then scan"
+            }
+            return
+        }
+
         val dataKey = step["dataKey"] as? String ?: return
 
         receivingData[dataKey] = barcode
-        _receivingStatus.value = "✓ $dataKey: $barcode"
-        addLog("✓ $dataKey = $barcode")
-
-        // If postal barcode just scanned, try to auto-match a shipment
+        _receivingStatus.value = "\u2713 $dataKey: $barcode"
+        addLog("Barcode scanned: $barcode")
         if (dataKey == "postal_barcode") {
+            addLog("Box created (inactive) — identifiable by barcode: $barcode")
             tryAutoMatchShipment(barcode)
+        } else {
+            addLog("$dataKey = $barcode")
         }
 
         advanceToNextStep()
@@ -1113,7 +1491,7 @@ class MainScreenViewModel : ViewModel() {
         val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
         receivingData[dataKey] = copy
         _receivingStatus.value = "✓ $dataKey: photo ${copy.width}x${copy.height}"
-        addLog("✓ $dataKey = photo ${copy.width}x${copy.height}")
+        addLog("Photo captured: $dataKey (${copy.width}x${copy.height})")
         advanceToNextStep()
     }
 
@@ -1132,6 +1510,18 @@ class MainScreenViewModel : ViewModel() {
         } else {
             val next = receivingSteps[currentStepIndex]
             _receivingStatus.value = "Step ${currentStepIndex + 1}: ${next["label"]}"
+
+            // Contents grid: initialize toggles when entering this step
+            if (next["type"] == "contents_grid") {
+                @Suppress("UNCHECKED_CAST")
+                val items = next["items"] as? List<Map<String, Any>> ?: emptyList()
+                items.forEach { item ->
+                    val key = item["key"] as? String ?: return@forEach
+                    if (!contentsToggles.containsKey(key)) contentsToggles[key] = false
+                }
+                _receivingStatus.value = "${next["label"]} — toggle items, then OK"
+                addLog("Entering Contents step")
+            }
 
             // Auto-open steps after a short delay (e.g. after scan → show list/form)
             if (next["autoOpen"] == true) {
@@ -1216,33 +1606,120 @@ class MainScreenViewModel : ViewModel() {
     private fun renderReceivingGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        // Top row: UNDO-placeholder | PHOTO | SCAN
-        uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to "#37474F", "action" to "act_noop"))
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "act_photo"))
+        // Check if current step is contents_grid
+        val isContentsStep = currentStepIndex in receivingSteps.indices &&
+            receivingSteps[currentStepIndex]["type"] == "contents_grid"
+
+        // Top row: BACK | PHOTO | SCAN
+        val backAction = if (isContentsStep && packagingSubLevel) "act_back_contents" else "act_noop"
+        val backColor = if (isContentsStep && packagingSubLevel) "#546E7A" else "#37474F"
+        val backLabel = if (isContentsStep && packagingSubLevel) "\u25C0 BACK" else "UNDO"
+        uiItems.add(mapOf("type" to "button", "label" to backLabel, "color" to backColor, "action" to backAction))
+        uiItems.add(mapOf("type" to "button", "label" to "PHOTO",
+            "color" to if (isContentsStep) "#1A1A1A" else "#9C27B0",
+            "action" to if (isContentsStep) "act_noop" else "act_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Workflow step buttons
         receivingSteps.forEachIndexed { index, step ->
             val stepId = step["id"] as? String ?: "step_$index"
-            val label = step["label"] as? String ?: "Step ${index + 1}"
             @Suppress("UNCHECKED_CAST")
             val colors = step["colors"] as? Map<String, String>
 
-            val color = when {
-                index < currentStepIndex -> colors?.get("done") ?: "#4CAF50"
-                index == currentStepIndex -> colors?.get("active") ?: "#FF9800"
-                else -> colors?.get("pending") ?: "#424242"
+            if (isContentsStep && index == currentStepIndex) {
+                // Current contents step → becomes "OK" button
+                val okColor: Any = colors?.get("active") ?: "#FFCA28"
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to "OK \u2713",
+                    "color" to okColor,
+                    "action" to "act_contents_ok"
+                ))
+            } else {
+                val label = step["label"] as? String ?: "Step ${index + 1}"
+                val color = when {
+                    index < currentStepIndex -> colors?.get("done") ?: "#4CAF50"
+                    index == currentStepIndex -> colors?.get("active") ?: "#FF9800"
+                    // Dim all non-current steps when in contents mode
+                    isContentsStep -> "#1A1A1A"
+                    else -> colors?.get("pending") ?: "#424242"
+                }
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to label,
+                    "color" to color,
+                    "action" to if (isContentsStep) "act_noop" else "step_$stepId"
+                ))
             }
-
-            uiItems.add(mapOf(
-                "type" to "button",
-                "label" to label,
-                "color" to color,
-                "action" to "step_$stepId"
-            ))
         }
 
-        // SAVE button when all steps done — bright blue to stand out from green done steps
+        // Contents grid items (only when step 4 is active)
+        if (isContentsStep) {
+            val step = receivingSteps[currentStepIndex]
+            @Suppress("UNCHECKED_CAST")
+            val items = step["items"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val packaging = step["packaging"] as? Map<String, Any>
+
+            if (packagingSubLevel && packaging != null) {
+                // Sub-level: packaging options
+                @Suppress("UNCHECKED_CAST")
+                val options = packaging["options"] as? List<Map<String, String>> ?: emptyList()
+                options.forEach { opt ->
+                    val value = opt["value"] ?: ""
+                    val label = opt["label"] ?: value
+                    val isSelected = selectedPackaging == value
+                    uiItems.add(mapOf(
+                        "type" to "button",
+                        "label" to label,
+                        "color" to if (isSelected) "#4CAF50" else "#5C6BC0",
+                        "action" to "act_pkg_$value"
+                    ))
+                }
+            } else {
+                // Main level: item toggles + packaging button
+                items.forEach { item ->
+                    val key = item["key"] as? String ?: ""
+                    val label = item["label"] as? String ?: key
+                    val isOn = contentsToggles[key] == true
+                    val isActive = activeContentItem == key
+                    val barcode = contentsBarcodes[key]
+                    val displayLabel = when {
+                        barcode != null -> "$label \u2713"  // has barcode
+                        isOn -> "$label \u25CF"             // toggled on (filled circle)
+                        else -> label
+                    }
+                    val color = when {
+                        isActive -> "#66BB6A"   // bright green = active for scanning
+                        isOn -> "#388E3C"       // dark green = on but not active
+                        else -> "#424242"        // grey = off
+                    }
+                    uiItems.add(mapOf(
+                        "type" to "button",
+                        "label" to displayLabel,
+                        "color" to color,
+                        "action" to "act_toggle_$key"
+                    ))
+                }
+                // Packaging button
+                if (packaging != null) {
+                    val pkgLabel = if (selectedPackaging != null) {
+                        @Suppress("UNCHECKED_CAST")
+                        val options = packaging["options"] as? List<Map<String, String>> ?: emptyList()
+                        val selected = options.find { it["value"] == selectedPackaging }
+                        selected?.get("label") ?: "Packaging \u25BC"
+                    } else "Packaging \u25BC"
+                    uiItems.add(mapOf(
+                        "type" to "button",
+                        "label" to pkgLabel,
+                        "color" to if (selectedPackaging != null) "#4CAF50" else "#5C6BC0",
+                        "action" to "act_packaging"
+                    ))
+                }
+            }
+        }
+
+        // SAVE button when all steps done
         if (currentStepIndex >= receivingSteps.size && receivingSteps.isNotEmpty()) {
             uiItems.add(mapOf("type" to "button", "label" to "\uD83D\uDCBE SAVE", "color" to "#2196F3", "action" to "act_save_receiving"))
         }
@@ -1250,10 +1727,12 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT at HALF_RIGHT row=1 last col (same as repair mode)
+        // EXIT at HALF_RIGHT row=1 last col
         val cols = gridManager.contentGrid.cols
         gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
+            mapOf("type" to "button", "label" to "\u2715",
+                "color" to if (isContentsStep) "#1A1A1A" else "#F44336",
+                "action" to if (isContentsStep) "act_noop" else "act_exit"),
             200
         )
 
@@ -1596,6 +2075,272 @@ class MainScreenViewModel : ViewModel() {
         val cols = gridManager.contentGrid.cols
         gridManager.contentGrid.placeContentAt(1, cols - 1,
             mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
+            200
+        )
+
+        updateRenderCells()
+    }
+
+    // --- INVENTORY MODE LOGIC ---
+
+    fun enterInventoryMode() {
+        _isInventoryMode.value = true
+        _isRestockMode.value = false
+        _isRepairMode.value = false
+        _isReceivingMode.value = false
+        _isDeviceCheckMode.value = false
+
+        currentInventoryLocation = ""
+        updateInventoryConsole()
+        renderInventoryGrid()
+        addLog("Entered Inventory Mode")
+    }
+
+    fun exitInventoryMode() {
+        _isInventoryMode.value = false
+        initializeGrid()
+    }
+
+    private fun handleInventoryButtonClick(action: String): String {
+        when (action) {
+            "act_exit" -> {
+                exitInventoryMode()
+                return "handled"
+            }
+            "act_submit_inventory" -> {
+                submitInventory()
+                return "handled"
+            }
+            "act_clear_inventory" -> {
+                inventoryItems.clear()
+                currentInventoryLocation = ""
+                _inventoryStatus.value = "Cleared"
+                updateInventoryConsole()
+                renderInventoryGrid()
+                return "handled"
+            }
+            "act_set_location" -> {
+                _inventoryStatus.value = "Scan location barcode..."
+                return "capture_barcode"
+            }
+            "act_scan" -> return "capture_barcode"
+        }
+        return "handled"
+    }
+
+    fun onInventoryScan(barcode: String) {
+        val cleanCode = barcode.trim().uppercase()
+
+        // Если локация не установлена — первый скан это локация
+        if (currentInventoryLocation.isEmpty()) {
+            currentInventoryLocation = cleanCode
+            _inventoryStatus.value = "Location: $cleanCode"
+            addLog("Location set: $cleanCode")
+            updateInventoryConsole()
+            renderInventoryGrid()
+            return
+        }
+
+        // Иначе это товар/устройство
+        val currentQty = inventoryItems[cleanCode] ?: 0
+        inventoryItems[cleanCode] = currentQty + 1
+        addLog("Counted: $cleanCode (${inventoryItems[cleanCode]})")
+        _inventoryStatus.value = "[$currentInventoryLocation] +$cleanCode"
+        updateInventoryConsole()
+    }
+
+    private fun updateInventoryConsole() {
+        val header = if (currentInventoryLocation.isNotEmpty()) {
+            "--- INVENTORY @ $currentInventoryLocation ---"
+        } else {
+            "--- SCAN LOCATION FIRST ---"
+        }
+        val items = inventoryItems.entries.map { (item, qty) ->
+            "%-15s : %d".format(item, qty)
+        }.sorted()
+        val summary = "Items: ${inventoryItems.size} | Total: ${inventoryItems.values.sum()}"
+        _consoleLogs.postValue(listOf(header) + items + listOf("", summary))
+    }
+
+    private fun submitInventory() {
+        if (currentInventoryLocation.isEmpty()) {
+            _inventoryStatus.value = "Set location first!"
+            return
+        }
+        if (inventoryItems.isEmpty()) {
+            _inventoryStatus.value = "Nothing to submit!"
+            return
+        }
+
+        val itemsArray = JSONArray()
+        inventoryItems.forEach { (item, qty) ->
+            val itemObj = JSONObject()
+            itemObj.put("barcode", item)
+            itemObj.put("quantity", qty)
+            itemsArray.put(itemObj)
+        }
+
+        val payload = JSONObject()
+        payload.put("location", currentInventoryLocation)
+        payload.put("items", itemsArray)
+        payload.put("timestamp", System.currentTimeMillis())
+
+        onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+
+        addLog("Inventory submitted: ${inventoryItems.size} items @ $currentInventoryLocation")
+        _inventoryStatus.value = "Submitted!"
+
+        inventoryItems.clear()
+        currentInventoryLocation = ""
+        updateInventoryConsole()
+
+        viewModelScope.launch {
+            delay(1500)
+            if (_isInventoryMode.value == true) {
+                _inventoryStatus.value = "Scan next location..."
+                renderInventoryGrid()
+            }
+        }
+    }
+
+    private fun renderInventoryGrid() {
+        val uiItems = mutableListOf<Map<String, Any>>()
+
+        // Кнопка локации меняет цвет в зависимости от состояния
+        val locationColor = if (currentInventoryLocation.isEmpty()) "#FF5722" else "#4CAF50"
+        val locationLabel = if (currentInventoryLocation.isEmpty()) "SET LOC" else currentInventoryLocation.takeLast(8)
+
+        uiItems.add(mapOf("type" to "button", "label" to locationLabel, "color" to locationColor, "action" to "act_set_location"))
+        uiItems.add(mapOf("type" to "button", "label" to "SUBMIT", "color" to "#2196F3", "action" to "act_submit_inventory"))
+        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        uiItems.add(mapOf("type" to "button", "label" to "CLEAR", "color" to "#D32F2F", "action" to "act_clear_inventory"))
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
+
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
+            200
+        )
+
+        updateRenderCells()
+    }
+
+    // --- RESTOCK MODE LOGIC ---
+
+    fun enterRestockMode() {
+        _isRestockMode.value = true
+        _isRepairMode.value = false
+        _isReceivingMode.value = false
+        _isDeviceCheckMode.value = false
+
+        updateRestockConsole()
+        renderRestockGrid()
+        addLog("Entered Restock Mode")
+    }
+
+    fun exitRestockMode() {
+        _isRestockMode.value = false
+        initializeGrid()
+    }
+
+    private fun handleRestockButtonClick(action: String): String {
+        when (action) {
+            "act_exit" -> {
+                exitRestockMode()
+                return "handled"
+            }
+            "act_submit_restock" -> {
+                submitRestockOrder()
+                return "handled"
+            }
+            "act_clear_restock" -> {
+                restockItems.clear()
+                _restockStatus.value = "Order cleared"
+                updateRestockConsole()
+                renderRestockGrid()
+                return "handled"
+            }
+            "act_scan" -> return "capture_barcode"
+            "act_photo" -> return "capture_photo"
+        }
+        return "handled"
+    }
+
+    fun onRestockScan(barcode: String) {
+        val cleanCode = barcode.trim().uppercase()
+
+        val isValidPart = cleanCode.length in 8..15 &&
+                cleanCode[0].isLetter() &&
+                cleanCode.any { it.isDigit() }
+
+        if (isValidPart) {
+            val currentQty = restockItems[cleanCode] ?: 0
+            restockItems[cleanCode] = currentQty + 1
+            addLog("Added: $cleanCode (Total: ${restockItems[cleanCode]})")
+            _restockStatus.value = "Added: $cleanCode"
+            updateRestockConsole()
+        } else {
+            addLog("Invalid Part # format: $cleanCode")
+            _restockStatus.value = "Invalid Part # format"
+        }
+    }
+
+    private fun updateRestockConsole() {
+        val header = "--- RESTOCK ORDER ---"
+        val items = restockItems.entries.map { (part, qty) ->
+            "%-12s : %d".format(part, qty)
+        }.sorted()
+        val summary = "Total Items: ${restockItems.values.sum()} | Unique: ${restockItems.size}"
+        _consoleLogs.postValue(listOf(header) + items + listOf("", summary))
+    }
+
+    private fun submitRestockOrder() {
+        if (restockItems.isEmpty()) {
+            _restockStatus.value = "Order is empty!"
+            return
+        }
+
+        val itemsArray = JSONArray()
+        restockItems.forEach { (part, qty) ->
+            val itemObj = JSONObject()
+            itemObj.put("part_number", part)
+            itemObj.put("quantity", qty)
+            itemsArray.put(itemObj)
+        }
+
+        val payload = JSONObject()
+        payload.put("items", itemsArray)
+        payload.put("timestamp", System.currentTimeMillis())
+
+        onRepairEventSend?.invoke("RESTOCK", "order_submit", payload.toString())
+
+        addLog("Order submitted: ${restockItems.size} unique parts")
+        _restockStatus.value = "Order Sent!"
+
+        restockItems.clear()
+        updateRestockConsole()
+
+        viewModelScope.launch {
+            delay(1500)
+            if (_isRestockMode.value == true) _restockStatus.value = "Ready for next order"
+        }
+    }
+
+    private fun renderRestockGrid() {
+        val uiItems = mutableListOf<Map<String, Any>>()
+
+        uiItems.add(mapOf("type" to "button", "label" to "SEND ORDER", "color" to "#2196F3", "action" to "act_submit_restock"))
+        uiItems.add(mapOf("type" to "button", "label" to "CLEAR", "color" to "#D32F2F", "action" to "act_clear_restock"))
+        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
+
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
             200
         )
 

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -55,6 +56,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -83,6 +87,12 @@ fun MainScreen(
     val isDeviceCheckMode by mainViewModel.isDeviceCheckMode.observeAsState(false)
     val deviceCheckStatus by mainViewModel.deviceCheckStatus.observeAsState("")
 
+    // Restock mode state
+    val isRestockMode by mainViewModel.isRestockMode.observeAsState(false)
+
+    // Inventory mode state
+    val isInventoryMode by mainViewModel.isInventoryMode.observeAsState(false)
+
     // Read shared settings from ScanRecoveryViewModel
     val sharedGridRowCount by viewModel.gridRowCount.observeAsState(7)
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
@@ -96,9 +106,9 @@ fun MainScreen(
     var intakeLongPressAction by remember { mutableStateOf("") }
     val intakeFormState = remember { mutableStateMapOf<String, Any>() }
 
-    // State for slot delete confirmation
-    var showDeleteSlotDialog by remember { mutableStateOf(false) }
-    var deleteSlotAction by remember { mutableStateOf("") }
+    // State for slot long-press menu (delete + change background)
+    var showSlotMenu by remember { mutableStateOf(false) }
+    var slotMenuAction by remember { mutableStateOf("") }
 
     // State for receiving workflow modal
     val receivingModalFormState = remember { mutableStateMapOf<String, Any>() }
@@ -181,7 +191,11 @@ fun MainScreen(
                 return@LaunchedEffect
             }
             // Then existing mode routing
-            if (isReceivingMode) {
+            if (isRestockMode) {
+                mainViewModel.onRestockScan(scannedBarcode!!)
+            } else if (isInventoryMode) {
+                mainViewModel.onInventoryScan(scannedBarcode!!)
+            } else if (isReceivingMode) {
                 mainViewModel.onReceivingScan(scannedBarcode!!)
             } else if (isDeviceCheckMode) {
                 mainViewModel.onDeviceCheckScan(scannedBarcode!!)
@@ -256,8 +270,8 @@ fun MainScreen(
                                 onClick = {},
                                 onLongClick = {
                                     if (activeSlotAction != null) {
-                                        deleteSlotAction = activeSlotAction
-                                        showDeleteSlotDialog = true
+                                        slotMenuAction = activeSlotAction
+                                        showSlotMenu = true
                                     }
                                 }
                             )
@@ -312,6 +326,62 @@ fun MainScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                } else if (isRestockMode) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                            .background(Color.Black)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val status by mainViewModel.restockStatus.observeAsState("Restock Mode")
+                            Text(
+                                text = status,
+                                color = Color(0xFF00BCD4),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        ConsoleView(
+                            logs = consoleLogs,
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            scannerEnabled = false,
+                            onScannerToggle = {}
+                        )
+                    }
+                } else if (isInventoryMode) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                            .background(Color.Black)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val status by mainViewModel.inventoryStatus.observeAsState("Inventory Mode")
+                            Text(
+                                text = status,
+                                color = Color(0xFF795548),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        ConsoleView(
+                            logs = consoleLogs,
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            scannerEnabled = false,
+                            onScannerToggle = {}
+                        )
                     }
                 } else if (isReceivingMode) {
                     Column(
@@ -380,22 +450,32 @@ fun MainScreen(
                                 navController.navigate("cameraScanScreen?scan_mode=barcode")
                             }
                             "navigate_scan" -> navController.navigate("scanScreen")
-                            "navigate_restock" -> navController.navigate("restockScreen")
                             "navigate_ai" -> navController.navigate("scanScreen")
                             "navigate_settings" -> navController.navigate("settings")
                         }
                     },
                     onButtonLongClick = { action ->
-                        mainViewModel.addLog("Long press: $action")
-                        intakeLongPressAction = action
-                        intakeFormState.clear()
-                        try {
-                            val inputStream = context.assets.open("workflows/device_intake.json")
-                            val json = inputStream.bufferedReader().use { it.readText() }
-                            intakeConfigJson = json
-                            showIntakeSheet = true
-                        } catch (e: Exception) {
-                            mainViewModel.addLog("Error loading intake config: ${e.message}")
+                        val result = mainViewModel.onButtonLongClick(action)
+                        when (result) {
+                            "capture_photo_continuous" -> {
+                                navController.navigate("cameraScanScreen?scan_mode=workflow_capture_continuous")
+                            }
+                            "capture_barcode_continuous" -> {
+                                navController.navigate("cameraScanScreen?scan_mode=barcode_continuous")
+                            }
+                            else -> {
+                                // Existing intake sheet logic
+                                intakeLongPressAction = action
+                                intakeFormState.clear()
+                                try {
+                                    val inputStream = context.assets.open("workflows/device_intake.json")
+                                    val json = inputStream.bufferedReader().use { it.readText() }
+                                    intakeConfigJson = json
+                                    showIntakeSheet = true
+                                } catch (e: Exception) {
+                                    mainViewModel.addLog("Error loading intake config: ${e.message}")
+                                }
+                            }
                         }
                     },
                     onNetworkIndicatorClick = {
@@ -552,34 +632,19 @@ fun MainScreen(
                                             )
                                         }
                                     }
-                                    // Line 2: Sender (client) bold
+                                    // Line 2: Client (smart-detected) bold
                                     Text(
-                                        text = item.senderName,
+                                        text = item.clientName,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFFE0E0E0)
                                     )
-                                    if (item.senderAddress.isNotEmpty()) {
+                                    if (item.clientAddress.isNotEmpty()) {
                                         Text(
-                                            text = item.senderAddress,
+                                            text = item.clientAddress,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = Color(0xFF999999)
                                         )
-                                    }
-                                    // Line 3: Receiver
-                                    if (item.receiverName.isNotEmpty()) {
-                                        Text(
-                                            text = "\u2192 ${item.receiverName}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF80CBC4)
-                                        )
-                                        if (item.receiverAddress.isNotEmpty()) {
-                                            Text(
-                                                text = "  ${item.receiverAddress}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color(0xFF777777)
-                                            )
-                                        }
                                     }
                                     // Line 4: status | received by | date | MATCH
                                     Row(
@@ -665,26 +730,92 @@ fun MainScreen(
         }
     }
 
-    // Delete slot confirmation dialog
-    if (showDeleteSlotDialog) {
-        val slotBarcode = mainViewModel.getSlotBarcode(deleteSlotAction)
-        AlertDialog(
-            onDismissRequest = { showDeleteSlotDialog = false },
-            title = { Text("Delete Slot?") },
-            text = { Text("Unbind device $slotBarcode and clear all data for this slot?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    mainViewModel.deleteSlot(deleteSlotAction)
-                    showDeleteSlotDialog = false
-                }) {
-                    Text("Delete", color = Color.Red)
+    // Slot long-press menu: delete + change background from photo avatars
+    if (showSlotMenu) {
+        val slotBarcode = mainViewModel.getSlotBarcode(slotMenuAction)
+        val slotPhotos = remember(slotMenuAction) { mainViewModel.getActiveSlotPhotos() }
+        var showDeleteConfirm by remember { mutableStateOf(false) }
+
+        if (showDeleteConfirm) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text("Delete Slot?") },
+                text = { Text("Unbind device $slotBarcode and clear all data?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        mainViewModel.deleteSlot(slotMenuAction)
+                        showDeleteConfirm = false
+                        showSlotMenu = false
+                    }) { Text("Delete", color = Color.Red) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteSlotDialog = false }) {
-                    Text("Cancel")
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { showSlotMenu = false },
+                title = { Text("Slot: ${slotBarcode.takeLast(10)}") },
+                text = {
+                    Column {
+                        // Delete button
+                        TextButton(onClick = { showDeleteConfirm = true }) {
+                            Text("Delete Slot", color = Color.Red)
+                        }
+                        // Change background section
+                        if (slotPhotos.size > 1) {
+                            HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
+                            Text(
+                                "Change Background:",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                            )
+                            // Scrollable row of photo thumbnails
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.horizontalScroll(rememberScrollState())
+                            ) {
+                                slotPhotos.forEachIndexed { idx, photo ->
+                                    val isCurrentBg = mainViewModel.activeSlotPhoto.value == photo
+                                    Box(
+                                        modifier = Modifier
+                                            .size(56.dp)
+                                            .background(
+                                                if (isCurrentBg) Color(0xFF4CAF50) else Color.DarkGray,
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .padding(if (isCurrentBg) 2.dp else 0.dp)
+                                            .combinedClickable(
+                                                onClick = {
+                                                    mainViewModel.changeSlotBackground(idx)
+                                                    showSlotMenu = false
+                                                }
+                                            )
+                                    ) {
+                                        Image(
+                                            bitmap = photo.asImageBitmap(),
+                                            contentDescription = "Photo #${idx + 1}",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (slotPhotos.isEmpty()) {
+                            Text(
+                                "No photos yet",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showSlotMenu = false }) { Text("Close") }
                 }
-            }
-        )
+            )
+        }
     }
 }
