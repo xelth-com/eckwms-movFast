@@ -741,6 +741,19 @@ class ScanApiService(private val context: Context) {
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Device registration successful: $response")
+
+                // SECURE KEY SYNC: Extract enc_key from registration response
+                try {
+                    val json = JSONObject(response)
+                    val encKey = json.optString("enc_key", "")
+                    if (encKey.isNotEmpty()) {
+                        Log.i(TAG, "🔐 Received encryption key from server during registration")
+                        com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to parse enc_key from registration", e)
+                }
+
                 return@withContext ScanResult.Success(
                     type = "registration",
                     message = "Device registered successfully",
@@ -784,6 +797,22 @@ class ScanApiService(private val context: Context) {
                 HttpURLConnection.HTTP_OK -> {
                     val response = connection.inputStream.bufferedReader().use { it.readText() }
                     Log.d(TAG, "Device status check successful: $response")
+
+                    // SECURE KEY ROTATION: Check for updated enc_key in heartbeat
+                    try {
+                        val json = JSONObject(response)
+                        val encKey = json.optString("enc_key", "")
+                        if (encKey.isNotEmpty()) {
+                            val currentKey = com.xelth.eckwms_movfast.utils.SettingsManager.getEncKey()
+                            if (encKey != currentKey) {
+                                Log.i(TAG, "🔐 Encryption key rotated by server")
+                                com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse enc_key from status check", e)
+                    }
+
                     // Go server returns {"status":"running","version":"1.0.0"}
                     return@withContext ScanResult.Success(
                         type = "device_status",
@@ -808,6 +837,16 @@ class ScanApiService(private val context: Context) {
                         if (retryCode == HttpURLConnection.HTTP_OK) {
                             val response = retryConn.inputStream.bufferedReader().use { it.readText() }
                             Log.i(TAG, "✅ Device status check OK after re-auth")
+
+                            // Also check for enc_key after re-auth
+                            try {
+                                val json = JSONObject(response)
+                                val encKey = json.optString("enc_key", "")
+                                if (encKey.isNotEmpty()) {
+                                    com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
+                                }
+                            } catch (_: Exception) { }
+
                             return@withContext ScanResult.Success(type = "device_status", message = "Server is running", data = response)
                         }
                         retryConn.disconnect()
