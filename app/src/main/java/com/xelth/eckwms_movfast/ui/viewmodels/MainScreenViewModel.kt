@@ -2170,9 +2170,30 @@ class MainScreenViewModel : ViewModel() {
 
     fun onInventoryScan(barcode: String) {
         val cleanCode = barcode.trim()
+        android.util.Log.e("INVENTORY", ">>> onInventoryScan called: '$cleanCode'")
+
+        // --- DECRYPTION LAYER ---
+        // Check if this is an encrypted ECK Smart QR code and try to decrypt locally
+        var effectiveCode = cleanCode
+        var decryptedPath: String? = null
+
+        val isEncryptedEck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isEncryptedEckUrl(cleanCode)
+        if (isEncryptedEck) {
+            decryptedPath = com.xelth.eckwms_movfast.utils.EckSecurityManager.tryDecryptBarcode(cleanCode)
+            if (decryptedPath != null) {
+                android.util.Log.e("INVENTORY", "🔓 Decrypted: $decryptedPath")
+                addLog("🔓 $decryptedPath")
+                // Use decrypted path for type detection, but keep original for storage
+                effectiveCode = decryptedPath
+            } else {
+                android.util.Log.e("INVENTORY", "🔒 Decryption failed")
+                addLog("🔒 Encrypted (key missing?)")
+            }
+        } else {
+            addLog(">>> $cleanCode")
+        }
 
         // --- SECURITY FILTER ---
-
         // 1. Check for Trusted Link Barcodes (eck1.com, eck2.com, eck3.com)
         val isLinkBarcode = cleanCode.startsWith("eck1.com", ignoreCase = true) ||
                             cleanCode.startsWith("eck2.com", ignoreCase = true) ||
@@ -2181,9 +2202,7 @@ class MainScreenViewModel : ViewModel() {
                             cleanCode.startsWith("https://eck", ignoreCase = true)
 
         // 2. Check for Spoofing Attempts on Internal ID format
-        // Our internal IDs are EXACTLY 19 chars: prefix (i/b/p/l) + 18 digits
-        // Example: i000000000000000001
-        // Block only exact format matches to prevent injection
+        // Raw barcodes (NOT Link Barcodes) that look like internal IDs are rejected
         val isPotentialSpoof = !isLinkBarcode &&
                                cleanCode.length == 19 &&
                                cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
@@ -2200,15 +2219,14 @@ class MainScreenViewModel : ViewModel() {
         if (waitingForManualLocation) {
             waitingForManualLocation = false
             if (currentInventoryLocation.isNotEmpty() && inventoryItems.isNotEmpty()) {
-                // Submit previous session first
                 submitInventoryAndStartNew(cleanCode)
             } else {
                 currentInventoryLocation = cleanCode
                 inventoryItems.clear()
                 lastScannedInventoryItem = ""
                 _inventoryItemPhoto.value = null
-                _inventoryStatus.value = "LOC: $cleanCode (manual) — scan items"
-                addLog("Manual location set: $cleanCode")
+                _inventoryStatus.value = "LOC: ${effectiveCode.takeLast(20)} (manual)"
+                addLog("Manual location: $effectiveCode")
                 updateInventoryConsole()
                 renderInventoryGrid()
             }
@@ -2216,60 +2234,72 @@ class MainScreenViewModel : ViewModel() {
         }
 
         // Smart Logic: Check if it's our Place Code
-        // STRICTER RULES to avoid false positives (e.g. external parts like "P12345"):
-        // 1. Link Barcode containing /p/ or /place/ → ALWAYS Place (trusted)
-        // 2. Raw Barcode starting with "LOC-" → ALWAYS Place (legacy format)
-        // 3. Raw Barcode starting with "p-" (hyphen mandatory) → Place
-        // 4. Raw Barcode matching ^p[0-9]{5,}$ (e.g. p00001) → Internal place format
-        val isLinkPlace = isLinkBarcode && (cleanCode.contains("/p/") || cleanCode.contains("/place/"))
+        // Use effectiveCode (decrypted path) for type detection
+        // Decrypted paths: /p/... = place, /i/... = item, /b/... = box
+        val isDecryptedPlace = decryptedPath?.startsWith("/p/") == true
+        val isDecryptedItem = decryptedPath?.startsWith("/i/") == true || decryptedPath?.startsWith("/b/") == true
+
+        // Fallback for non-encrypted codes
+        val isLinkPlace = isLinkBarcode && !isEncryptedEck &&
+                          (cleanCode.contains("/p/") || cleanCode.contains("/place/"))
         val isRawPlace = !isLinkBarcode && (
             cleanCode.startsWith("LOC-", ignoreCase = true) ||
             cleanCode.startsWith("p-", ignoreCase = true) ||
             cleanCode.matches(Regex("^p[0-9]{5,}$", RegexOption.IGNORE_CASE))
         )
-        val isOurPlaceCode = isLinkPlace || isRawPlace
 
-        addLog("Scan: $cleanCode | Link=$isLinkBarcode | Place=$isOurPlaceCode")
+        val isOurPlaceCode = isDecryptedPlace || isLinkPlace || isRawPlace
+
+        android.util.Log.e("INVENTORY", "DecPlace=$isDecryptedPlace, LinkPlace=$isLinkPlace, RawPlace=$isRawPlace → Place=$isOurPlaceCode")
+        addLog("Place=$isOurPlaceCode")
 
         if (isOurPlaceCode) {
             // --- OUR LOCATION SCAN (smart flow) ---
+            // Display: use effectiveCode (decrypted /p/xxx), Store: use cleanCode (original)
+            val displayLoc = effectiveCode.takeLast(25)
+
             if (currentInventoryLocation.isEmpty()) {
                 // Start new session
                 currentInventoryLocation = cleanCode
                 lastScannedInventoryItem = ""
                 _inventoryItemPhoto.value = null
-                _inventoryStatus.value = "LOC: $cleanCode"
-                addLog("📍 Location SET: $cleanCode")
+                _inventoryStatus.value = "📍 $displayLoc"
+                addLog("📍 Location SET: $effectiveCode")
                 renderInventoryGrid()
             } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
                 // Scanned SAME location again -> Auto-Submit (close session)
-                addLog("📍 Same location re-scanned → SUBMIT")
+                addLog("📍 Same location → SUBMIT")
                 submitInventory()
             } else {
-                // Scanned DIFFERENT p-location -> Submit current, Start new
-                addLog("📍 New location: $cleanCode (was: $currentInventoryLocation)")
+                // Scanned DIFFERENT location -> Submit current, Start new
+                addLog("📍 New location: $effectiveCode")
                 submitInventoryAndStartNew(cleanCode)
             }
         } else {
-            // --- ITEM/BOX SCAN (or external barcode) ---
+            // --- ITEM/BOX SCAN ---
             if (currentInventoryLocation.isEmpty()) {
-                // No location set — prompt to use SET LOC for external codes
-                addLog("⚠️ Item without location: $cleanCode")
+                addLog("⚠️ Item without location: $effectiveCode")
                 _inventoryStatus.value = "⚠️ Scan Location first!"
             } else {
                 // Add item to current session
+                // Store using cleanCode (original barcode for uniqueness)
                 val itemType = if (inventoryBoxMode) "box" else "item"
                 val entry = inventoryItems.getOrPut(cleanCode) {
                     InventoryEntry(quantity = 0, type = itemType)
                 }
                 entry.quantity++
 
-                // Try to load existing photo using pseudo-internal ID (prefix + barcode)
-                if (entry.photo == null) {
-                    val itemId = "i$cleanCode"
-                    val boxId = "b$cleanCode"
-                    val existingPhoto = onLoadItemPhoto?.invoke(itemId)
-                        ?: onLoadItemPhoto?.invoke(boxId)
+                // Try to load existing photo
+                // For decrypted codes like /i/000...001, extract internal ID
+                val internalId = if (decryptedPath?.startsWith("/i/") == true) {
+                    decryptedPath.removePrefix("/i/")
+                } else if (decryptedPath?.startsWith("/b/") == true) {
+                    decryptedPath.removePrefix("/b/")
+                } else null
+
+                if (entry.photo == null && internalId != null) {
+                    val existingPhoto = onLoadItemPhoto?.invoke("i$internalId")
+                        ?: onLoadItemPhoto?.invoke("b$internalId")
                     if (existingPhoto != null) {
                         entry.photo = existingPhoto
                     }
@@ -2278,9 +2308,10 @@ class MainScreenViewModel : ViewModel() {
                 lastScannedInventoryItem = cleanCode
                 _inventoryItemPhoto.value = entry.photo
 
+                val displayItem = effectiveCode.takeLast(20)
                 val typeLabel = if (entry.type == "box") "📦" else "➕"
-                addLog("$typeLabel $cleanCode x${entry.quantity}")
-                _inventoryStatus.value = "$typeLabel $cleanCode"
+                addLog("$typeLabel $displayItem x${entry.quantity}")
+                _inventoryStatus.value = "$typeLabel $displayItem"
                 updateInventoryConsole()
             }
         }

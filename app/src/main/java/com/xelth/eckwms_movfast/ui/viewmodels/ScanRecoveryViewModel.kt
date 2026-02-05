@@ -427,7 +427,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             // Update UI state if NOT in workflow mode (AFTER handleGeneralScanResult to avoid race)
             // Only show in UI if it wasn't a special command (like order ID)
+            android.util.Log.e("SCAN_ROUTE", "Barcode: $it | workflow=${isWorkflowActive()} | special=$wasSpecialCommand")
             if (!isWorkflowActive() && !wasSpecialCommand) {
+                android.util.Log.e("SCAN_ROUTE", "→ POSTING to _scannedBarcode")
                 _scannedBarcode.postValue(it)
                 _scanState.postValue(ScanState.SUCCESS)
 
@@ -439,6 +441,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         addLog("Auto-reset to IDLE for continuous scanning")
                     }
                 }
+            } else {
+                android.util.Log.e("SCAN_ROUTE", "→ BLOCKED! workflow=${isWorkflowActive()} special=$wasSpecialCommand")
             }
         }
     }
@@ -1385,7 +1389,14 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
 
         // Return value indicates if this was a special command (for UI purposes)
-        return barcode.startsWith("ECK") || (barcode.startsWith("CS-DE-") && barcode.length > 10)
+        // ECK pairing codes start with "ECK" but NOT "ECK1.COM", "ECK2.COM", "ECK3.COM" (Link Barcodes)
+        val isLinkBarcodeCheck = barcode.startsWith("eck1.com", ignoreCase = true) ||
+                                 barcode.startsWith("eck2.com", ignoreCase = true) ||
+                                 barcode.startsWith("eck3.com", ignoreCase = true) ||
+                                 barcode.startsWith("http://eck", ignoreCase = true) ||
+                                 barcode.startsWith("https://eck", ignoreCase = true)
+        return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) ||
+               (barcode.startsWith("CS-DE-") && barcode.length > 10)
     }
 
     /**

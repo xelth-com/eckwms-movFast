@@ -103,6 +103,15 @@ object SettingsManager {
     fun getWarehouseName(): String = prefs.getString(KEY_WAREHOUSE_NAME, "") ?: ""
     fun getWarehouseAddress(): String = prefs.getString(KEY_WAREHOUSE_ADDRESS, "") ?: ""
 
+    // Encryption Key for ECK Smart QR Codes (AES-192 = 24 bytes = 48 hex chars)
+    // In production, this key should come from server during registration or BuildConfig
+    private const val KEY_ENC_KEY = "enc_key"
+    // DEV key from .env - MUST match server's ENC_KEY
+    private const val DEFAULT_ENC_KEY = "2f8cffbfb357cb957a427fc6669d6f92100fdd471d1ed2d2"
+
+    fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
+    fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
+
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
     fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
