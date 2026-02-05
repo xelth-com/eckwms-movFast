@@ -107,7 +107,7 @@ object SettingsManager {
     // In production, this key should come from server during registration or BuildConfig
     private const val KEY_ENC_KEY = "enc_key"
     // DEV key from .env - MUST match server's ENC_KEY
-    private const val DEFAULT_ENC_KEY = "2f8cffbfb357cb957a427fc6669d6f92100fdd471d1ed2d2"
+    private const val DEFAULT_ENC_KEY = "d34dac7ad4264dd83dde2b70f4b1b5c065d03723aa0debd2"
 
     fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
     fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
