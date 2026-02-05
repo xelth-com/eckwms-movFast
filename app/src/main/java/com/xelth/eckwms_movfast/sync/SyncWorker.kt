@@ -22,6 +22,15 @@ class SyncWorker(
     override suspend fun doWork(): Result {
         Log.d(TAG, "Sync worker started")
 
+        // Fat Client: refresh reference data (products/locations) on every sync cycle
+        try {
+            val repository = com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(applicationContext)
+            val refSuccess = repository.refreshReferenceData()
+            Log.d(TAG, "Reference data sync: ${if (refSuccess) "OK" else "skipped/failed"}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Reference sync error (non-fatal): ${e.message}")
+        }
+
         return try {
             val job = database.syncQueueDao().getNextJob()
 

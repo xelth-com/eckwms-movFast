@@ -3,6 +3,8 @@ package com.xelth.eckwms_movfast.data
 import android.content.Context
 import android.util.Log
 import com.xelth.eckwms_movfast.data.local.AppDatabase
+import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
+import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 import com.xelth.eckwms_movfast.sync.SyncManager
@@ -220,6 +222,52 @@ class WarehouseRepository(
         val cutoffTime = System.currentTimeMillis() - (daysToKeep * 24 * 60 * 60 * 1000L)
         db.scanDao().deleteOldScans(cutoffTime)
         Log.d(TAG, "Cleaned up scans older than $daysToKeep days")
+    }
+
+    // --- FAT CLIENT: Offline Reference Data ---
+
+    /**
+     * Look up a product by barcode or SKU in the local offline cache.
+     * Returns instantly from local SQLite — works without network.
+     */
+    suspend fun getLocalProduct(barcode: String): ProductEntity? = withContext(Dispatchers.IO) {
+        db.referenceDao().getProductByBarcode(barcode)
+    }
+
+    /**
+     * Look up a location by barcode in the local offline cache.
+     * Returns instantly from local SQLite — works without network.
+     */
+    suspend fun getLocalLocation(barcode: String): LocationEntity? = withContext(Dispatchers.IO) {
+        db.referenceDao().getLocationByBarcode(barcode)
+    }
+
+    /**
+     * Force refresh of reference data (Products & Locations) from server.
+     * Called by SyncWorker periodically and by DatabaseViewerScreen manually.
+     * @return true if at least one dataset was updated
+     */
+    suspend fun refreshReferenceData(): Boolean = withContext(Dispatchers.IO) {
+        val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
+        var updated = false
+        try {
+            val prods = api.fetchProducts()
+            if (prods.isNotEmpty()) {
+                db.referenceDao().insertProducts(prods) // REPLACE strategy = upsert
+                Log.d(TAG, "Refreshed ${prods.size} products")
+                updated = true
+            }
+
+            val locs = api.fetchLocations()
+            if (locs.isNotEmpty()) {
+                db.referenceDao().insertLocations(locs)
+                Log.d(TAG, "Refreshed ${locs.size} locations")
+                updated = true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to refresh reference data", e)
+        }
+        updated
     }
 
     private fun parseStatus(status: String): ScanStatus {

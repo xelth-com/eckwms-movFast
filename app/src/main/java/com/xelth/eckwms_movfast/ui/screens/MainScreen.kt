@@ -39,6 +39,7 @@ import com.xelth.eckwms_movfast.ui.viewmodels.MainScreenViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.AlertDialog
@@ -172,6 +173,13 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         val scanApiService = com.xelth.eckwms_movfast.api.ScanApiService(context)
         mainViewModel.onFetchShipments = { limit -> scanApiService.getShipments(limit) }
+    }
+
+    // Wire Fat Client offline lookup callbacks
+    LaunchedEffect(Unit) {
+        val repo = com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(context)
+        mainViewModel.onLookupProduct = { barcode -> repo.getLocalProduct(barcode) }
+        mainViewModel.onLookupLocation = { barcode -> repo.getLocalLocation(barcode) }
     }
 
     // Load receiving workflow JSON
@@ -360,48 +368,75 @@ fun MainScreen(
                         }
                         ConsoleView(
                             logs = consoleLogs,
-                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(bottom = 8.dp),
                             scannerEnabled = false,
                             onScannerToggle = {}
                         )
                     }
                 } else if (isInventoryMode) {
                     val inventoryItemPhoto by mainViewModel.inventoryItemPhoto.observeAsState(null)
+                    val inventoryLocationPhoto by mainViewModel.inventoryLocationPhoto.observeAsState(null)
+                    // Show location photo when place is last scanned, item photo otherwise
+                    val displayPhoto = inventoryLocationPhoto ?: inventoryItemPhoto
+                    val canTakePhoto = mainViewModel.canTakeInventoryPhoto()
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(consoleHeight + overlap)
                             .background(Color.Black)
                     ) {
-                        // Background photo of current item
-                        if (inventoryItemPhoto != null) {
+                        // Background photo - tap to take new photo
+                        if (displayPhoto != null) {
                             Image(
-                                bitmap = inventoryItemPhoto!!.asImageBitmap(),
-                                contentDescription = "Item photo",
+                                bitmap = displayPhoto.asImageBitmap(),
+                                contentDescription = "Photo",
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .alpha(0.2f),
+                                    .alpha(0.25f)
+                                    .clickable(enabled = canTakePhoto) {
+                                        navController.navigate("camera_scan/workflow_capture")
+                                    },
                                 contentScale = ContentScale.Crop
                             )
                         }
                         Column(modifier = Modifier.fillMaxSize()) {
+                            // Status bar - tap to take photo if possible
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .clickable(enabled = canTakePhoto) {
+                                        navController.navigate("camera_scan/workflow_capture")
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
                                 val status by mainViewModel.inventoryStatus.observeAsState("Inventory Mode")
-                                Text(
-                                    text = status,
-                                    color = Color(0xFFFFC107),  // Amber
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = status,
+                                        color = Color(0xFFFFC107),  // Amber
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (canTakePhoto) {
+                                        Text(
+                                            text = " 📷",
+                                            color = Color(0xFF9C27B0),
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                    }
+                                }
                             }
                             ConsoleView(
                                 logs = consoleLogs,
-                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(bottom = 8.dp),
                                 scannerEnabled = false,
                                 onScannerToggle = {}
                             )
@@ -433,7 +468,8 @@ fun MainScreen(
                             logs = consoleLogs,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f),
+                                .weight(1f)
+                                .padding(bottom = 8.dp),
                             scannerEnabled = false,
                             onScannerToggle = {}
                         )
@@ -443,7 +479,8 @@ fun MainScreen(
                         logs = consoleLogs,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(consoleHeight),
+                            .height(consoleHeight)
+                            .padding(bottom = 8.dp),
                         scannerEnabled = scannerEnabled,
                         onScannerToggle = { mainViewModel.toggleScanner() }
                     )

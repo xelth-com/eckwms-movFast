@@ -157,6 +157,9 @@ class MainScreenViewModel : ViewModel() {
     var onDeleteRepairPhoto: ((Int) -> Unit)? = null
     // Callback for fetching shipments (set by UI layer, backed by ScanApiService)
     var onFetchShipments: (suspend (limit: Int) -> ScanResult)? = null
+    // Fat Client: offline lookup callbacks (set by UI layer, backed by WarehouseRepository)
+    var onLookupProduct: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.ProductEntity?)? = null
+    var onLookupLocation: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.LocationEntity?)? = null
 
     private val _isRepairMode = MutableLiveData<Boolean>(false)
     val isRepairMode: LiveData<Boolean> = _isRepairMode
@@ -253,11 +256,12 @@ class MainScreenViewModel : ViewModel() {
     private val _isInventoryMode = MutableLiveData<Boolean>(false)
     val isInventoryMode: LiveData<Boolean> = _isInventoryMode
 
-    // Item barcode -> InventoryEntry (qty, type, photo)
+    // Item barcode -> InventoryEntry (qty, type, photo, displayName)
     data class InventoryEntry(
         var quantity: Int = 1,
         var type: String = "item",  // "item" or "box"
-        var photo: Bitmap? = null
+        var photo: Bitmap? = null,
+        var displayName: String? = null  // From offline DB (Fat Client)
     )
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
@@ -272,6 +276,15 @@ class MainScreenViewModel : ViewModel() {
     private var lastScannedInventoryItem: String = ""  // for photo attachment
     private var waitingForManualLocation: Boolean = false  // SET LOC was pressed, next scan = location
     private var inventoryBoxMode: Boolean = false  // toggle: false=items, true=boxes (for external barcodes)
+
+    // Enhanced: track last scanned type for photo attachment
+    private var lastScannedType: String = ""  // "place" or "item"
+    private var decryptedLocationId: String? = null  // internal ID for place photo (p000...)
+    private var decryptedItemId: String? = null  // internal ID for item photo (i000... or b000...)
+
+    // Place photo
+    private val _inventoryLocationPhoto = MutableLiveData<Bitmap?>(null)
+    val inventoryLocationPhoto: LiveData<Bitmap?> = _inventoryLocationPhoto
 
     // Persistence callbacks for item photos (global, by internal ID)
     // Internal ID prefix defines type: i=item, b=box, p=place, l=label
@@ -356,14 +369,14 @@ class MainScreenViewModel : ViewModel() {
 
     private fun initializeGrid() {
         val buttons = listOf(
-            MainMenuButton("settings", "Settings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
-            MainMenuButton("photo", "Photo", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
-            MainMenuButton("scan", "Scan", "#00BCD4", "capture_barcode", PRIORITIES.DEFAULT),
-            MainMenuButton("repair", "Repair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
-            MainMenuButton("receiving", "Receiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
-            MainMenuButton("device_check", "Check Dev", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
-            MainMenuButton("restock", "Restock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT),
-            MainMenuButton("inventory", "Inventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT)
+            MainMenuButton("settings", "⚙️\nSettings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
+            MainMenuButton("photo", "📷\nPhoto", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
+            MainMenuButton("scan", "🔍\nScan", "#00BCD4", "capture_barcode", PRIORITIES.DEFAULT),
+            MainMenuButton("repair", "🔧\nRepair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
+            MainMenuButton("receiving", "📦\nReceiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
+            MainMenuButton("device_check", "✅\nCheck", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
+            MainMenuButton("restock", "📋\nRestock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT),
+            MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -810,10 +823,10 @@ class MainScreenViewModel : ViewModel() {
 
         // Action buttons (top row): UNDO | PHOTO | SCAN (scan = top-right)
         val undoColor = if (lastSentAction != null) "#FF9800" else "#37474F"
-        uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to undoColor, "action" to "act_undo"))
+        uiItems.add(mapOf("type" to "button", "label" to "↩️\nUNDO", "color" to undoColor, "action" to "act_undo"))
         val photoColor = if (pendingAction is RepairAction.PendingPhoto) "#FF9800" else "#9C27B0"
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to photoColor, "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO", "color" to photoColor, "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Device slots
         slots.forEach { slot ->
@@ -1631,12 +1644,12 @@ class MainScreenViewModel : ViewModel() {
         // Top row: BACK | PHOTO | SCAN
         val backAction = if (isContentsStep && packagingSubLevel) "act_back_contents" else "act_noop"
         val backColor = if (isContentsStep && packagingSubLevel) "#546E7A" else "#37474F"
-        val backLabel = if (isContentsStep && packagingSubLevel) "\u25C0 BACK" else "UNDO"
+        val backLabel = if (isContentsStep && packagingSubLevel) "◀️\nBACK" else "↩️\nUNDO"
         uiItems.add(mapOf("type" to "button", "label" to backLabel, "color" to backColor, "action" to backAction))
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO",
+        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO",
             "color" to if (isContentsStep) "#1A1A1A" else "#9C27B0",
             "action" to if (isContentsStep) "act_noop" else "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Workflow step buttons
         receivingSteps.forEachIndexed { index, step ->
@@ -2035,12 +2048,12 @@ class MainScreenViewModel : ViewModel() {
         // Row 1: Action buttons
         val canUpload = active != null && isSlotReadyForUpload(active)
         if (canUpload) {
-            uiItems.add(mapOf("type" to "button", "label" to "UPLOAD", "color" to "#2196F3", "action" to "act_upload_check"))
+            uiItems.add(mapOf("type" to "button", "label" to "📤\nUPLOAD", "color" to "#2196F3", "action" to "act_upload_check"))
         } else {
-            uiItems.add(mapOf("type" to "button", "label" to "UNDO", "color" to "#37474F", "action" to "act_undo"))
+            uiItems.add(mapOf("type" to "button", "label" to "↩️\nUNDO", "color" to "#37474F", "action" to "act_undo"))
         }
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO", "color" to "#9C27B0", "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Row 2+: 3 Slots
         // Colors: grey=inactive, yellow=initializing, blue=initialized-not-done, green=ready
@@ -2110,6 +2123,12 @@ class MainScreenViewModel : ViewModel() {
 
         currentInventoryLocation = ""
         waitingForManualLocation = false
+        lastScannedType = ""
+        lastScannedInventoryItem = ""
+        decryptedLocationId = null
+        decryptedItemId = null
+        _inventoryItemPhoto.value = null
+        _inventoryLocationPhoto.value = null
         inventoryItems.clear()
         updateInventoryConsole()
         renderInventoryGrid()
@@ -2136,7 +2155,11 @@ class MainScreenViewModel : ViewModel() {
                 inventoryItems.clear()
                 currentInventoryLocation = ""
                 lastScannedInventoryItem = ""
+                lastScannedType = ""
+                decryptedLocationId = null
+                decryptedItemId = null
                 _inventoryItemPhoto.value = null
+                _inventoryLocationPhoto.value = null
                 _inventoryStatus.value = "Cleared"
                 updateInventoryConsole()
                 renderInventoryGrid()
@@ -2158,8 +2181,8 @@ class MainScreenViewModel : ViewModel() {
             }
             "act_scan" -> return "capture_barcode"
             "act_photo" -> {
-                if (lastScannedInventoryItem.isEmpty()) {
-                    _inventoryStatus.value = "Scan item first, then photo"
+                if (!canTakeInventoryPhoto()) {
+                    _inventoryStatus.value = "Scan first, then photo"
                     return "handled"
                 }
                 return "capture_photo"
@@ -2255,91 +2278,159 @@ class MainScreenViewModel : ViewModel() {
         android.util.Log.e("INVENTORY", "DecPlace=$isDecryptedPlace, LinkPlace=$isLinkPlace, RawPlace=$isRawPlace → Place=$isOurPlaceCode")
         addLog("Place=$isOurPlaceCode")
 
-        if (isOurPlaceCode) {
-            // --- OUR LOCATION SCAN (smart flow) ---
-            // Display: use effectiveCode (decrypted /p/xxx), Store: use cleanCode (original)
-            val displayLoc = effectiveCode.takeLast(25)
-
-            if (currentInventoryLocation.isEmpty()) {
-                // Start new session
-                currentInventoryLocation = cleanCode
+        // Wrap in coroutine for async offline DB lookups
+        viewModelScope.launch {
+            if (isOurPlaceCode) {
+                // --- OUR LOCATION SCAN (smart flow) ---
+                // Track for photo attachment
+                lastScannedType = "place"
+                decryptedLocationId = decryptedPath  // e.g., "p000000000000000001"
+                decryptedItemId = null
                 lastScannedInventoryItem = ""
-                _inventoryItemPhoto.value = null
-                _inventoryStatus.value = "📍 $displayLoc"
-                addLog("📍 Location SET: $effectiveCode")
-                renderInventoryGrid()
-            } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
-                // Scanned SAME location again -> Auto-Submit (close session)
-                addLog("📍 Same location → SUBMIT")
-                submitInventory()
-            } else {
-                // Scanned DIFFERENT location -> Submit current, Start new
-                addLog("📍 New location: $effectiveCode")
-                submitInventoryAndStartNew(cleanCode)
-            }
-        } else {
-            // --- ITEM/BOX SCAN ---
-            if (currentInventoryLocation.isEmpty()) {
-                addLog("⚠️ Item without location: $effectiveCode")
-                _inventoryStatus.value = "⚠️ Scan Location first!"
-            } else {
-                // Add item to current session
-                // Store using cleanCode (original barcode for uniqueness)
-                val itemType = if (inventoryBoxMode) "box" else "item"
-                val entry = inventoryItems.getOrPut(cleanCode) {
-                    InventoryEntry(quantity = 0, type = itemType)
-                }
-                entry.quantity++
 
-                // Try to load existing photo
-                // For decrypted codes like /i/000...001, extract internal ID
-                val internalId = if (decryptedPath?.startsWith("/i/") == true) {
-                    decryptedPath.removePrefix("/i/")
-                } else if (decryptedPath?.startsWith("/b/") == true) {
-                    decryptedPath.removePrefix("/b/")
-                } else null
+                // Fat Client: try to find readable name from offline DB
+                val localLoc = onLookupLocation?.invoke(cleanCode)
+                val displayLoc = localLoc?.completeName
+                    ?: localLoc?.name
+                    ?: effectiveCode.takeLast(25)
 
-                if (entry.photo == null && internalId != null) {
-                    val existingPhoto = onLoadItemPhoto?.invoke("i$internalId")
-                        ?: onLoadItemPhoto?.invoke("b$internalId")
-                    if (existingPhoto != null) {
-                        entry.photo = existingPhoto
+                if (currentInventoryLocation.isEmpty()) {
+                    // Start new session
+                    currentInventoryLocation = cleanCode
+                    _inventoryItemPhoto.value = null
+
+                    // Try to load existing place photo
+                    if (decryptedLocationId != null) {
+                        val existingPhoto = onLoadItemPhoto?.invoke(decryptedLocationId!!)
+                        _inventoryLocationPhoto.value = existingPhoto
+                        if (existingPhoto != null) {
+                            addLog("📷 Place photo loaded")
+                        }
+                    } else {
+                        _inventoryLocationPhoto.value = null
                     }
+
+                    _inventoryStatus.value = "📍 $displayLoc"
+                    addLog("📍 Location SET: $displayLoc")
+                    if (localLoc != null) {
+                        addLog("✅ Offline: ${localLoc.name}")
+                    }
+                    renderInventoryGrid()
+                } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
+                    // Scanned SAME location again -> Auto-Submit (close session)
+                    addLog("📍 Same location → SUBMIT")
+                    submitInventory()
+                } else {
+                    // Scanned DIFFERENT location -> Submit current, Start new
+                    addLog("📍 New location: $displayLoc")
+                    submitInventoryAndStartNew(cleanCode)
                 }
+            } else {
+                // --- ITEM/BOX SCAN ---
+                if (currentInventoryLocation.isEmpty()) {
+                    addLog("⚠️ Item without location: $effectiveCode")
+                    _inventoryStatus.value = "⚠️ Scan Location first!"
+                } else {
+                    // Track for photo attachment
+                    lastScannedType = "item"
+                    decryptedItemId = decryptedPath
+                    _inventoryLocationPhoto.value = null  // clear place photo when scanning item
 
-                lastScannedInventoryItem = cleanCode
-                _inventoryItemPhoto.value = entry.photo
+                    // Add item to current session
+                    val itemType = if (inventoryBoxMode) "box" else "item"
+                    val entry = inventoryItems.getOrPut(cleanCode) {
+                        InventoryEntry(quantity = 0, type = itemType)
+                    }
+                    entry.quantity++
 
-                val displayItem = effectiveCode.takeLast(20)
-                val typeLabel = if (entry.type == "box") "📦" else "➕"
-                addLog("$typeLabel $displayItem x${entry.quantity}")
-                _inventoryStatus.value = "$typeLabel $displayItem"
-                updateInventoryConsole()
+                    // Fat Client: try to find product name from offline DB
+                    val localProd = onLookupProduct?.invoke(cleanCode)
+                    if (localProd != null && entry.displayName == null) {
+                        entry.displayName = localProd.name
+                    }
+
+                    // Try to load existing photo using decrypted internal ID
+                    if (entry.photo == null && decryptedItemId != null) {
+                        val existingPhoto = onLoadItemPhoto?.invoke(decryptedItemId!!)
+                        if (existingPhoto != null) {
+                            entry.photo = existingPhoto
+                            addLog("📷 Item photo loaded")
+                        }
+                    }
+
+                    lastScannedInventoryItem = cleanCode
+                    _inventoryItemPhoto.value = entry.photo
+
+                    val typeLabel = if (entry.type == "box") "📦" else "🔧"
+                    val photoIcon = if (entry.photo != null) " 📷" else ""
+
+                    if (localProd != null) {
+                        addLog("$typeLabel ${localProd.name} x${entry.quantity}$photoIcon")
+                        _inventoryStatus.value = "${localProd.defaultCode} x${entry.quantity}"
+                    } else {
+                        val displayItem = effectiveCode.takeLast(20)
+                        addLog("$typeLabel $displayItem x${entry.quantity}$photoIcon")
+                        _inventoryStatus.value = "$typeLabel $displayItem"
+                    }
+                    updateInventoryConsole()
+                }
             }
         }
     }
 
-    /** Attach photo to the last scanned inventory item */
+    /** Attach photo to the last scanned inventory item or place */
     fun onInventoryPhotoCaptured(bitmap: Bitmap) {
-        if (lastScannedInventoryItem.isEmpty()) {
-            addLog("No item to attach photo to")
-            _inventoryStatus.value = "Scan item first!"
-            return
-        }
-
         val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-        val entry = inventoryItems[lastScannedInventoryItem]
-        if (entry != null) {
-            entry.photo = copy
-            _inventoryItemPhoto.value = copy
-            // Persist globally using pseudo-internal ID (prefix + barcode)
-            val prefix = if (entry.type == "box") "b" else "i"
-            val internalId = "$prefix$lastScannedInventoryItem"
-            onSaveItemPhoto?.invoke(internalId, copy)
-            val typeLabel = if (entry.type == "box") "BOX" else "ITEM"
-            addLog("Photo saved: $internalId")
-            _inventoryStatus.value = "Photo → $lastScannedInventoryItem"
+
+        when (lastScannedType) {
+            "place" -> {
+                // Photo for current location
+                if (currentInventoryLocation.isEmpty()) {
+                    addLog("⚠️ No location to attach photo to")
+                    _inventoryStatus.value = "Scan location first!"
+                    return
+                }
+                _inventoryLocationPhoto.value = copy
+                // Save using decrypted internal ID or fallback to raw barcode
+                val saveId = decryptedLocationId ?: "p_$currentInventoryLocation"
+                onSaveItemPhoto?.invoke(saveId, copy)
+                addLog("📷 Place photo saved: ${saveId.takeLast(12)}")
+                _inventoryStatus.value = "📷 Place photo saved"
+            }
+            "item" -> {
+                // Photo for last scanned item
+                if (lastScannedInventoryItem.isEmpty()) {
+                    addLog("⚠️ No item to attach photo to")
+                    _inventoryStatus.value = "Scan item first!"
+                    return
+                }
+                val entry = inventoryItems[lastScannedInventoryItem]
+                if (entry != null) {
+                    entry.photo = copy
+                    _inventoryItemPhoto.value = copy
+                    // Save using decrypted internal ID or fallback to prefix + barcode
+                    val saveId = decryptedItemId ?: run {
+                        val prefix = if (entry.type == "box") "b" else "i"
+                        "$prefix$lastScannedInventoryItem"
+                    }
+                    onSaveItemPhoto?.invoke(saveId, copy)
+                    addLog("📷 Item photo saved: ${saveId.takeLast(12)}")
+                    _inventoryStatus.value = "📷 → ${lastScannedInventoryItem.takeLast(12)}"
+                    updateInventoryConsole()
+                }
+            }
+            else -> {
+                addLog("⚠️ Scan something first!")
+                _inventoryStatus.value = "Scan first, then photo"
+            }
         }
+    }
+
+    /** Check if photo can be taken (something was scanned) */
+    fun canTakeInventoryPhoto(): Boolean {
+        return lastScannedType.isNotEmpty() &&
+               (lastScannedType == "place" && currentInventoryLocation.isNotEmpty() ||
+                lastScannedType == "item" && lastScannedInventoryItem.isNotEmpty())
     }
 
     /** Submit current inventory and immediately start new session with given location */
@@ -2376,7 +2467,11 @@ class MainScreenViewModel : ViewModel() {
         // Start new session
         inventoryItems.clear()
         lastScannedInventoryItem = ""
+        lastScannedType = "place"  // new location is scanned
+        decryptedItemId = null
+        // Note: decryptedLocationId should be updated by caller if needed
         _inventoryItemPhoto.value = null
+        _inventoryLocationPhoto.value = null
         currentInventoryLocation = newLocation
         _inventoryStatus.value = "LOC: $newLocation"
         addLog("📍 Location SET: $newLocation")
@@ -2391,9 +2486,11 @@ class MainScreenViewModel : ViewModel() {
             "--- SCAN LOCATION FIRST ---"
         }
         val items = inventoryItems.entries.map { (barcode, entry) ->
-            val typeIcon = if (entry.type == "box") "📦" else "•"
+            val typeIcon = if (entry.type == "box") "📦" else "🔧"
             val photoIcon = if (entry.photo != null) "📷" else ""
-            "$typeIcon %-12s : %d $photoIcon".format(barcode.takeLast(12), entry.quantity)
+            // Fat Client: show product name if available, otherwise barcode
+            val label = entry.displayName ?: barcode.takeLast(12)
+            "$typeIcon %-16s : %d $photoIcon".format(label.take(16), entry.quantity)
         }.sorted()
         val totalQty = inventoryItems.values.sumOf { it.quantity }
         val boxCount = inventoryItems.values.count { it.type == "box" }
@@ -2442,7 +2539,11 @@ class MainScreenViewModel : ViewModel() {
         inventoryItems.clear()
         currentInventoryLocation = ""
         lastScannedInventoryItem = ""
+        lastScannedType = ""
+        decryptedLocationId = null
+        decryptedItemId = null
         _inventoryItemPhoto.value = null
+        _inventoryLocationPhoto.value = null
         updateInventoryConsole()
 
         viewModelScope.launch {
@@ -2459,20 +2560,29 @@ class MainScreenViewModel : ViewModel() {
 
         // Row 1: LOC | PHOTO | SCAN
         val locationColor = if (currentInventoryLocation.isEmpty()) "#FF5722" else "#4CAF50"
-        val locationLabel = if (currentInventoryLocation.isEmpty()) "SET LOC" else currentInventoryLocation.takeLast(8)
+        val locationLabel = if (currentInventoryLocation.isEmpty()) "📍\nSET" else "📍\n${currentInventoryLocation.takeLast(6)}"
         uiItems.add(mapOf("type" to "button", "label" to locationLabel, "color" to locationColor, "action" to "act_set_location"))
 
-        // PHOTO button - enabled only if item is scanned
-        val photoColor = if (lastScannedInventoryItem.isNotEmpty()) "#9C27B0" else "#424242"
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to photoColor, "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        // PHOTO button - enabled when place or item is scanned
+        val canPhoto = canTakeInventoryPhoto()
+        val photoColor = if (canPhoto) "#9C27B0" else "#424242"
+        val photoLabel = when {
+            lastScannedType == "place" && canPhoto -> "📍📷\nPLACE"
+            lastScannedType == "item" && canPhoto -> "📷\nITEM"
+            else -> "📷\nPHOTO"
+        }
+        uiItems.add(mapOf("type" to "button", "label" to photoLabel, "color" to photoColor, "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
-        // Row 2: BOX toggle | SUBMIT | CLEAR
-        val boxColor = if (inventoryBoxMode) "#FF9800" else "#424242"
-        val boxLabel = if (inventoryBoxMode) "📦 BOX" else "• ITEM"
-        uiItems.add(mapOf("type" to "button", "label" to boxLabel, "color" to boxColor, "action" to "act_toggle_box"))
-        uiItems.add(mapOf("type" to "button", "label" to "SUBMIT", "color" to "#2196F3", "action" to "act_submit_inventory"))
-        uiItems.add(mapOf("type" to "button", "label" to "CLEAR", "color" to "#D32F2F", "action" to "act_clear_inventory"))
+        // Row 2: TYPE toggle | SUBMIT | CLEAR
+        val typeColor = when {
+            inventoryBoxMode -> "#FF9800"  // orange for box
+            else -> "#795548"              // brown for item
+        }
+        val typeLabel = if (inventoryBoxMode) "📦\nBOX" else "🔧\nITEM"
+        uiItems.add(mapOf("type" to "button", "label" to typeLabel, "color" to typeColor, "action" to "act_toggle_box"))
+        uiItems.add(mapOf("type" to "button", "label" to "📤\nSEND", "color" to "#2196F3", "action" to "act_submit_inventory"))
+        uiItems.add(mapOf("type" to "button", "label" to "🗑️\nCLEAR", "color" to "#D32F2F", "action" to "act_clear_inventory"))
 
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
@@ -2590,9 +2700,9 @@ class MainScreenViewModel : ViewModel() {
     private fun renderRestockGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        uiItems.add(mapOf("type" to "button", "label" to "SEND ORDER", "color" to "#2196F3", "action" to "act_submit_restock"))
-        uiItems.add(mapOf("type" to "button", "label" to "CLEAR", "color" to "#D32F2F", "action" to "act_clear_restock"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        uiItems.add(mapOf("type" to "button", "label" to "📤\nSEND", "color" to "#2196F3", "action" to "act_submit_restock"))
+        uiItems.add(mapOf("type" to "button", "label" to "🗑️\nCLEAR", "color" to "#D32F2F", "action" to "act_clear_restock"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
