@@ -47,6 +47,20 @@ class ScanApiService(private val context: Context) {
     }
 
     /**
+     * Ensures the base URL contains the /E microservice prefix.
+     * Local IPs like http://192.168.0.206:3210/E already have it.
+     * Domain URLs like https://pda.repair may not — this adds /E if missing.
+     */
+    private fun ensureApiPrefix(baseUrl: String): String {
+        val url = baseUrl.removeSuffix("/")
+        // Already has /E or /e prefix
+        if (url.endsWith("/E") || url.endsWith("/e") || url.contains("/E/") || url.contains("/e/")) {
+            return url
+        }
+        return "$url/E"
+    }
+
+    /**
      * Отправляет отсканированный штрих-код на сервер
      * Implements Immediate Failover: Local -> Global
      * @param barcode Отсканированный штрих-код
@@ -351,6 +365,72 @@ class ScanApiService(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Connection failed to $baseUrl (msgId=$msgId): ${e.message}")
+            return ScanResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Pulls sync data from the server (authenticated device pull).
+     * Used to fetch file_resources, attachments, and other entity types.
+     */
+    suspend fun pullSync(since: String? = null, entityTypes: List<String>): ScanResult = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalPullSync(activeUrl, since, entityTypes)
+
+        // Auto-retry on 401
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                result = internalPullSync(activeUrl, since, entityTypes)
+            }
+        }
+
+        // Failover to Global
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ pullSync failed on $activeUrl. Failover to Global.")
+            result = internalPullSync(globalUrl, since, entityTypes)
+        }
+
+        return@withContext result
+    }
+
+    private suspend fun internalPullSync(baseUrl: String, since: String?, entityTypes: List<String>): ScanResult {
+        try {
+            val url = URL("$baseUrl/api/sync/pull")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                val typesArray = JSONArray()
+                entityTypes.forEach { typesArray.put(it) }
+                put("entity_types", typesArray)
+                if (since != null) put("since", since)
+            }
+
+            Log.d(TAG, "Pull Sync request: $jsonRequest to $url")
+
+            val writer = OutputStreamWriter(connection.outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                return ScanResult.Success("sync_pull", "Sync Data Received", response)
+            } else {
+                return ScanResult.Error("HTTP $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in pullSync", e)
             return ScanResult.Error(e.message ?: "Unknown error")
         }
     }
@@ -710,7 +790,6 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
-            // Fix: Removed hardcoded /E/ prefix, removed trailing slash to prevent double slashes
             val url = URL("${serverUrl.removeSuffix("/")}/api/internal/register-device")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
@@ -1528,6 +1607,104 @@ class ScanApiService(private val context: Context) {
             barcodeData = targetDeviceId,
             quality = quality
         )
+    }
+
+    // ============ QC & Explorer API methods ============
+
+    suspend fun fetchDiscrepancies(status: String?, limit: Int): ScanResult = withContext(Dispatchers.IO) {
+        val params = buildString {
+            append("?limit=$limit")
+            if (status != null) append("&status=$status")
+        }
+        authenticatedGetWithFailover("/api/inventory/discrepancies$params")
+    }
+
+    suspend fun fetchDiscrepancyStats(): ScanResult = withContext(Dispatchers.IO) {
+        authenticatedGetWithFailover("/api/inventory/discrepancies/stats")
+    }
+
+    suspend fun reviewDiscrepancy(id: String, notes: String): ScanResult = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+        val body = org.json.JSONObject().apply { put("status", "reviewed"); put("notes", notes) }.toString()
+
+        var result = authenticatedPut("$activeUrl/api/inventory/discrepancies/$id/review", body)
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            result = authenticatedPut("$globalUrl/api/inventory/discrepancies/$id/review", body)
+        }
+        result
+    }
+
+    suspend fun fetchExplorerData(path: String): ScanResult = withContext(Dispatchers.IO) {
+        authenticatedGetWithFailover(path)
+    }
+
+    private suspend fun authenticatedGetWithFailover(apiPath: String): ScanResult {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = authenticatedGet("$activeUrl$apiPath")
+
+        // Auto-retry on 401 (token expired)
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            Log.w(TAG, "🔑 API 401 — attempting silent re-auth...")
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                result = authenticatedGet("$activeUrl$apiPath")
+            }
+        }
+
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ API call to $activeUrl failed, failover to $globalUrl")
+            result = authenticatedGet("$globalUrl$apiPath")
+        }
+        return result
+    }
+
+    private fun authenticatedGet(urlStr: String): ScanResult {
+        return try {
+            Log.d(TAG, "authenticatedGet: $urlStr")
+            val url = URL(urlStr)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            val code = connection.responseCode
+            if (code in 200..299) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                ScanResult.Success(type = "api", message = "OK", data = response)
+            } else {
+                val errBody = try { connection.errorStream?.bufferedReader()?.use { it.readText() }?.take(200) } catch (_: Exception) { null }
+                Log.w(TAG, "authenticatedGet $code: $urlStr → $errBody")
+                ScanResult.Error("HTTP $code")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "authenticatedGet error: $urlStr → ${e.message}")
+            ScanResult.Error(e.message ?: "Network error")
+        }
+    }
+
+    private fun authenticatedPut(urlStr: String, jsonBody: String): ScanResult {
+        return try {
+            val url = URL(urlStr)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "PUT"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+            connection.outputStream.bufferedWriter().use { it.write(jsonBody) }
+            if (connection.responseCode in 200..299) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                ScanResult.Success(type = "api", message = "OK", data = response)
+            } else {
+                ScanResult.Error("HTTP ${connection.responseCode}")
+            }
+        } catch (e: Exception) {
+            ScanResult.Error(e.message ?: "Network error")
+        }
     }
 }
 

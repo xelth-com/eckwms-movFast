@@ -1,12 +1,17 @@
 package com.xelth.eckwms_movfast.sync
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.data.local.AppDatabase
+import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
+import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class SyncWorker(
@@ -22,7 +27,14 @@ class SyncWorker(
     override suspend fun doWork(): Result {
         Log.d(TAG, "Sync worker started")
 
-        // Fat Client: refresh reference data (products/locations) on every sync cycle
+        // 1. PULL Metadata (Avatars, Attachments) — non-fatal
+        try {
+            pullMetadataSync()
+        } catch (e: Exception) {
+            Log.w(TAG, "Metadata pull failed (non-fatal): ${e.message}")
+        }
+
+        // 2. Fat Client: refresh reference data (products/locations) on every sync cycle
         try {
             val repository = com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(applicationContext)
             val refSuccess = repository.refreshReferenceData()
@@ -31,6 +43,7 @@ class SyncWorker(
             Log.w(TAG, "Reference sync error (non-fatal): ${e.message}")
         }
 
+        // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()
 
@@ -71,6 +84,69 @@ class SyncWorker(
         } catch (e: Exception) {
             Log.e(TAG, "Error during sync: ${e.message}", e)
             Result.retry()
+        }
+    }
+
+    private suspend fun pullMetadataSync() = withContext(Dispatchers.IO) {
+        val entities = listOf("file_resources", "attachments")
+        val result = apiService.pullSync(null, entities)
+
+        if (result is ScanResult.Success) {
+            val json = JSONObject(result.data)
+
+            // 1. Process File Resources
+            val filesArray = json.optJSONArray("file_resources")
+            var filesSynced = 0
+            if (filesArray != null && filesArray.length() > 0) {
+                val fileEntities = mutableListOf<FileResourceEntity>()
+                for (i in 0 until filesArray.length()) {
+                    val obj = filesArray.getJSONObject(i)
+
+                    // Decode Base64 avatar_data if present
+                    val avatarBase64 = obj.optString("avatar_data", "")
+                    val avatarBytes = if (avatarBase64.isNotEmpty()) {
+                        try { Base64.decode(avatarBase64, Base64.DEFAULT) } catch (e: Exception) { null }
+                    } else null
+
+                    fileEntities.add(FileResourceEntity(
+                        id = obj.getString("id"),
+                        hash = obj.getString("hash"),
+                        originalName = obj.optString("originalName", ""),
+                        mimeType = obj.optString("mimeType", ""),
+                        sizeBytes = obj.optLong("sizeBytes", 0),
+                        storagePath = obj.optString("storagePath", ""),
+                        avatarData = avatarBytes,
+                        createdAt = System.currentTimeMillis()
+                    ))
+                }
+                database.fileResourceDao().insertFileResources(fileEntities)
+                filesSynced = fileEntities.size
+            }
+
+            // 2. Process Attachments
+            val attArray = json.optJSONArray("attachments")
+            var attSynced = 0
+            if (attArray != null && attArray.length() > 0) {
+                val attEntities = mutableListOf<AttachmentEntity>()
+                for (i in 0 until attArray.length()) {
+                    val obj = attArray.getJSONObject(i)
+                    attEntities.add(AttachmentEntity(
+                        id = obj.getString("id"),
+                        fileResourceId = obj.getString("file_resource_id"),
+                        resModel = obj.getString("res_model"),
+                        resId = obj.getString("res_id"),
+                        isMain = obj.optBoolean("is_main", false),
+                        tags = obj.optString("tags", ""),
+                        createdAt = System.currentTimeMillis()
+                    ))
+                }
+                database.attachmentDao().insertAttachments(attEntities)
+                attSynced = attEntities.size
+            }
+
+            if (filesSynced > 0 || attSynced > 0) {
+                Log.i(TAG, "✅ Synced $filesSynced files and $attSynced attachments")
+            }
         }
     }
 
@@ -153,6 +229,10 @@ class SyncWorker(
                     scanId?.let {
                         database.scanDao().updateScanStatus(it, "CONFIRMED")
                         Log.d(TAG, "Updated image upload $it status to CONFIRMED")
+                    }
+                    // Cleanup: delete local file after confirmed upload
+                    if (file.delete()) {
+                        Log.d(TAG, "Cleanup: deleted ${file.name} after confirmed upload")
                     }
                     true
                 }
