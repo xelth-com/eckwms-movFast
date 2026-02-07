@@ -291,7 +291,7 @@ class MainScreenViewModel : ViewModel() {
     // Persistence callbacks for item photos (global, by internal ID)
     // Internal ID prefix defines type: i=item, b=box, p=place, l=label
     var onSaveItemPhoto: ((internalId: String, bitmap: Bitmap) -> Unit)? = null
-    var onLoadItemPhoto: ((internalId: String) -> Bitmap?)? = null
+    var onLoadItemPhoto: (suspend (internalId: String) -> Bitmap?)? = null
 
     // --- DEVICE CHECK MODE STATE ---
 

@@ -164,8 +164,15 @@ fun MainScreen(
         mainViewModel.onSaveItemPhoto = { internalId, bitmap ->
             com.xelth.eckwms_movfast.utils.SettingsManager.saveItemPhoto(internalId, bitmap)
         }
+        val repo = com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(context)
         mainViewModel.onLoadItemPhoto = { internalId ->
-            com.xelth.eckwms_movfast.utils.SettingsManager.loadItemPhoto(internalId)
+            // 1. Try Local Disk (High Resolution, User Generated)
+            var bitmap = com.xelth.eckwms_movfast.utils.SettingsManager.loadItemPhoto(internalId)
+            // 2. Fallback to Database (Synced Avatars)
+            if (bitmap == null) {
+                bitmap = repo.getAvatarForEntity(internalId)
+            }
+            bitmap
         }
     }
 
@@ -173,6 +180,9 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         val scanApiService = com.xelth.eckwms_movfast.api.ScanApiService(context)
         mainViewModel.onFetchShipments = { limit -> scanApiService.getShipments(limit) }
+        mainViewModel.onInventorySubmit = { target, event, data ->
+            scanApiService.sendRepairEvent(target, event, data)
+        }
     }
 
     // Wire Fat Client offline lookup callbacks
@@ -398,7 +408,7 @@ fun MainScreen(
                                     .fillMaxSize()
                                     .alpha(0.25f)
                                     .clickable(enabled = canTakePhoto) {
-                                        navController.navigate("camera_scan/workflow_capture")
+                                        navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
                                     },
                                 contentScale = ContentScale.Crop
                             )
@@ -410,7 +420,7 @@ fun MainScreen(
                                     .fillMaxWidth()
                                     .padding(horizontal = 12.dp, vertical = 6.dp)
                                     .clickable(enabled = canTakePhoto) {
-                                        navController.navigate("camera_scan/workflow_capture")
+                                        navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
@@ -513,6 +523,8 @@ fun MainScreen(
                             "navigate_scan" -> navController.navigate("scanScreen")
                             "navigate_ai" -> navController.navigate("scanScreen")
                             "navigate_settings" -> navController.navigate("settings")
+                            "navigate_qc" -> navController.navigate("qcScreen")
+                            "navigate_explorer" -> navController.navigate("explorerScreen")
                         }
                     },
                     onButtonLongClick = { action ->

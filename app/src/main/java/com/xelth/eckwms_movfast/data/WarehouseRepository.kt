@@ -1,6 +1,8 @@
 package com.xelth.eckwms_movfast.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
@@ -268,6 +270,47 @@ class WarehouseRepository(
             Log.e(TAG, "Failed to refresh reference data", e)
         }
         updated
+    }
+
+    // --- AVATAR LOOKUP ---
+
+    /**
+     * Retrieves an avatar bitmap for a given internal Smart Code (e.g., "i00001", "p00005").
+     * Parses the code to determine entity type and ID, then queries the database.
+     */
+    suspend fun getAvatarForEntity(internalId: String): Bitmap? = withContext(Dispatchers.IO) {
+        val (model, id) = parseSmartCode(internalId) ?: return@withContext null
+
+        val bytes = db.attachmentDao().getAvatarForEntity(model, id) ?: return@withContext null
+
+        try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode avatar bitmap for $internalId", e)
+            null
+        }
+    }
+
+    /**
+     * Parses internal IDs (Smart Codes) into Odoo Model + ID pairs.
+     * i000...01 -> product, 1
+     * p000...05 -> location, 5
+     * b000...09 -> package, 9
+     */
+    private fun parseSmartCode(code: String): Pair<String, String>? {
+        if (code.length < 2) return null
+
+        val prefix = code[0].lowercaseChar()
+        val idPart = code.substring(1)
+        val idLong = idPart.toLongOrNull() ?: return null
+        val idStr = idLong.toString()
+
+        return when (prefix) {
+            'i' -> "product" to idStr
+            'p' -> "location" to idStr
+            'b' -> "package" to idStr
+            else -> null
+        }
     }
 
     private fun parseStatus(status: String): ScanStatus {
