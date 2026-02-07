@@ -13,7 +13,7 @@ object SettingsManager {
     private const val KEY_RESOLUTION = "image_resolution"
     private const val KEY_QUALITY = "image_quality"
     private const val KEY_SERVER_URL = "server_url"
-    private const val DEFAULT_SERVER_URL = "https://pda.repair"
+    private const val DEFAULT_SERVER_URL = "https://pda.repair/E"
     private lateinit var prefs: SharedPreferences
 
     private lateinit var appContext: Context
@@ -21,13 +21,40 @@ object SettingsManager {
     fun init(context: Context) {
         appContext = context.applicationContext
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        migrateServerUrls()
+    }
+
+    /**
+     * One-time migration: ensure saved server URLs include the /E microservice prefix.
+     * Previously URLs like "https://pda.repair" were saved without the path prefix,
+     * causing API calls to hit the frontend instead of the Go backend.
+     */
+    private fun migrateServerUrls() {
+        val migrated = prefs.getBoolean("url_e_prefix_migrated", false)
+        if (migrated) return
+
+        val serverUrl = prefs.getString(KEY_SERVER_URL, null)
+        if (serverUrl != null && serverUrl == "https://pda.repair") {
+            prefs.edit().putString(KEY_SERVER_URL, "https://pda.repair/E").apply()
+        }
+        val globalUrl = prefs.getString(KEY_GLOBAL_SERVER_URL, null)
+        if (globalUrl != null && globalUrl == "https://pda.repair") {
+            prefs.edit().putString(KEY_GLOBAL_SERVER_URL, "https://pda.repair/E").apply()
+        }
+        // Also clean connection history entries without /E
+        val history = prefs.getString("connection_history", "") ?: ""
+        if (history.contains("https://pda.repair") && !history.contains("https://pda.repair/E")) {
+            val fixed = history.replace("https://pda.repair", "https://pda.repair/E")
+            prefs.edit().putString("connection_history", fixed).apply()
+        }
+        prefs.edit().putBoolean("url_e_prefix_migrated", true).apply()
     }
 
     fun saveImageResolution(resolution: Int) = prefs.edit().putInt(KEY_RESOLUTION, resolution).apply()
     fun getImageResolution(): Int = prefs.getInt(KEY_RESOLUTION, 1920)
 
     fun saveImageQuality(quality: Int) = prefs.edit().putInt(KEY_QUALITY, quality).apply()
-    fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 80)
+    fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 75)
 
     // Critical: Use commit() for immediate disk persistence
     // Ensure URL doesn't end with slash to allow clean concatenation
@@ -46,7 +73,7 @@ object SettingsManager {
     }
 
     private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
-    private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair"
+    private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair/E"
 
     // Critical: Use commit() for immediate disk persistence
     fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).commit()
@@ -251,7 +278,7 @@ object SettingsManager {
         try {
             val file = File(repairPhotoDir(), "slot_$slotIndex.webp")
             FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
+                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
             }
             Log.d("SettingsManager", "Saved photo slot #$slotIndex (${file.length() / 1024}KB)")
         } catch (e: Exception) {
@@ -363,7 +390,7 @@ object SettingsManager {
             deleteOldPhotosForId(internalId)
 
             FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
+                bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
             }
             Log.d("SettingsManager", "Saved photo: $filename.webp (${file.length() / 1024}KB)")
             "$filename.webp"

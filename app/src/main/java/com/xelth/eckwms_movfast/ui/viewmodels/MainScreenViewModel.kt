@@ -149,6 +149,8 @@ class MainScreenViewModel : ViewModel() {
     // Callbacks for sending repair events to the server (set by UI layer)
     var onRepairEventSend: ((targetDeviceId: String, eventType: String, data: String) -> Unit)? = null
     var onRepairPhotoUpload: ((targetDeviceId: String, bitmap: Bitmap) -> Unit)? = null
+    // Inventory submit callback — returns ScanResult with discrepancy data
+    var onInventorySubmit: (suspend (targetDeviceId: String, eventType: String, data: String) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
     // Persistence callbacks (set by UI layer, backed by SettingsManager)
     var onSaveRepairSlots: ((List<Pair<Int, String>>) -> Unit)? = null
     var onLoadRepairSlots: (() -> List<Pair<Int, String>>)? = null
@@ -376,7 +378,9 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("receiving", "📦\nReceiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
             MainMenuButton("device_check", "✅\nCheck", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
             MainMenuButton("restock", "📋\nRestock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT),
-            MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT)
+            MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT),
+            MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
+            MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -2365,8 +2369,10 @@ class MainScreenViewModel : ViewModel() {
                     val photoIcon = if (entry.photo != null) " 📷" else ""
 
                     if (localProd != null) {
-                        addLog("$typeLabel ${localProd.name} x${entry.quantity}$photoIcon")
-                        _inventoryStatus.value = "${localProd.defaultCode} x${entry.quantity}"
+                        val qtyServer = localProd.qtyAvailable
+                        val qtyStr = if (qtyServer % 1.0 == 0.0) qtyServer.toInt().toString() else "%.1f".format(qtyServer)
+                        addLog("$typeLabel ${localProd.name} (Svr:$qtyStr) x${entry.quantity}$photoIcon")
+                        _inventoryStatus.value = "${localProd.defaultCode} (Svr:$qtyStr) x${entry.quantity}"
                     } else {
                         val displayItem = effectiveCode.takeLast(20)
                         addLog("$typeLabel $displayItem x${entry.quantity}$photoIcon")
@@ -2452,16 +2458,36 @@ class MainScreenViewModel : ViewModel() {
             payload.put("items", itemsArray)
             payload.put("timestamp", System.currentTimeMillis())
 
-            onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+            val itemCount = inventoryItems.size
+            val loc = currentInventoryLocation
 
             // Upload photos for items that have them
             inventoryItems.forEach { (barcode, entry) ->
                 if (entry.photo != null) {
-                    onRepairPhotoUpload?.invoke("ITEM:$barcode", entry.photo!!)
+                    onRepairPhotoUpload?.invoke(barcode, entry.photo!!)
                 }
             }
 
-            addLog("✅ SUBMITTED: ${inventoryItems.size} items @ $currentInventoryLocation")
+            // Submit with discrepancy detection (async)
+            viewModelScope.launch {
+                val result = onInventorySubmit?.invoke("INVENTORY", "count_submit", payload.toString())
+                if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
+                    try {
+                        val response = JSONObject(result.data)
+                        val discArr = response.optJSONArray("discrepancies")
+                        if (discArr != null && discArr.length() > 0) {
+                            addLog("⚠️ ${discArr.length()} discrepancies @ $loc")
+                        } else {
+                            addLog("✅ SUBMITTED: $itemCount items @ $loc")
+                        }
+                    } catch (_: Exception) {
+                        addLog("✅ SUBMITTED: $itemCount items @ $loc")
+                    }
+                } else {
+                    onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+                    addLog("✅ SUBMITTED: $itemCount items @ $loc")
+                }
+            }
         }
 
         // Start new session
@@ -2469,7 +2495,6 @@ class MainScreenViewModel : ViewModel() {
         lastScannedInventoryItem = ""
         lastScannedType = "place"  // new location is scanned
         decryptedItemId = null
-        // Note: decryptedLocationId should be updated by caller if needed
         _inventoryItemPhoto.value = null
         _inventoryLocationPhoto.value = null
         currentInventoryLocation = newLocation
@@ -2524,7 +2549,8 @@ class MainScreenViewModel : ViewModel() {
         payload.put("items", itemsArray)
         payload.put("timestamp", System.currentTimeMillis())
 
-        onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+        val itemCount = inventoryItems.size
+        val loc = currentInventoryLocation
 
         // Upload photos for items that have them
         inventoryItems.forEach { (barcode, entry) ->
@@ -2533,8 +2559,48 @@ class MainScreenViewModel : ViewModel() {
             }
         }
 
-        addLog("✅ SUBMITTED: ${inventoryItems.size} items @ $currentInventoryLocation")
-        _inventoryStatus.value = "✅ Submitted ${inventoryItems.size} items"
+        // Submit with discrepancy detection
+        viewModelScope.launch {
+            val result = onInventorySubmit?.invoke("INVENTORY", "count_submit", payload.toString())
+            if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
+                try {
+                    val response = JSONObject(result.data)
+                    val discArr = response.optJSONArray("discrepancies")
+                    if (discArr != null && discArr.length() > 0) {
+                        addLog("⚠️ ${discArr.length()} DISCREPANCIES @ $loc:")
+                        for (i in 0 until discArr.length()) {
+                            val d = discArr.getJSONObject(i)
+                            val name = d.optString("product_name", d.optString("barcode", "?"))
+                            val expected = d.optDouble("expected_qty", 0.0)
+                            val counted = d.optDouble("counted_qty", 0.0)
+                            val delta = d.optDouble("delta", 0.0)
+                            val deltaSign = if (delta > 0) "+" else ""
+                            val expStr = if (expected % 1.0 == 0.0) expected.toInt().toString() else "%.1f".format(expected)
+                            val cntStr = if (counted % 1.0 == 0.0) counted.toInt().toString() else "%.1f".format(counted)
+                            addLog("  ⚠️ $name: counted $cntStr vs svr $expStr ($deltaSign${delta.toInt()})")
+                        }
+                        _inventoryStatus.value = "⚠️ $itemCount items, ${discArr.length()} discrepancies"
+                    } else {
+                        addLog("✅ SUBMITTED: $itemCount items @ $loc — no discrepancies")
+                        _inventoryStatus.value = "✅ Submitted $itemCount items"
+                    }
+                } catch (e: Exception) {
+                    addLog("✅ SUBMITTED: $itemCount items @ $loc")
+                    _inventoryStatus.value = "✅ Submitted $itemCount items"
+                }
+            } else {
+                // Fallback: fire-and-forget via old callback
+                onRepairEventSend?.invoke("INVENTORY", "count_submit", payload.toString())
+                addLog("✅ SUBMITTED: $itemCount items @ $loc")
+                _inventoryStatus.value = "✅ Submitted $itemCount items"
+            }
+
+            delay(2000)
+            if (_isInventoryMode.value == true) {
+                _inventoryStatus.value = "Scan next location..."
+                renderInventoryGrid()
+            }
+        }
 
         inventoryItems.clear()
         currentInventoryLocation = ""
@@ -2545,14 +2611,6 @@ class MainScreenViewModel : ViewModel() {
         _inventoryItemPhoto.value = null
         _inventoryLocationPhoto.value = null
         updateInventoryConsole()
-
-        viewModelScope.launch {
-            delay(1500)
-            if (_isInventoryMode.value == true) {
-                _inventoryStatus.value = "Scan next location..."
-                renderInventoryGrid()
-            }
-        }
     }
 
     private fun renderInventoryGrid() {
