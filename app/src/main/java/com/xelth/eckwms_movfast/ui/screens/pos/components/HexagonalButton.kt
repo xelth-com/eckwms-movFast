@@ -35,6 +35,28 @@ fun HexagonalButton(
         Color.Gray
     }
 
+    // Dynamic font sizing: larger for short labels, smaller for long ones
+    // Check if label has newline (icon + text format)
+    val hasEmoji = label.any { it.code > 0x1F00 }
+    val lines = label.split("\n")
+    val maxLineLength = lines.maxOfOrNull { it.length } ?: label.length
+
+    val fontSize = when {
+        hasEmoji && lines.size >= 2 -> 16.sp  // emoji + label format
+        maxLineLength <= 4 -> 20.sp           // very short: X, OK, etc
+        maxLineLength <= 6 -> 18.sp           // short labels
+        maxLineLength <= 8 -> 16.sp           // medium labels
+        maxLineLength <= 12 -> 14.sp          // longer labels
+        else -> 12.sp                         // very long labels
+    }
+
+    val lineHeight = when {
+        hasEmoji && lines.size >= 2 -> 18.sp
+        fontSize >= 18.sp -> 22.sp
+        fontSize >= 16.sp -> 18.sp
+        else -> 16.sp
+    }
+
     Box(
         modifier = modifier
             .clip(HexagonShape(side))
@@ -52,8 +74,8 @@ fun HexagonalButton(
                 text = label,
                 color = Color.White,
                 textAlign = TextAlign.Center,
-                fontSize = 14.sp,
-                lineHeight = 16.sp,
+                fontSize = fontSize,
+                lineHeight = lineHeight,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 4,
                 overflow = TextOverflow.Ellipsis,

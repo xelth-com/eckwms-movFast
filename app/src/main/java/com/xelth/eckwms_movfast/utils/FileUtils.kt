@@ -37,7 +37,7 @@ object FileUtils {
 
         try {
             resolver.openOutputStream(uri)?.use { outputStream ->
-                if (!bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, outputStream)) {
+                if (!bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, outputStream)) {
                     Log.e(TAG, "Failed to save bitmap.")
                     resolver.delete(uri, null, null)
                     return null

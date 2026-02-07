@@ -25,6 +25,7 @@ import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import com.xelth.eckwms_movfast.utils.SettingsManager
 import com.xelth.eckwms_movfast.utils.NetworkHealthMonitor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -176,14 +177,62 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
-    /** Upload a repair photo linked to a device being repaired */
+    /** Upload a repair photo linked to a device being repaired (robust: disk-first) */
     fun uploadRepairPhoto(targetDeviceId: String, bitmap: Bitmap) {
         viewModelScope.launch {
             addLog("Uploading repair photo for $targetDeviceId")
-            val result = scanApiService.uploadRepairImage(bitmap, targetDeviceId)
-            when (result) {
-                is ScanResult.Success -> addLog("✅ Repair photo uploaded for $targetDeviceId")
-                is ScanResult.Error -> addLog("❌ Repair photo failed: ${result.message}")
+
+            // 0. Generate imageId for deduplication
+            val imageId = java.util.UUID.randomUUID().toString()
+            val quality = 75
+
+            // Smart Crop to 224x224 (gradient-based)
+            val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
+            val croppedBitmap = smartCrop(bitmapCopy, 224)
+            if (!bitmap.isRecycled) bitmap.recycle()
+
+            // 1. Save cropped bitmap to disk first (zero data loss)
+            val tempFile = java.io.File(getApplication<Application>().cacheDir, "repair_${System.currentTimeMillis()}.webp")
+            withContext(Dispatchers.IO) {
+                tempFile.outputStream().use { out ->
+                    croppedBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
+                }
+            }
+            val imagePath = tempFile.absolutePath
+            val imageSize = tempFile.length()
+
+            // Recycle cropped bitmap — file is on disk
+            if (!croppedBitmap.isRecycled) croppedBitmap.recycle()
+
+            // 2. Create DB record with PENDING status
+            val historyId = repository.saveImageUpload(
+                imagePath = imagePath,
+                imageSize = imageSize,
+                imageId = imageId,
+                orderId = _activeOrderId.value
+            )
+
+            // 3. Try direct upload from file
+            val deviceId = SettingsManager.getDeviceId(getApplication())
+            try {
+                val result = scanApiService.uploadImageFile(imagePath, deviceId, "repair_photo", targetDeviceId, _activeOrderId.value, imageId)
+                when (result) {
+                    is ScanResult.Success -> {
+                        addLog("✅ Repair photo uploaded for $targetDeviceId")
+                        repository.updateScanStatus(historyId, ScanStatus.CONFIRMED)
+                        // Cleanup local file
+                        if (tempFile.delete()) addLog("Cleanup: deleted ${tempFile.name}")
+                    }
+                    is ScanResult.Error -> {
+                        addLog("❌ Repair photo failed: ${result.message}, queued for retry")
+                        repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                        repository.addImageUploadToSyncQueue(historyId)
+                    }
+                }
+            } catch (e: Exception) {
+                addLog("❌ Repair photo exception: ${e.message}, queued for retry")
+                repository.updateScanStatus(historyId, ScanStatus.FAILED)
+                repository.addImageUploadToSyncQueue(historyId)
             }
         }
     }
@@ -1092,28 +1141,24 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             // Signal workflow engine that image was captured
             workflowEngine?.onImageCaptured()
 
-            // Upload to server
             val deviceId = android.provider.Settings.Secure.getString(
                 getApplication<Application>().contentResolver,
                 android.provider.Settings.Secure.ANDROID_ID
             ) ?: "unknown-android-id"
 
-            // Create a mutable copy to avoid "recycled bitmap" errors
-            val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
-            addLog("Workflow Upload: Created bitmap copy (${bitmapCopy.width}x${bitmapCopy.height})")
+            viewModelScope.launch {
+                val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
 
-            // Resize to reduce file size
-            val maxResolution = SettingsManager.getImageResolution()
-            val resizedBitmap = resizeBitmap(bitmapCopy, maxResolution)
-            addLog("Workflow Upload: Resized to (${resizedBitmap.width}x${resizedBitmap.height})")
+                // Smart Crop to 224x224 (gradient-based edge detection)
+                val croppedBitmap = smartCrop(bitmapCopy, 224)
+                addLog("Workflow Upload: Smart Cropped to (${croppedBitmap.width}x${croppedBitmap.height})")
 
-            val quality = SettingsManager.getImageQuality()
+                val quality = SettingsManager.getImageQuality()
+                val currentStep = _workflowState.value?.currentStep
+                val uploadReason = currentStep?.upload?.reason ?: "workflow_image"
 
-            // Get current workflow step info for context
-            val currentStep = _workflowState.value?.currentStep
-            val uploadReason = currentStep?.upload?.reason ?: "workflow_image"
-
-            performUpload(resizedBitmap, deviceId, "workflow", uploadReason, quality, _activeOrderId.value)
+                performUpload(croppedBitmap, deviceId, "workflow", uploadReason, quality, _activeOrderId.value)
+            }
         }
     }
 
@@ -1442,47 +1487,127 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Direct Upload: Starting direct image upload...")
         val deviceId = android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown-android-id"
 
-        // Create a mutable copy to avoid "recycled bitmap" errors
-        val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
-        addLog("Direct Upload: Created bitmap copy (${bitmapCopy.width}x${bitmapCopy.height})")
+        viewModelScope.launch {
+            // Create a mutable copy to avoid "recycled bitmap" errors
+            val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
+            addLog("Direct Upload: Created bitmap copy (${bitmapCopy.width}x${bitmapCopy.height})")
 
-        // Resize to reduce file size and avoid SSL timeout
-        val maxResolution = SettingsManager.getImageResolution()
-        val resizedBitmap = resizeBitmap(bitmapCopy, maxResolution)
-        addLog("Direct Upload: Resized to (${resizedBitmap.width}x${resizedBitmap.height})")
+            // Smart Crop to 224x224 (gradient-based edge detection)
+            val croppedBitmap = smartCrop(bitmapCopy, 224)
+            addLog("Direct Upload: Smart Cropped to (${croppedBitmap.width}x${croppedBitmap.height})")
 
-        val quality = SettingsManager.getImageQuality()
-        performUpload(resizedBitmap, deviceId, "direct_upload", null, quality, _activeOrderId.value)
+            val quality = SettingsManager.getImageQuality()
+            performUpload(croppedBitmap, deviceId, "direct_upload", null, quality, _activeOrderId.value)
+        }
     }
 
     /**
-     * Resize bitmap to fit within maxDimension while maintaining aspect ratio
+     * Smart Crop: Scales image so minimum side = targetSize, then slides a targetSize window
+     * along the longer dimension to find the area with the highest gradient energy (most edges).
+     * Used for AI thumbnails and avatar generation — keeps the most visually interesting region.
+     * Runs on Dispatchers.Default to avoid blocking UI.
      */
-    private fun resizeBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+    private suspend fun smartCrop(bitmap: Bitmap, targetSize: Int): Bitmap = withContext(Dispatchers.Default) {
         val width = bitmap.width
         val height = bitmap.height
 
-        if (width <= maxDimension && height <= maxDimension) {
-            return bitmap
+        if (width == targetSize && height == targetSize) {
+            return@withContext bitmap
         }
 
-        val scale = if (width > height) {
-            maxDimension.toFloat() / width
+        // 1. Scale so min dimension = targetSize
+        val scale = if (width < height) {
+            targetSize.toFloat() / width
         } else {
-            maxDimension.toFloat() / height
+            targetSize.toFloat() / height
         }
 
-        val newWidth = (width * scale).toInt()
-        val newHeight = (height * scale).toInt()
+        val scaledWidth = (width * scale).toInt().coerceAtLeast(targetSize)
+        val scaledHeight = (height * scale).toInt().coerceAtLeast(targetSize)
 
-        val resized = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
-
-        // Recycle original if it's different from the resized one
-        if (resized != bitmap) {
-            bitmap.recycle()
+        val scaledBitmap = if (scaledWidth != width || scaledHeight != height) {
+            Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+        } else {
+            bitmap
         }
 
-        return resized
+        if (scaledWidth == targetSize && scaledHeight == targetSize) {
+            if (scaledBitmap != bitmap) bitmap.recycle()
+            return@withContext scaledBitmap
+        }
+
+        // 2. Compute per-column or per-row gradient energy
+        val pixels = IntArray(scaledWidth * scaledHeight)
+        scaledBitmap.getPixels(pixels, 0, scaledWidth, 0, 0, scaledWidth, scaledHeight)
+
+        var bestX = 0
+        var bestY = 0
+
+        if (scaledWidth > targetSize) {
+            // Landscape: slide window along X axis
+            val colEnergies = IntArray(scaledWidth)
+            for (x in 1 until scaledWidth) {
+                var energy = 0
+                for (y in 0 until scaledHeight) {
+                    val idx = y * scaledWidth + x
+                    val p1 = pixels[idx]
+                    val p2 = pixels[idx - 1]
+                    energy += Math.abs(((p1 shr 16) and 0xFF) - ((p2 shr 16) and 0xFF)) +
+                              Math.abs(((p1 shr 8) and 0xFF) - ((p2 shr 8) and 0xFF)) +
+                              Math.abs((p1 and 0xFF) - (p2 and 0xFF))
+                }
+                colEnergies[x] = energy
+            }
+
+            // Sliding window sum
+            var currentEnergy = 0L
+            for (i in 0 until targetSize) currentEnergy += colEnergies[i]
+            var maxEnergy = currentEnergy
+
+            for (x in 1..scaledWidth - targetSize) {
+                currentEnergy = currentEnergy - colEnergies[x - 1] + colEnergies[x + targetSize - 1]
+                if (currentEnergy > maxEnergy) {
+                    maxEnergy = currentEnergy
+                    bestX = x
+                }
+            }
+        } else if (scaledHeight > targetSize) {
+            // Portrait: slide window along Y axis
+            val rowEnergies = IntArray(scaledHeight)
+            for (y in 1 until scaledHeight) {
+                var energy = 0
+                val rowOffset = y * scaledWidth
+                val prevRowOffset = (y - 1) * scaledWidth
+                for (x in 0 until scaledWidth) {
+                    val p1 = pixels[rowOffset + x]
+                    val p2 = pixels[prevRowOffset + x]
+                    energy += Math.abs(((p1 shr 16) and 0xFF) - ((p2 shr 16) and 0xFF)) +
+                              Math.abs(((p1 shr 8) and 0xFF) - ((p2 shr 8) and 0xFF)) +
+                              Math.abs((p1 and 0xFF) - (p2 and 0xFF))
+                }
+                rowEnergies[y] = energy
+            }
+
+            var currentEnergy = 0L
+            for (i in 0 until targetSize) currentEnergy += rowEnergies[i]
+            var maxEnergy = currentEnergy
+
+            for (y in 1..scaledHeight - targetSize) {
+                currentEnergy = currentEnergy - rowEnergies[y - 1] + rowEnergies[y + targetSize - 1]
+                if (currentEnergy > maxEnergy) {
+                    maxEnergy = currentEnergy
+                    bestY = y
+                }
+            }
+        }
+
+        // 3. Crop the best window
+        val cropped = Bitmap.createBitmap(scaledBitmap, bestX, bestY, targetSize, targetSize)
+
+        if (scaledBitmap != bitmap && scaledBitmap != cropped) scaledBitmap.recycle()
+        if (bitmap != cropped && !bitmap.isRecycled) bitmap.recycle()
+
+        return@withContext cropped
     }
 
     /**
@@ -1511,9 +1636,15 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             )
             loadScanHistory()  // Refresh UI
 
+            // Recycle bitmap immediately — file is already on disk
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+                addLog("Direct Upload: Recycled bitmap (file on disk)")
+            }
+
             try {
-                // 3. Attempt upload with imageId
-                val result = scanApiService.uploadImage(bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+                // 3. Stream file directly to server (no double-compression)
+                val result = scanApiService.uploadImageFile(imagePath, deviceId, scanMode, barcodeData, orderId, imageId)
                 when (result) {
                     is ScanResult.Success -> {
                         addLog("Upload successful. Server response: ${result.data}")
@@ -1521,13 +1652,18 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
                         // 4. Update history status to CONFIRMED
                         repository.updateScanStatus(historyId, ScanStatus.CONFIRMED)
+
+                        // 5. Cleanup: delete local file after confirmed upload
+                        if (tempFile.delete()) {
+                            addLog("Cleanup: deleted ${tempFile.name}")
+                        }
                         loadScanHistory()
                     }
                     is ScanResult.Error -> {
                         addLog("Upload failed: ${result.message}")
                         _errorMessage.postValue("Upload failed: ${result.message}")
 
-                        // 5. Update history status to FAILED and add to sync queue for retry
+                        // 5. Keep file on disk, add to sync queue for retry
                         repository.updateScanStatus(historyId, ScanStatus.FAILED)
                         repository.addImageUploadToSyncQueue(historyId)
                         loadScanHistory()
@@ -1540,12 +1676,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 repository.updateScanStatus(historyId, ScanStatus.FAILED)
                 repository.addImageUploadToSyncQueue(historyId)
                 loadScanHistory()
-            } finally {
-                // Recycle bitmap copy to free memory
-                if (!bitmap.isRecycled) {
-                    bitmap.recycle()
-                    addLog("Direct Upload: Recycled bitmap copy")
-                }
             }
         }
     }

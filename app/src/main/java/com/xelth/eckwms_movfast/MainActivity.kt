@@ -22,6 +22,8 @@ import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.screens.DatabaseViewerScreen
+import com.xelth.eckwms_movfast.ui.screens.QcScreen
+import com.xelth.eckwms_movfast.ui.screens.ExplorerScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.screens.WarehouseMapScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
@@ -224,6 +226,14 @@ class MainActivity : ComponentActivity() {
                         DatabaseViewerScreen(
                             onBack = { navController.popBackStack() }
                         )
+                    }
+
+                    composable("qcScreen") {
+                        QcScreen(onBack = { navController.popBackStack() })
+                    }
+
+                    composable("explorerScreen") {
+                        ExplorerScreen(onBack = { navController.popBackStack() })
                     }
 
                     composable("imageViewer") {
