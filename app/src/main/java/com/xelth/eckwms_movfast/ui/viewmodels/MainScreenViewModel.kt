@@ -160,8 +160,13 @@ class MainScreenViewModel : ViewModel() {
     // Callback for fetching shipments (set by UI layer, backed by ScanApiService)
     var onFetchShipments: (suspend (limit: Int) -> ScanResult)? = null
     // Fat Client: offline lookup callbacks (set by UI layer, backed by WarehouseRepository)
+    var onUpdateProductQty: (suspend (barcode: String, qty: Double) -> Unit)? = null
     var onLookupProduct: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.ProductEntity?)? = null
     var onLookupLocation: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.LocationEntity?)? = null
+    var onFetchLocationContents: (suspend (locationId: Long) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
+    // Inventory records persistence (PDA = source of truth)
+    var onSaveInventoryRecords: (suspend (locationBarcode: String, records: List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>) -> Unit)? = null
+    var onLoadInventoryRecords: (suspend (locationBarcode: String) -> List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>)? = null
 
     private val _isRepairMode = MutableLiveData<Boolean>(false)
     val isRepairMode: LiveData<Boolean> = _isRepairMode
@@ -267,6 +272,21 @@ class MainScreenViewModel : ViewModel() {
         var internalId: String? = null  // Decrypted Smart Code (i000.../b000...) for server upload
     )
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
+
+    // Expected inventory from server (populated when location is scanned)
+    data class ExpectedItem(
+        val productId: Long,
+        val productName: String,
+        val barcode: String,
+        val defaultCode: String,
+        val quantity: Double,
+        val reservedQty: Double
+    )
+    private val expectedInventory = mutableMapOf<String, ExpectedItem>()  // barcode -> ExpectedItem
+
+    // Numpad state
+    private var isNumpadActive = false
+    private var numpadInput = ""
 
     private val _inventoryStatus = MutableLiveData<String>("Ready to count")
     val inventoryStatus: LiveData<String> = _inventoryStatus
@@ -2135,6 +2155,9 @@ class MainScreenViewModel : ViewModel() {
         _inventoryItemPhoto.value = null
         _inventoryLocationPhoto.value = null
         inventoryItems.clear()
+        expectedInventory.clear()
+        isNumpadActive = false
+        numpadInput = ""
         updateInventoryConsole()
         renderInventoryGrid()
         addLog("Entered Inventory Mode")
@@ -2143,11 +2166,73 @@ class MainScreenViewModel : ViewModel() {
     fun exitInventoryMode() {
         _isInventoryMode.value = false
         waitingForManualLocation = false
+        expectedInventory.clear()
+        isNumpadActive = false
+        numpadInput = ""
         initializeGrid()
     }
 
     private fun handleInventoryButtonClick(action: String): String {
+        // While numpad is active, only process numpad actions
+        if (isNumpadActive && !action.startsWith("act_num")) {
+            return "handled"
+        }
+
         when (action) {
+            // --- Numpad actions ---
+            "act_numpad" -> {
+                if (lastScannedInventoryItem.isEmpty()) {
+                    _inventoryStatus.value = "⚠️ Scan an item first!"
+                    return "handled"
+                }
+                isNumpadActive = true
+                numpadInput = ""
+                val entry = inventoryItems[lastScannedInventoryItem]
+                val label = entry?.displayName ?: lastScannedInventoryItem.takeLast(12)
+                _inventoryStatus.value = "$label  Qty: _"
+                renderNumpadGrid()
+                return "handled"
+            }
+            "act_num_0", "act_num_1", "act_num_2", "act_num_3", "act_num_4",
+            "act_num_5", "act_num_6", "act_num_7", "act_num_8", "act_num_9" -> {
+                if (!isNumpadActive) return "handled"
+                val digit = action.removePrefix("act_num_")
+                if (numpadInput.length < 5) {
+                    numpadInput += digit
+                    val entry = inventoryItems[lastScannedInventoryItem]
+                    val label = entry?.displayName ?: lastScannedInventoryItem.takeLast(12)
+                    _inventoryStatus.value = "$label  Qty: ${numpadInput}_"
+                }
+                return "handled"
+            }
+            "act_numpad_cancel" -> {
+                isNumpadActive = false
+                numpadInput = ""
+                _inventoryStatus.value = "Numpad cancelled"
+                renderInventoryGrid()
+                return "handled"
+            }
+            "act_numpad_ok" -> {
+                if (!isNumpadActive) return "handled"
+                val qty = numpadInput.toIntOrNull()
+                if (qty == null || qty < 0) {
+                    _inventoryStatus.value = "⚠️ Invalid quantity"
+                    return "handled"
+                }
+                val entry = inventoryItems[lastScannedInventoryItem]
+                if (entry != null) {
+                    entry.quantity = qty
+                    val label = entry.displayName ?: lastScannedInventoryItem.takeLast(12)
+                    addLog("🔢 $label qty set to $qty")
+                    _inventoryStatus.value = "$label = $qty"
+                    updateInventoryConsole()
+                }
+                isNumpadActive = false
+                numpadInput = ""
+                renderInventoryGrid()
+                return "handled"
+            }
+            // --- Regular inventory actions ---
             "act_exit" -> {
                 exitInventoryMode()
                 return "handled"
@@ -2158,6 +2243,9 @@ class MainScreenViewModel : ViewModel() {
             }
             "act_clear_inventory" -> {
                 inventoryItems.clear()
+                expectedInventory.clear()
+                isNumpadActive = false
+                numpadInput = ""
                 currentInventoryLocation = ""
                 lastScannedInventoryItem = ""
                 lastScannedType = ""
@@ -2196,7 +2284,7 @@ class MainScreenViewModel : ViewModel() {
         return "handled"
     }
 
-    fun onInventoryScan(barcode: String) {
+    fun onInventoryScan(barcode: String, wasDecryptedUpstream: Boolean = false) {
         val cleanCode = barcode.trim()
         android.util.Log.e("INVENTORY", ">>> onInventoryScan called: '$cleanCode'")
 
@@ -2205,21 +2293,28 @@ class MainScreenViewModel : ViewModel() {
         var effectiveCode = cleanCode
         var decryptedPath: String? = null
 
-        val isEncryptedEck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isEncryptedEckUrl(cleanCode)
-        if (isEncryptedEck) {
-            decryptedPath = com.xelth.eckwms_movfast.utils.EckSecurityManager.tryDecryptBarcode(cleanCode)
-            if (decryptedPath != null) {
-                android.util.Log.e("INVENTORY", "🔓 Decrypted: $decryptedPath")
-                addLog("🔓 $decryptedPath")
-                // Use decrypted path for type detection, but keep original for storage
-                effectiveCode = decryptedPath
-            } else {
-                android.util.Log.e("INVENTORY", "🔒 Decryption failed")
-                addLog("⚠️ KEY MISMATCH - check server sync")
-                _inventoryStatus.value = "⚠️ Ключ не совпадает!"
-            }
+        if (wasDecryptedUpstream) {
+            // Already decrypted by observer — treat cleanCode as the decrypted smart code
+            decryptedPath = cleanCode
+            effectiveCode = cleanCode
+            android.util.Log.e("INVENTORY", "🔓 Pre-decrypted: $cleanCode")
+            addLog("🔓 $cleanCode")
         } else {
-            addLog(">>> $cleanCode")
+            val isEncryptedEck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isEncryptedEckUrl(cleanCode)
+            if (isEncryptedEck) {
+                decryptedPath = com.xelth.eckwms_movfast.utils.EckSecurityManager.tryDecryptBarcode(cleanCode)
+                if (decryptedPath != null) {
+                    android.util.Log.e("INVENTORY", "🔓 Decrypted: $decryptedPath")
+                    addLog("🔓 $decryptedPath")
+                    effectiveCode = decryptedPath
+                } else {
+                    android.util.Log.e("INVENTORY", "🔒 Decryption failed")
+                    addLog("⚠️ KEY MISMATCH - check server sync")
+                    _inventoryStatus.value = "⚠️ Ключ не совпадает!"
+                }
+            } else {
+                addLog(">>> $cleanCode")
+            }
         }
 
         // --- SECURITY FILTER ---
@@ -2232,7 +2327,9 @@ class MainScreenViewModel : ViewModel() {
 
         // 2. Check for Spoofing Attempts on Internal ID format
         // Raw barcodes (NOT Link Barcodes) that look like internal IDs are rejected
-        val isPotentialSpoof = !isLinkBarcode &&
+        // Skip if code was already decrypted from encrypted QR (proves authenticity)
+        val isPotentialSpoof = !wasDecryptedUpstream &&
+                               !isLinkBarcode &&
                                cleanCode.length == 19 &&
                                cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
 
@@ -2270,7 +2367,7 @@ class MainScreenViewModel : ViewModel() {
                               decryptedPath?.startsWith("b", ignoreCase = true) == true
 
         // Fallback for non-encrypted codes
-        val isLinkPlace = isLinkBarcode && !isEncryptedEck &&
+        val isLinkPlace = isLinkBarcode && !wasDecryptedUpstream &&
                           (cleanCode.contains("/p/") || cleanCode.contains("/place/"))
         val isRawPlace = !isLinkBarcode && (
             cleanCode.startsWith("LOC-", ignoreCase = true) ||
@@ -2299,6 +2396,7 @@ class MainScreenViewModel : ViewModel() {
                     ?: localLoc?.name
                     ?: effectiveCode.takeLast(25)
 
+                android.util.Log.e("INVENTORY", "Place branch: currentLoc='$currentInventoryLocation' cleanCode='$cleanCode'")
                 if (currentInventoryLocation.isEmpty()) {
                     // Start new session
                     currentInventoryLocation = cleanCode
@@ -2320,6 +2418,10 @@ class MainScreenViewModel : ViewModel() {
                     if (localLoc != null) {
                         addLog("✅ Offline: ${localLoc.name}")
                     }
+                    // Fetch expected inventory from server + load local records
+                    expectedInventory.clear()
+                    fetchExpectedInventory()
+                    loadLocalInventoryRecords(cleanCode)
                     renderInventoryGrid()
                 } else if (currentInventoryLocation.equals(cleanCode, ignoreCase = true)) {
                     // Scanned SAME location again -> Auto-Submit (close session)
@@ -2363,6 +2465,10 @@ class MainScreenViewModel : ViewModel() {
                     if (localProd != null && entry.displayName == null) {
                         entry.displayName = localProd.name
                     }
+                    // Fallback: use expected inventory name
+                    if (entry.displayName == null) {
+                        entry.displayName = expectedInventory[cleanCode]?.productName
+                    }
 
                     // Try to load existing photo using decrypted internal ID
                     if (entry.photo == null && decryptedItemId != null) {
@@ -2375,6 +2481,15 @@ class MainScreenViewModel : ViewModel() {
 
                     lastScannedInventoryItem = cleanCode
                     _inventoryItemPhoto.value = entry.photo
+
+                    // --- AUTO-PHOTO TRIGGER ---
+                    // First scan of a new item with no photo → prompt camera
+                    android.util.Log.e("AUTO_PHOTO", "Check: qty=${entry.quantity}, photo=${entry.photo != null}, barcode=$cleanCode")
+                    if (entry.quantity == 1 && entry.photo == null) {
+                        addLog("📸 New item — requesting photo...")
+                        android.util.Log.e("AUTO_PHOTO", ">>> TRIGGERING camera for new item: $cleanCode")
+                        _navigateToCamera.postValue(true)
+                    }
 
                     val typeLabel = if (entry.type == "box") "📦" else "🔧"
                     val photoIcon = if (entry.photo != null) " 📷" else ""
@@ -2501,8 +2616,12 @@ class MainScreenViewModel : ViewModel() {
             }
         }
 
+        // Save to local DB (PDA = source of truth) before clearing
+        saveCurrentInventoryToLocal(currentInventoryLocation, inventoryItems.toMap())
+
         // Start new session
         inventoryItems.clear()
+        expectedInventory.clear()
         lastScannedInventoryItem = ""
         lastScannedType = "place"  // new location is scanned
         decryptedItemId = null
@@ -2511,8 +2630,57 @@ class MainScreenViewModel : ViewModel() {
         currentInventoryLocation = newLocation
         _inventoryStatus.value = "LOC: $newLocation"
         addLog("📍 Location SET: $newLocation")
+        fetchExpectedInventory()
+        loadLocalInventoryRecords(newLocation)
         updateInventoryConsole()
         renderInventoryGrid()
+    }
+
+    private fun fetchExpectedInventory() {
+        val locationId = decryptedLocationId?.substring(1)?.toLongOrNull()
+        if (locationId == null || locationId == 0L) {
+            android.util.Log.e("INVENTORY", "fetchExpected: no Odoo ID from decryptedLocationId=$decryptedLocationId")
+            return
+        }
+        android.util.Log.e("INVENTORY", "fetchExpected: locationId=$locationId, decryptedLocationId=$decryptedLocationId")
+        viewModelScope.launch {
+            try {
+                val result = onFetchLocationContents?.invoke(locationId)
+                android.util.Log.e("INVENTORY", "fetchExpected result: ${result?.javaClass?.simpleName} ${if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) result.data.take(200) else if (result is com.xelth.eckwms_movfast.api.ScanResult.Error) result.message else "null"}")
+                if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
+                    val raw = result.data?.trim() ?: ""
+                    if (raw.isEmpty() || raw == "null" || raw == "[]") {
+                        addLog("📋 Location empty (no items on server)")
+                        updateInventoryConsole()
+                        return@launch
+                    }
+                    val arr = org.json.JSONArray(raw)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val barcode = obj.optString("barcode", "")
+                        val defaultCode = obj.optString("default_code", "")
+                        val key = barcode.ifEmpty { defaultCode }
+                        if (key.isNotEmpty()) {
+                            expectedInventory[key] = ExpectedItem(
+                                productId = obj.optLong("product_id", 0),
+                                productName = obj.optString("product_name", "Unknown"),
+                                barcode = barcode,
+                                defaultCode = defaultCode,
+                                quantity = obj.optDouble("quantity", 0.0),
+                                reservedQty = obj.optDouble("reserved_qty", 0.0)
+                            )
+                        }
+                    }
+                    addLog("📋 Expected: ${expectedInventory.size} products")
+                    updateInventoryConsole()
+                } else if (result is com.xelth.eckwms_movfast.api.ScanResult.Error) {
+                    android.util.Log.e("INVENTORY", "fetchExpected failed: ${result.message}")
+                    // Don't show error to user — just no expected data
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("INVENTORY", "fetchExpected exception", e)
+            }
+        }
     }
 
     private fun updateInventoryConsole() {
@@ -2521,18 +2689,50 @@ class MainScreenViewModel : ViewModel() {
         } else {
             "--- SCAN LOCATION FIRST ---"
         }
-        val items = inventoryItems.entries.map { (barcode, entry) ->
+        val lines = mutableListOf<String>()
+        val countedBarcodes = inventoryItems.keys.toSet()
+
+        // Show counted items with expected comparison
+        inventoryItems.entries.sortedBy { it.value.displayName ?: it.key }.forEach { (barcode, entry) ->
             val typeIcon = if (entry.type == "box") "📦" else "🔧"
             val photoIcon = if (entry.photo != null) "📷" else ""
-            // Fat Client: show product name if available, otherwise barcode
-            val label = entry.displayName ?: barcode.takeLast(12)
-            "$typeIcon %-16s : %d $photoIcon".format(label.take(16), entry.quantity)
-        }.sorted()
-        val totalQty = inventoryItems.values.sumOf { it.quantity }
+            val label = entry.displayName
+                ?: expectedInventory[barcode]?.productName
+                ?: barcode.takeLast(12)
+            val expected = expectedInventory[barcode]
+            if (expected != null) {
+                val expQty = if (expected.quantity % 1.0 == 0.0) expected.quantity.toInt().toString() else "%.1f".format(expected.quantity)
+                val mark = if (entry.quantity == expected.quantity.toInt()) " ✓" else ""
+                lines.add("$typeIcon %-14s: ${entry.quantity}/$expQty$mark $photoIcon".format(label.take(14)))
+            } else {
+                lines.add("$typeIcon %-14s: ${entry.quantity} (new) $photoIcon".format(label.take(14)))
+            }
+        }
+
+        // Show expected-but-not-counted items
+        if (expectedInventory.isNotEmpty()) {
+            val notCounted = expectedInventory.keys - countedBarcodes
+            if (notCounted.isNotEmpty()) {
+                lines.add("--- NOT COUNTED ---")
+                notCounted.forEach { barcode ->
+                    val exp = expectedInventory[barcode]!!
+                    val label = exp.productName.ifEmpty { exp.defaultCode.ifEmpty { barcode.takeLast(12) } }
+                    val expQty = if (exp.quantity % 1.0 == 0.0) exp.quantity.toInt().toString() else "%.1f".format(exp.quantity)
+                    lines.add("🔧 %-14s: 0/$expQty ⚠️".format(label.take(14)))
+                }
+            }
+        }
+
+        // Summary
+        val totalCounted = inventoryItems.values.sumOf { it.quantity }
         val boxCount = inventoryItems.values.count { it.type == "box" }
         val itemCount = inventoryItems.values.count { it.type == "item" }
-        val summary = "Items: $itemCount | Boxes: $boxCount | Total: $totalQty"
-        _consoleLogs.postValue(listOf(header) + items + listOf("", summary))
+        val summary = if (expectedInventory.isNotEmpty()) {
+            "Counted: ${countedBarcodes.size}/${expectedInventory.size} | Qty: $totalCounted"
+        } else {
+            "Items: $itemCount | Boxes: $boxCount | Total: $totalCounted"
+        }
+        _consoleLogs.postValue(listOf(header) + lines + listOf("", summary))
     }
 
     private fun submitInventory() {
@@ -2543,6 +2743,26 @@ class MainScreenViewModel : ViewModel() {
         if (inventoryItems.isEmpty()) {
             _inventoryStatus.value = "Nothing to submit!"
             return
+        }
+
+        // Pre-submit discrepancy warning
+        if (expectedInventory.isNotEmpty()) {
+            val notCounted = expectedInventory.keys - inventoryItems.keys
+            val diffs = inventoryItems.entries.filter { (bc, e) ->
+                val exp = expectedInventory[bc]
+                exp != null && e.quantity != exp.quantity.toInt()
+            }
+            if (notCounted.isNotEmpty() || diffs.isNotEmpty()) {
+                addLog("⚠️ SUBMITTING WITH DISCREPANCIES:")
+                notCounted.forEach { bc ->
+                    val exp = expectedInventory[bc]!!
+                    addLog("  MISSING: ${exp.productName.take(20)} (exp ${exp.quantity.toInt()})")
+                }
+                diffs.forEach { (bc, entry) ->
+                    val exp = expectedInventory[bc]!!
+                    addLog("  DIFF: ${(entry.displayName ?: bc).take(20)} ${entry.quantity} vs ${exp.quantity.toInt()}")
+                }
+            }
         }
 
         val itemsArray = JSONArray()
@@ -2609,6 +2829,15 @@ class MainScreenViewModel : ViewModel() {
                 _inventoryStatus.value = "✅ Submitted $itemCount items"
             }
 
+            // Update local DB with counted quantities (offline-first)
+            inventoryItems.forEach { (barcode, entry) ->
+                try {
+                    onUpdateProductQty?.invoke(barcode, entry.quantity.toDouble())
+                } catch (e: Exception) {
+                    android.util.Log.e("INVENTORY", "Failed to update local qty for $barcode: ${e.message}")
+                }
+            }
+
             delay(2000)
             if (_isInventoryMode.value == true) {
                 _inventoryStatus.value = "Scan next location..."
@@ -2616,7 +2845,11 @@ class MainScreenViewModel : ViewModel() {
             }
         }
 
+        // Save to local DB (PDA = source of truth) before clearing
+        saveCurrentInventoryToLocal(currentInventoryLocation, inventoryItems.toMap())
+
         inventoryItems.clear()
+        expectedInventory.clear()
         currentInventoryLocation = ""
         lastScannedInventoryItem = ""
         lastScannedType = ""
@@ -2625,6 +2858,55 @@ class MainScreenViewModel : ViewModel() {
         _inventoryItemPhoto.value = null
         _inventoryLocationPhoto.value = null
         updateInventoryConsole()
+    }
+
+    /** Persist current inventory session to local DB (PDA = source of truth) */
+    private fun saveCurrentInventoryToLocal(location: String, items: Map<String, InventoryEntry>) {
+        if (location.isEmpty() || items.isEmpty()) return
+        val records = items.map { (barcode, entry) ->
+            com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity(
+                locationBarcode = location,
+                productBarcode = barcode,
+                productName = entry.displayName ?: barcode.takeLast(12),
+                quantity = entry.quantity.toDouble(),
+                type = entry.type
+            )
+        }
+        viewModelScope.launch {
+            try {
+                onSaveInventoryRecords?.invoke(location, records)
+                android.util.Log.d("INVENTORY", "Saved ${records.size} records for $location")
+            } catch (e: Exception) {
+                android.util.Log.e("INVENTORY", "Failed to save inventory records", e)
+            }
+        }
+    }
+
+    /** Load previously counted inventory from local DB and populate expectedInventory */
+    private fun loadLocalInventoryRecords(location: String) {
+        viewModelScope.launch {
+            try {
+                val records = onLoadInventoryRecords?.invoke(location) ?: emptyList()
+                if (records.isNotEmpty()) {
+                    records.forEach { rec ->
+                        if (!expectedInventory.containsKey(rec.productBarcode)) {
+                            expectedInventory[rec.productBarcode] = ExpectedItem(
+                                productId = 0,
+                                productName = rec.productName,
+                                barcode = rec.productBarcode,
+                                defaultCode = "",
+                                quantity = rec.quantity,
+                                reservedQty = 0.0
+                            )
+                        }
+                    }
+                    addLog("📦 Local: ${records.size} prev. items")
+                    updateInventoryConsole()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("INVENTORY", "Failed to load inventory records", e)
+            }
+        }
     }
 
     private fun renderInventoryGrid() {
@@ -2656,6 +2938,11 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "📤\nSEND", "color" to "#2196F3", "action" to "act_submit_inventory"))
         uiItems.add(mapOf("type" to "button", "label" to "🗑️\nCLEAR", "color" to "#D32F2F", "action" to "act_clear_inventory"))
 
+        // Row 3: NUM button for manual quantity entry (bottom-left)
+        val numEnabled = lastScannedInventoryItem.isNotEmpty()
+        val numColor = if (numEnabled) "#607D8B" else "#424242"
+        uiItems.add(mapOf("type" to "button", "label" to "🔢\nNUM", "color" to numColor, "action" to "act_numpad", "enabled" to numEnabled))
+
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
@@ -2665,6 +2952,21 @@ class MainScreenViewModel : ViewModel() {
             200
         )
 
+        updateRenderCells()
+    }
+
+    private fun renderNumpadGrid() {
+        val uiItems = mutableListOf<Map<String, Any>>()
+        // Phone layout: 1-2-3 / 4-5-6 / 7-8-9 / CANCEL-0-OK
+        for (d in 1..9) {
+            uiItems.add(mapOf("type" to "button", "label" to "$d", "color" to "#37474F", "action" to "act_num_$d"))
+        }
+        uiItems.add(mapOf("type" to "button", "label" to "❌\nCANCEL", "color" to "#D32F2F", "action" to "act_numpad_cancel"))
+        uiItems.add(mapOf("type" to "button", "label" to "0", "color" to "#37474F", "action" to "act_num_0"))
+        uiItems.add(mapOf("type" to "button", "label" to "✅\nOK", "color" to "#4CAF50", "action" to "act_numpad_ok"))
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
         updateRenderCells()
     }
 

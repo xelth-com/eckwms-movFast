@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
 import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +30,9 @@ interface ReferenceDao {
     @Query("SELECT COUNT(*) FROM products")
     suspend fun getProductCount(): Int
 
+    @Query("UPDATE products SET qtyAvailable = :qty, lastUpdated = :timestamp WHERE barcode = :barcode OR defaultCode = :barcode")
+    suspend fun updateProductQty(barcode: String, qty: Double, timestamp: Long = System.currentTimeMillis()): Int
+
     // --- Locations ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLocations(locations: List<LocationEntity>)
@@ -44,4 +48,14 @@ interface ReferenceDao {
 
     @Query("SELECT COUNT(*) FROM locations")
     suspend fun getLocationCount(): Int
+
+    // --- Inventory Records (PDA source of truth) ---
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertInventoryRecords(records: List<InventoryRecordEntity>)
+
+    @Query("SELECT * FROM inventory_records WHERE locationBarcode = :locationBarcode ORDER BY productName ASC")
+    suspend fun getInventoryRecords(locationBarcode: String): List<InventoryRecordEntity>
+
+    @Query("DELETE FROM inventory_records WHERE locationBarcode = :locationBarcode")
+    suspend fun clearInventoryRecords(locationBarcode: String)
 }

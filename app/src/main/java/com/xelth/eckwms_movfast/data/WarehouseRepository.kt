@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
 import com.xelth.eckwms_movfast.data.local.AppDatabase
+import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
 import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
@@ -95,6 +96,32 @@ class WarehouseRepository(
         // This prevents double upload (direct + sync worker).
 
         scanId
+    }
+
+    /**
+     * Adds an EXISTING scan to the sync queue for background retry.
+     * Used when immediate hybrid delivery fails — no new DB entry created.
+     */
+    suspend fun addScanToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
+        val scan = db.scanDao().getScanById(scanId) ?: return@withContext
+
+        Log.d(TAG, "Queueing existing scan #$scanId for background sync")
+
+        val payload = JSONObject().apply {
+            put("barcode", scan.barcode)
+            put("type", scan.type)
+            scan.orderId?.let { put("orderId", it) }
+        }.toString()
+
+        val queueEntity = SyncQueueEntity(
+            type = "scan",
+            payload = payload,
+            scanId = scanId
+        )
+        db.syncQueueDao().addToQueue(queueEntity)
+
+        // Trigger sync worker
+        SyncManager.scheduleSync(context)
     }
 
     suspend fun addImageUploadToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
@@ -236,6 +263,27 @@ class WarehouseRepository(
         db.referenceDao().getProductByBarcode(barcode)
     }
 
+    /** Update product quantity in local cache after inventory count (upsert) */
+    suspend fun updateLocalProductQty(barcode: String, qty: Double) = withContext(Dispatchers.IO) {
+        val rows = db.referenceDao().updateProductQty(barcode, qty)
+        if (rows == 0) {
+            // Product not in local DB yet (smart code or unsynced). Create stub.
+            val stub = ProductEntity(
+                id = System.nanoTime(),
+                defaultCode = barcode,
+                name = "Item $barcode",
+                barcode = barcode,
+                qtyAvailable = qty,
+                active = true,
+                lastUpdated = System.currentTimeMillis()
+            )
+            db.referenceDao().insertProducts(listOf(stub))
+            Log.d(TAG, "Created local stub product for $barcode with qty $qty")
+        } else {
+            Log.d(TAG, "Updated local qty for $barcode to $qty")
+        }
+    }
+
     /**
      * Look up a location by barcode in the local offline cache.
      * Returns instantly from local SQLite — works without network.
@@ -270,6 +318,22 @@ class WarehouseRepository(
             Log.e(TAG, "Failed to refresh reference data", e)
         }
         updated
+    }
+
+    // --- INVENTORY RECORDS (PDA source of truth) ---
+
+    /** Save counted inventory for a location. Replaces any previous records. */
+    suspend fun saveInventoryRecords(locationBarcode: String, records: List<InventoryRecordEntity>) = withContext(Dispatchers.IO) {
+        db.referenceDao().clearInventoryRecords(locationBarcode)
+        if (records.isNotEmpty()) {
+            db.referenceDao().insertInventoryRecords(records)
+        }
+        Log.d(TAG, "Saved ${records.size} inventory records for $locationBarcode")
+    }
+
+    /** Load previously counted inventory for a location */
+    suspend fun getInventoryRecords(locationBarcode: String): List<InventoryRecordEntity> = withContext(Dispatchers.IO) {
+        db.referenceDao().getInventoryRecords(locationBarcode)
     }
 
     // --- AVATAR LOOKUP ---

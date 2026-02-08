@@ -26,9 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -183,6 +186,9 @@ fun MainScreen(
         mainViewModel.onInventorySubmit = { target, event, data ->
             scanApiService.sendRepairEvent(target, event, data)
         }
+        mainViewModel.onFetchLocationContents = { locationId ->
+            scanApiService.fetchExplorerData("/api/explorer/locations/$locationId/contents")
+        }
     }
 
     // Wire Fat Client offline lookup callbacks
@@ -190,6 +196,9 @@ fun MainScreen(
         val repo = com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(context)
         mainViewModel.onLookupProduct = { barcode -> repo.getLocalProduct(barcode) }
         mainViewModel.onLookupLocation = { barcode -> repo.getLocalLocation(barcode) }
+        mainViewModel.onUpdateProductQty = { barcode, qty -> repo.updateLocalProductQty(barcode, qty) }
+        mainViewModel.onSaveInventoryRecords = { loc, records -> repo.saveInventoryRecords(loc, records) }
+        mainViewModel.onLoadInventoryRecords = { loc -> repo.getInventoryRecords(loc) }
     }
 
     // Load receiving workflow JSON
@@ -202,6 +211,7 @@ fun MainScreen(
     LaunchedEffect(receivingCameraNav) {
         val scanMode = receivingCameraNav
         if (scanMode != null) {
+            android.util.Log.e("NAV_CAMERA", ">>> receivingCameraNav: $scanMode")
             mainViewModel.consumeReceivingCameraNav()
             navController.navigate("cameraScanScreen?scan_mode=$scanMode")
         }
@@ -220,7 +230,7 @@ fun MainScreen(
             if (isRestockMode) {
                 mainViewModel.onRestockScan(scannedBarcode!!)
             } else if (isInventoryMode) {
-                mainViewModel.onInventoryScan(scannedBarcode!!)
+                mainViewModel.onInventoryScan(scannedBarcode!!, viewModel.lastScanWasEncrypted)
             } else if (isReceivingMode) {
                 mainViewModel.onReceivingScan(scannedBarcode!!)
             } else if (isDeviceCheckMode) {
@@ -253,6 +263,7 @@ fun MainScreen(
     val shouldNavigateToCamera by mainViewModel.navigateToCamera.observeAsState(false)
     LaunchedEffect(shouldNavigateToCamera) {
         if (shouldNavigateToCamera) {
+            android.util.Log.e("NAV_CAMERA", ">>> navigateToCamera TRIGGERED (mode=inventory=${mainViewModel.isInventoryMode.value})")
             mainViewModel.consumeNavigateToCamera()
             navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
         }
@@ -407,7 +418,9 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .alpha(0.25f)
+                                    .focusProperties { canFocus = false }
                                     .clickable(enabled = canTakePhoto) {
+                                        android.util.Log.e("NAV_CAMERA", ">>> PHOTO_BG tapped")
                                         navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
                                     },
                                 contentScale = ContentScale.Crop
@@ -419,7 +432,9 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .focusProperties { canFocus = false }
                                     .clickable(enabled = canTakePhoto) {
+                                        android.util.Log.e("NAV_CAMERA", ">>> STATUS_BAR tapped")
                                         navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
                                     },
                                 contentAlignment = Alignment.Center
@@ -513,11 +528,14 @@ fun MainScreen(
                     regStatus = deviceRegistrationStatus,
                     onButtonClick = { action ->
                         val result = mainViewModel.onButtonClick(action)
+                        android.util.Log.e("NAV_CAMERA", ">>> onButtonClick action=$action result=$result")
                         when (result) {
                             "capture_photo" -> {
+                                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (photo) action=$action")
                                 navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
                             }
                             "capture_barcode" -> {
+                                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (barcode) action=$action")
                                 navController.navigate("cameraScanScreen?scan_mode=barcode")
                             }
                             "navigate_scan" -> navController.navigate("scanScreen")

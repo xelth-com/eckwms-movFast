@@ -308,28 +308,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Override key events to prevent hardware scanner button from triggering UI buttons
+     * Intercept ALL key events BEFORE Compose processes them.
+     * dispatchKeyEvent fires before onKeyDown/onKeyUp and before Compose focus handling.
+     * This prevents hardware scanner's Enter key from clicking focused UI elements.
      */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Log all key events for debugging
-        viewModel.addLog("KeyEvent: keyCode=$keyCode, action=${event?.action}, scanCode=${event?.scanCode}")
-
-        // Block common scanner trigger keys from propagating to UI
-        return when (keyCode) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        return when (event.keyCode) {
             KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_BUTTON_A,
             KeyEvent.KEYCODE_BUTTON_B,
-            KeyEvent.KEYCODE_SPACE,
-            KeyEvent.KEYCODE_F1,
-            KeyEvent.KEYCODE_F2,
-            KeyEvent.KEYCODE_F3,
-            KeyEvent.KEYCODE_F4,
-            KeyEvent.KEYCODE_F5 -> {
-                viewModel.addLog("Scanner key blocked: $keyCode")
-                true // Consume the event - don't pass to UI
-            }
-            else -> super.onKeyDown(keyCode, event)
+            KeyEvent.KEYCODE_SPACE -> true // Consume — never reaches Compose
+            else -> super.dispatchKeyEvent(event)
         }
     }
 

@@ -11,6 +11,7 @@ import com.xelth.eckwms_movfast.data.local.dao.ScanDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
+import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
 import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
@@ -23,9 +24,10 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         ProductEntity::class,
         LocationEntity::class,
         FileResourceEntity::class,
-        AttachmentEntity::class
+        AttachmentEntity::class,
+        InventoryRecordEntity::class
     ],
-    version = 6,  // Added file_resources + entity_attachments tables
+    version = 7,  // Added inventory_records table (PDA source of truth)
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

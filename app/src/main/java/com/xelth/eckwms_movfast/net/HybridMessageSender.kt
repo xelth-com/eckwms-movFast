@@ -191,7 +191,18 @@ object HybridMessageSender {
         }
     }
 
-    suspend fun sendScan(apiService: ScanApiService, barcode: String, type: String): ScanResult {
+    /**
+     * Send scan with existing DB record — updates status in-place (no duplicate entries).
+     * @param scanId Existing scan_history row to update through the lifecycle
+     * @param repository For status updates (CONFIRMED / PENDING + queue)
+     */
+    suspend fun sendScan(
+        apiService: ScanApiService,
+        barcode: String,
+        type: String,
+        scanId: Long,
+        repository: com.xelth.eckwms_movfast.data.WarehouseRepository
+    ): ScanResult {
         val msgId = UUID.randomUUID().toString()
         val payload = JSONObject().apply {
             put("msgId", msgId)
@@ -204,7 +215,7 @@ object HybridMessageSender {
         pendingAcks[msgId] = ackDeferred
 
         // 1. Send via WebSocket (Fast Path)
-        val wsJob = scope.launch {
+        scope.launch {
             if (webSocket?.isOpen == true) {
                 Log.d(TAG, "Sending WS: $msgId")
                 webSocket?.send(payload.toString())
@@ -218,12 +229,59 @@ object HybridMessageSender {
             withTimeout(HEDGE_DELAY_MS) {
                 ackDeferred.await()
                 Log.d(TAG, "WS delivery confirmed fast ($msgId)")
+                repository.updateScanStatus(scanId, com.xelth.eckwms_movfast.ui.data.ScanStatus.CONFIRMED)
                 ScanResult.Success("scan", "Fast delivery", msgId)
             }
         } catch (e: TimeoutCancellationException) {
             Log.i(TAG, "Hedge delay passed, sending HTTP fallback ($msgId)")
             // 3. Fallback to HTTP
-            // We pass msgId to HTTP so server can deduplicate
+            val result = apiService.processScanWithId(barcode, type, msgId)
+            when (result) {
+                is ScanResult.Success -> {
+                    repository.updateScanStatus(scanId, com.xelth.eckwms_movfast.ui.data.ScanStatus.CONFIRMED, result.checksum)
+                }
+                is ScanResult.Error -> {
+                    Log.w(TAG, "HTTP failed, queuing for background sync: ${result.message}")
+                    repository.updateScanStatus(scanId, com.xelth.eckwms_movfast.ui.data.ScanStatus.PENDING)
+                    repository.addScanToSyncQueue(scanId)
+                }
+            }
+            result
+        }
+    }
+
+    /**
+     * Legacy overload without DB tracking (for callers that don't have a scanId yet)
+     */
+    suspend fun sendScan(apiService: ScanApiService, barcode: String, type: String): ScanResult {
+        val msgId = UUID.randomUUID().toString()
+        val payload = JSONObject().apply {
+            put("msgId", msgId)
+            put("barcode", barcode)
+            put("type", type)
+            put("timestamp", System.currentTimeMillis())
+        }
+
+        val ackDeferred = CompletableDeferred<Boolean>()
+        pendingAcks[msgId] = ackDeferred
+
+        scope.launch {
+            if (webSocket?.isOpen == true) {
+                Log.d(TAG, "Sending WS: $msgId")
+                webSocket?.send(payload.toString())
+            } else {
+                Log.d(TAG, "WS not open, skipping fast path")
+            }
+        }
+
+        return try {
+            withTimeout(HEDGE_DELAY_MS) {
+                ackDeferred.await()
+                Log.d(TAG, "WS delivery confirmed fast ($msgId)")
+                ScanResult.Success("scan", "Fast delivery", msgId)
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.i(TAG, "Hedge delay passed, sending HTTP fallback ($msgId)")
             apiService.processScanWithId(barcode, type, msgId)
         }
     }

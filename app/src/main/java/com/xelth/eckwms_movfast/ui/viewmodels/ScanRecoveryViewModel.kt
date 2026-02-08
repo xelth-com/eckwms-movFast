@@ -67,6 +67,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     fun consumeScannedBarcode() { _scannedBarcode.value = null }
 
+    /** True if the last posted barcode was decrypted from an encrypted ECK QR */
+    var lastScanWasEncrypted: Boolean = false
+        private set
+
     private val _recoveryStatus = MutableLiveData<RecoveryStatus>()
     val recoveryStatus: LiveData<RecoveryStatus> = _recoveryStatus
 
@@ -470,39 +474,58 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val scanResultObserver = androidx.lifecycle.Observer<String> {
         addLog(">>> scanResultObserver triggered: barcode=$it")
         if (it != null) {
+            // --- DECRYPTION AT SOURCE ---
+            // Decrypt immediately so UI, Router, and duplicate check all use the clean code
+            var effectiveCode = it
+            lastScanWasEncrypted = false
+            if (com.xelth.eckwms_movfast.utils.EckSecurityManager.isEncryptedEckUrl(it)) {
+                val decrypted = com.xelth.eckwms_movfast.utils.EckSecurityManager.tryDecryptBarcode(it)
+                if (decrypted != null) {
+                    effectiveCode = decrypted
+                    lastScanWasEncrypted = true
+                    android.util.Log.d("SCAN_OBSERVER", "🔓 Decrypted at source: $effectiveCode")
+                }
+            }
+
             val currentTime = System.currentTimeMillis()
 
-            // Проверка на дубликаты: игнорируем если тот же штрих-код пришел менее чем через 2 секунды
-            if (it == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
-                addLog("Ignoring duplicate scan: $it (timeDiff=${currentTime - lastProcessedTime}ms)")
+            // Проверка на дубликаты: сравниваем по effectiveCode (декриптованному) чтобы ловить
+            // дубликаты даже если сканер отправляет разные raw-строки для одного и того же QR
+            if (effectiveCode == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
+                addLog("Ignoring duplicate scan: $effectiveCode (timeDiff=${currentTime - lastProcessedTime}ms)")
                 return@Observer
             }
 
-            lastProcessedBarcode = it
+            lastProcessedBarcode = effectiveCode
             lastProcessedTime = currentTime
 
             val barcodeType = scannerManager.getLastBarcodeType() ?: "UNKNOWN"
 
             // IRON FUNCTION: Hardware scanner ALWAYS works, regardless of UI state
-            addLog("Hardware scan SUCCESS: $it (type: $barcodeType, workflow: ${isWorkflowActive()}, state: ${_scanState.value})")
+            addLog("Hardware scan SUCCESS: $effectiveCode (type: $barcodeType, workflow: ${isWorkflowActive()}, state: ${_scanState.value})")
 
             // Route to appropriate handler (workflow or normal)
-            val wasSpecialCommand = handleGeneralScanResult(it, barcodeType)
+            val wasSpecialCommand = handleGeneralScanResult(effectiveCode, barcodeType)
+
+            // Reset error message on successful scan
+            if (_errorMessage.value != null) {
+                _errorMessage.postValue(null)
+            }
 
             // Check if barcode matches a saved repair device → navigate to repair
             val savedRepairSlots = SettingsManager.loadRepairSlots()
-            if (savedRepairSlots.any { pair -> pair.second == it }) {
-                _scannedBarcode.postValue(it)
+            if (savedRepairSlots.any { pair -> pair.second == effectiveCode }) {
+                _scannedBarcode.postValue(effectiveCode)
                 _navigationCommand.postValue(NavigationCommand.TO_MAIN_REPAIR)
                 return@Observer
             }
 
             // Update UI state if NOT in workflow mode (AFTER handleGeneralScanResult to avoid race)
             // Only show in UI if it wasn't a special command (like order ID)
-            android.util.Log.e("SCAN_ROUTE", "Barcode: $it | workflow=${isWorkflowActive()} | special=$wasSpecialCommand")
+            android.util.Log.e("SCAN_ROUTE", "Barcode: $effectiveCode | workflow=${isWorkflowActive()} | special=$wasSpecialCommand")
             if (!isWorkflowActive() && !wasSpecialCommand) {
                 android.util.Log.e("SCAN_ROUTE", "→ POSTING to _scannedBarcode")
-                _scannedBarcode.postValue(it)
+                _scannedBarcode.postValue(effectiveCode)
                 _scanState.postValue(ScanState.SUCCESS)
 
                 // Auto-reset to IDLE after a short delay
@@ -1239,88 +1262,55 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     }
 
     /**
-     * Sends a scanned barcode to the repository (offline-first)
-     * The repository will save locally and queue for background sync
+     * Sends scan to server using existing DB record (no duplicate entries).
+     * @param existingScanId If provided, updates this row. If null, creates a new one (legacy path).
      */
-    fun sendScanToServer(barcode: String, barcodeType: String) {
+    fun sendScanToServer(barcode: String, barcodeType: String, existingScanId: Long? = null) {
         // Check device registration status before allowing scans
         val currentStatus = SettingsManager.getDeviceStatus()
         if (currentStatus == "pending") {
-            addLog("⚠️ Scan blocked: Device is pending approval")
-            _errorMessage.postValue("❌ Device is pending admin approval. Cannot scan until activated.")
+            addLog("Scan blocked: Device is pending approval")
+            _errorMessage.postValue("Device is pending admin approval. Cannot scan until activated.")
             return
         }
 
-        if (currentStatus == "unknown") {
-            addLog("⚠️ Warning: Device registration status is unknown")
-            // Allow scan but log warning
-        }
-
-        addLog("Saving scan for sync: $barcode")
-
-        // Save to repository (offline-first) AND send immediately via hybrid transport
         viewModelScope.launch {
+            // Use existing ID or create one (backward compat for workflow calls without ID)
+            val scanId = existingScanId ?: repository.logRawScan(barcode, barcodeType, _activeOrderId.value)
+
+            addLog("Sending scan #$scanId: $barcode")
+
             try {
-                // 1. Immediate delivery via HybridMessageSender (WebSocket + HTTP hedge)
-                addLog("Sending scan via hybrid transport (WS+HTTP): $barcode")
+                // Deliver via HybridMessageSender — it updates DB status in-place
                 val hybridResult = com.xelth.eckwms_movfast.net.HybridMessageSender.sendScan(
                     scanApiService,
                     barcode,
-                    barcodeType
+                    barcodeType,
+                    scanId,
+                    repository
                 )
 
+                // Handle UI feedback only (DB status already updated by HybridMessageSender)
                 when (hybridResult) {
                     is ScanResult.Success -> {
-                        addLog("✓ Scan delivered successfully via hybrid transport")
-
-                        // Handle AI interaction if present
+                        addLog("Scan #$scanId delivered")
                         hybridResult.aiInteraction?.let { aiInteraction ->
-                            addLog("⚡ AI Interaction from HTTP: ${aiInteraction.type} - ${aiInteraction.message}")
+                            addLog("AI Interaction: ${aiInteraction.type} - ${aiInteraction.message}")
                             _aiInteraction.postValue(aiInteraction)
                         }
-
-                        // Create scan item with CONFIRMED status since it was delivered
-                        val scanItem = ScanHistoryItem(
-                            barcode = barcode,
-                            timestamp = System.currentTimeMillis(),
-                            status = ScanStatus.CONFIRMED,
-                            type = barcodeType
-                        )
-                        // Save to local database for history
-                        repository.saveAndSyncScan(scanItem, _activeOrderId.value)
                     }
                     is ScanResult.Error -> {
-                        addLog("⚠️ Hybrid delivery failed: ${hybridResult.message}, saving for retry")
-                        // Create scan item with PENDING status for background sync retry
-                        val scanItem = ScanHistoryItem(
-                            barcode = barcode,
-                            timestamp = System.currentTimeMillis(),
-                            status = ScanStatus.PENDING,
-                            type = barcodeType
-                        )
-                        // Repository will retry in background
-                        repository.saveAndSyncScan(scanItem, _activeOrderId.value)
+                        addLog("Scan #$scanId queued for background sync")
                     }
                 }
-
-                // Update UI with scan from database
-                loadScanHistory()
             } catch (e: Exception) {
-                addLog("Error in hybrid send: ${e.message}")
-                _errorMessage.postValue("Failed to send scan: ${e.message}")
-
-                // Fallback: save with PENDING status for background retry
+                addLog("Error sending scan #$scanId: ${e.message}")
+                // Mark as PENDING for background retry
                 try {
-                    val scanItem = ScanHistoryItem(
-                        barcode = barcode,
-                        timestamp = System.currentTimeMillis(),
-                        status = ScanStatus.PENDING,
-                        type = barcodeType
-                    )
-                    repository.saveAndSyncScan(scanItem, _activeOrderId.value)
-                    loadScanHistory()
+                    repository.updateScanStatus(scanId, ScanStatus.PENDING)
+                    repository.addScanToSyncQueue(scanId)
                 } catch (e2: Exception) {
-                    addLog("Error saving scan for retry: ${e2.message}")
+                    addLog("Error queuing scan for retry: ${e2.message}")
                 }
             }
         }
@@ -1371,93 +1361,93 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     fun handleGeneralScanResult(barcode: String, type: String): Boolean {
         addLog("[Router] handleGeneralScanResult: '$barcode' type='$type'")
 
-        // 1. ALWAYS log to audit trail first (Immutable Audit Trail)
+        // --- DECRYPTION LAYER ---
+        // Strip encryption at the edge: decrypt ECK Smart QR → use plaintext everywhere
+        var effectiveCode = barcode
+        val isEncryptedEck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isEncryptedEckUrl(barcode)
+        if (isEncryptedEck) {
+            val decrypted = com.xelth.eckwms_movfast.utils.EckSecurityManager.tryDecryptBarcode(barcode)
+            if (decrypted != null) {
+                android.util.Log.d("SCAN_ROUTER", "Decrypted: $decrypted")
+                addLog("[Decrypt] $decrypted")
+                effectiveCode = decrypted
+            } else {
+                addLog("[Decrypt] Failed — sending encrypted code to server")
+            }
+        }
+
+        // 1. ALWAYS log to audit trail first (using decrypted code)
         viewModelScope.launch {
-            val scanId = repository.logRawScan(barcode, type, _activeOrderId.value)
-            addLog("[Audit] Logged scan #$scanId to audit trail")
+            val scanId = repository.logRawScan(effectiveCode, type, _activeOrderId.value)
+            addLog("[Audit] Logged scan #$scanId ($effectiveCode)")
 
-            // 2. Routing Logic (Router)
+            // 2. Routing Logic (uses effectiveCode for all decisions)
 
-            // Link Barcodes (eck1.com, eck2.com, eck3.com) are encrypted location/item tags
-            // They should NEVER trigger pairing — pass them to active mode (Inventory/Restock)
-            val isLinkBarcode = barcode.startsWith("eck1.com", ignoreCase = true) ||
-                                barcode.startsWith("eck2.com", ignoreCase = true) ||
-                                barcode.startsWith("eck3.com", ignoreCase = true) ||
-                                barcode.startsWith("http://eck", ignoreCase = true) ||
-                                barcode.startsWith("https://eck", ignoreCase = true)
+            val isLinkBarcode = effectiveCode.startsWith("eck1.com", ignoreCase = true) ||
+                                effectiveCode.startsWith("eck2.com", ignoreCase = true) ||
+                                effectiveCode.startsWith("eck3.com", ignoreCase = true) ||
+                                effectiveCode.startsWith("http://eck", ignoreCase = true) ||
+                                effectiveCode.startsWith("https://eck", ignoreCase = true)
 
             when {
                 // A. System Codes (Executed Locally) — but NOT Link Barcodes
-                barcode.startsWith("ECK") && !isLinkBarcode -> {
+                effectiveCode.startsWith("ECK") && !isLinkBarcode -> {
                     android.util.Log.e("AUTO_PAIR", "=== ECK PAIRING CODE DETECTED ===")
-                    android.util.Log.e("AUTO_PAIR", "isOnPairingScreen: $isOnPairingScreen")
                     addLog("[Router] → ROUTE A: System code (ECK Pairing)")
 
                     if (!isOnPairingScreen) {
-                        android.util.Log.e("AUTO_PAIR", "Starting AUTO-PAIRING mode")
-                        addLog("🚀 Auto-Pairing triggered! Navigating to console...")
+                        addLog("Auto-Pairing triggered!")
                         isAutoPairing = true
-                        android.util.Log.e("AUTO_PAIR", "isAutoPairing set to: $isAutoPairing")
                         _navigationCommand.postValue(NavigationCommand.TO_PAIRING)
-                        android.util.Log.e("AUTO_PAIR", "Navigation command TO_PAIRING sent")
                     } else {
-                        android.util.Log.e("AUTO_PAIR", "Already on PairingScreen - MANUAL mode")
-                        addLog("ℹ️ Already on Pairing Screen - treating as manual scan")
+                        addLog("Already on Pairing Screen - manual scan")
                         isAutoPairing = false
                     }
 
-                    handlePairingQrCode(barcode)
+                    handlePairingQrCode(effectiveCode)
                     repository.updateScanStatusString(scanId, "PROCESSED_LOCALLY")
-                    addLog("[Audit] Scan #$scanId marked as PROCESSED_LOCALLY")
+                    addLog("[Audit] Scan #$scanId → PROCESSED_LOCALLY")
                 }
 
-                // Order ID session activation (also a system command)
-                barcode.startsWith("CS-DE-") && barcode.length > 10 -> {
-                    addLog("[Router] → ROUTE A: System code (Order ID activation)")
-                    _activeOrderId.postValue(barcode)
-                    addLog("ACTIVE ORDER SET: $barcode")
+                // Order ID session activation
+                effectiveCode.startsWith("CS-DE-") && effectiveCode.length > 10 -> {
+                    addLog("[Router] → ROUTE A: Order ID activation")
+                    _activeOrderId.postValue(effectiveCode)
+                    addLog("ACTIVE ORDER SET: $effectiveCode")
                     repository.updateScanStatusString(scanId, "SESSION_ACTIVATED")
-                    addLog("[Audit] Scan #$scanId marked as SESSION_ACTIVATED")
                 }
 
-                // B. Active Workflow (Isolated Logic)
+                // B. Active Workflow
                 isWorkflowActive() -> {
-                    addLog("[Router] → ROUTE B: Active workflow - delegating to workflow engine")
+                    addLog("[Router] → ROUTE B: Active workflow")
 
-                    // Workflow engine validates if barcode is expected
                     val currentStep = _workflowState.value?.currentStep
                     if (currentStep != null) {
-                        addLog("[Workflow] Current step: ${currentStep.stepId} ('${currentStep.action}')")
+                        addLog("[Workflow] Step: ${currentStep.stepId} ('${currentStep.action}')")
+                        workflowEngine?.onBarcodeScanned(effectiveCode)
 
-                        // Let workflow engine process
-                        workflowEngine?.onBarcodeScanned(barcode)
-
-                        // Also send to server (workflow scans need server-side tracking)
+                        // Send to server with existing scanId (no duplicate entry)
                         val barcodeType = scannerManager.getLastBarcodeType() ?: type
-                        sendScanToServer(barcode, barcodeType)
+                        sendScanToServer(effectiveCode, barcodeType, scanId)
 
                         repository.updateScanStatusString(scanId, "USED_IN_WORKFLOW")
-                        addLog("[Audit] Scan #$scanId marked as USED_IN_WORKFLOW")
                     } else {
-                        addLog("[Workflow] ERROR: Workflow active but no current step!")
+                        addLog("[Workflow] ERROR: No active step!")
                         repository.updateScanStatusString(scanId, "REJECTED_BY_WORKFLOW")
-                        addLog("[Audit] Scan #$scanId marked as REJECTED_BY_WORKFLOW")
                         _errorMessage.postValue("Workflow error: No active step")
                     }
                 }
 
-                // C. Standard Scan (Info mode / Lookup)
+                // C. Standard Scan (single entry: scanId transitions RAW → CONFIRMED/PENDING)
                 else -> {
-                    addLog("[Router] → ROUTE C: Standard scan - sending to server for lookup")
-                    handleScannedData(barcode, type)
-                    repository.updateScanStatusString(scanId, "SENT_TO_SERVER")
-                    addLog("[Audit] Scan #$scanId marked as SENT_TO_SERVER")
+                    addLog("[Router] → ROUTE C: Standard scan")
+                    sendScanToServer(effectiveCode, type, scanId)
                 }
             }
         }
 
-        // Return value indicates if this was a special command (for UI purposes)
-        // ECK pairing codes start with "ECK" but NOT "ECK1.COM", "ECK2.COM", "ECK3.COM" (Link Barcodes)
+        // Return value: was this a special command? (for UI)
+        // Use original barcode for return check (pairing codes are never encrypted)
         val isLinkBarcodeCheck = barcode.startsWith("eck1.com", ignoreCase = true) ||
                                  barcode.startsWith("eck2.com", ignoreCase = true) ||
                                  barcode.startsWith("eck3.com", ignoreCase = true) ||
