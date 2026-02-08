@@ -30,6 +30,17 @@ interface AttachmentDao {
     """)
     suspend fun getAvatarForEntity(resModel: String, resId: String): ByteArray?
 
+    // Get avatar bytes by res_id directly (any res_model)
+    @Query("""
+        SELECT f.avatar_data
+        FROM file_resources f
+        INNER JOIN entity_attachments a ON a.file_resource_id = f.id
+        WHERE a.res_id = :resId AND f.avatar_data IS NOT NULL
+        ORDER BY a.is_main DESC, f.created_at DESC
+        LIMIT 1
+    """)
+    suspend fun getAvatarByResId(resId: String): ByteArray?
+
     // Get all photos for an entity (reactive)
     @Query("""
         SELECT f.* FROM file_resources f

@@ -263,7 +263,8 @@ class MainScreenViewModel : ViewModel() {
         var quantity: Int = 1,
         var type: String = "item",  // "item" or "box"
         var photo: Bitmap? = null,
-        var displayName: String? = null  // From offline DB (Fat Client)
+        var displayName: String? = null,  // From offline DB (Fat Client)
+        var internalId: String? = null  // Decrypted Smart Code (i000.../b000...) for server upload
     )
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
@@ -2338,12 +2339,22 @@ class MainScreenViewModel : ViewModel() {
                     // Track for photo attachment
                     lastScannedType = "item"
                     decryptedItemId = decryptedPath
+                    // For plain EAN (no encrypted QR), generate Smart Code: i + base36(len) + 0-padded serial + EAN
+                    if (decryptedItemId == null && cleanCode.all { it.isDigit() } && cleanCode.length in 8..14) {
+                        val base36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                        val serialLen = 17 - cleanCode.length
+                        decryptedItemId = "i${base36[cleanCode.length]}${"0".repeat(serialLen)}$cleanCode"
+                        android.util.Log.d("INVENTORY", "📷 Generated Smart Code from EAN: $decryptedItemId")
+                    }
                     _inventoryLocationPhoto.value = null  // clear place photo when scanning item
 
                     // Add item to current session
                     val itemType = if (inventoryBoxMode) "box" else "item"
                     val entry = inventoryItems.getOrPut(cleanCode) {
-                        InventoryEntry(quantity = 0, type = itemType)
+                        InventoryEntry(quantity = 0, type = itemType, internalId = decryptedItemId)
+                    }
+                    if (entry.internalId == null && decryptedItemId != null) {
+                        entry.internalId = decryptedItemId
                     }
                     entry.quantity++
 
@@ -2555,7 +2566,10 @@ class MainScreenViewModel : ViewModel() {
         // Upload photos for items that have them
         inventoryItems.forEach { (barcode, entry) ->
             if (entry.photo != null) {
-                onRepairPhotoUpload?.invoke("ITEM:$barcode", entry.photo!!)
+                // Prefer decrypted Smart Code (i000.../b000...) for proper server auto-linking
+                val uploadKey = entry.internalId ?: "ITEM:$barcode"
+                addLog("📤 Upload photo: $uploadKey")
+                onRepairPhotoUpload?.invoke(uploadKey, entry.photo!!)
             }
         }
 

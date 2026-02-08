@@ -276,13 +276,20 @@ class WarehouseRepository(
 
     /**
      * Retrieves an avatar bitmap for a given internal Smart Code (e.g., "i00001", "p00005").
-     * Parses the code to determine entity type and ID, then queries the database.
+     * Queries entity_attachments by res_id directly (the server stores full Smart Code as res_id).
      */
     suspend fun getAvatarForEntity(internalId: String): Bitmap? = withContext(Dispatchers.IO) {
-        val (model, id) = parseSmartCode(internalId) ?: return@withContext null
+        Log.d(TAG, "📷 Looking up avatar for: $internalId")
 
-        val bytes = db.attachmentDao().getAvatarForEntity(model, id) ?: return@withContext null
+        // Query by full Smart Code (server stores it as res_id)
+        val bytes = db.attachmentDao().getAvatarByResId(internalId)
 
+        if (bytes == null) {
+            Log.d(TAG, "📷 No avatar found in DB for: $internalId")
+            return@withContext null
+        }
+
+        Log.d(TAG, "📷 Avatar found in DB for: $internalId (${bytes.size} bytes)")
         try {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (e: Exception) {

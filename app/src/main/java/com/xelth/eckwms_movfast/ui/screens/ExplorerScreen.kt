@@ -4,21 +4,29 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
+import com.xelth.eckwms_movfast.ui.data.AttachmentInfo
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -46,6 +54,7 @@ fun ExplorerScreen(onBack: () -> Unit) {
     var products by remember { mutableStateOf(emptyList<JSONObject>()) }
     var productLocations by remember { mutableStateOf(emptyList<JSONObject>()) }
     var selectedProduct by remember { mutableStateOf<JSONObject?>(null) }
+    var productAttachments by remember { mutableStateOf(emptyList<AttachmentInfo>()) }
 
     var isLoading by remember { mutableStateOf(false) }
 
@@ -80,6 +89,7 @@ fun ExplorerScreen(onBack: () -> Unit) {
             isLoading = true
             selectedProduct = null
             productLocations = emptyList()
+            productAttachments = emptyList()
             val result = api.fetchExplorerData("/api/explorer/products?q=$query&limit=50")
             if (result is ScanResult.Success) {
                 products = parseJsonArray(result.data)
@@ -96,6 +106,21 @@ fun ExplorerScreen(onBack: () -> Unit) {
                 productLocations = parseJsonArray(result.data)
             }
             isLoading = false
+        }
+    }
+
+    fun loadProductDetails(prod: JSONObject) {
+        selectedProduct = prod
+        productAttachments = emptyList()
+        loadProductLocations(prod.optLong("id"))
+
+        // Fetch attachments using barcode (server auto-resolves EAN -> smart code)
+        val barcode = prod.optString("barcode", "")
+        val lookupId = if (barcode.isNotEmpty() && barcode != "false") barcode else prod.optString("id", "")
+        if (lookupId.isNotEmpty()) {
+            scope.launch {
+                productAttachments = api.fetchAttachments("product", lookupId)
+            }
         }
     }
 
@@ -250,8 +275,8 @@ fun ExplorerScreen(onBack: () -> Unit) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = Color(0xFF2196F3))
                     }
-                } else if (selectedProduct != null && productLocations.isNotEmpty()) {
-                    // Show locations for selected product
+                } else if (selectedProduct != null) {
+                    // Show details for selected product
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(8.dp),
@@ -265,11 +290,63 @@ fun ExplorerScreen(onBack: () -> Unit) {
                                 Text(selectedProduct?.optString("name") ?: "",
                                     color = Color.White, fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                                TextButton(onClick = { selectedProduct = null; productLocations = emptyList() }) {
+                                TextButton(onClick = {
+                                    selectedProduct = null
+                                    productLocations = emptyList()
+                                    productAttachments = emptyList()
+                                }) {
                                     Text("BACK", color = Color(0xFF2196F3), fontFamily = FontFamily.Monospace)
                                 }
                             }
                         }
+
+                        // Gallery section
+                        if (productAttachments.isNotEmpty()) {
+                            item {
+                                Text("Visual Evidence:", color = Color.Gray, fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                val serverUrl = SettingsManager.getServerUrl()
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.height(100.dp).fillMaxWidth()
+                                ) {
+                                    items(productAttachments) { att ->
+                                        val url = "$serverUrl/api/files/${att.fileId}"
+                                        Box(
+                                            modifier = Modifier
+                                                .size(100.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.DarkGray)
+                                        ) {
+                                            AsyncImage(
+                                                model = ImageRequest.Builder(context)
+                                                    .data(url)
+                                                    .crossfade(true)
+                                                    .build(),
+                                                contentDescription = "Attachment",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            if (att.isMain) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .align(Alignment.BottomEnd)
+                                                        .background(Color(0xFF4CAF50), RoundedCornerShape(topStart = 4.dp))
+                                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("MAIN", color = Color.White, fontSize = 8.sp,
+                                                        fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp),
+                                    color = Color(0xFF333333))
+                            }
+                        }
+
                         items(productLocations) { loc ->
                             ProductLocationCard(loc)
                         }
@@ -282,8 +359,7 @@ fun ExplorerScreen(onBack: () -> Unit) {
                     ) {
                         items(products) { prod ->
                             ProductCard(prod) {
-                                selectedProduct = prod
-                                loadProductLocations(prod.optLong("id"))
+                                loadProductDetails(prod)
                             }
                         }
                     }

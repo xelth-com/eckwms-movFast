@@ -448,7 +448,7 @@ class ScanApiService(private val context: Context) {
      * @param existingImageId Optional pre-generated image ID (for retry scenarios)
      * @return Result of the upload operation
      */
-    suspend fun uploadImageFile(filePath: String, deviceId: String, scanMode: String, barcodeData: String?, orderId: String? = null, existingImageId: String? = null): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun uploadImageFile(filePath: String, deviceId: String, scanMode: String, barcodeData: String?, orderId: String? = null, existingImageId: String? = null, avatarPath: String? = null): ScanResult = withContext(Dispatchers.IO) {
         val imageId = existingImageId ?: UUID.randomUUID().toString()
         val file = java.io.File(filePath)
 
@@ -459,10 +459,10 @@ class ScanApiService(private val context: Context) {
         val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
 
-        Log.d(TAG, "uploadImageFile START - activeUrl: $activeUrl, file: ${file.name}, imageId: $imageId")
+        Log.d(TAG, "uploadImageFile START - activeUrl: $activeUrl, file: ${file.name}, imageId: $imageId, avatar: ${avatarPath != null}")
 
         // 1. Try Active URL
-        var result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+        var result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId, avatarPath)
 
         // 1.1 Auto-Retry on 401 (Token Expired)
         if (result is ScanResult.Error && result.message.contains("401")) {
@@ -470,20 +470,20 @@ class ScanApiService(private val context: Context) {
             val newToken = performSilentAuth()
             if (newToken != null) {
                 Log.i(TAG, "🔄 Token refreshed, retrying upload...")
-                result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+                result = internalUploadFileStream(activeUrl, file, deviceId, scanMode, barcodeData, orderId, imageId, avatarPath)
             }
         }
 
         // 2. Failover to Global
         if (result is ScanResult.Error && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ UploadFile failed. Failover to Global. ImageID: $imageId")
-            result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+            result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId, avatarPath)
 
             // 2.1 Auto-Retry on 401 for Global too
             if (result is ScanResult.Error && result.message.contains("401")) {
                 val newToken = performSilentAuth()
                 if (newToken != null) {
-                    result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId)
+                    result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId, avatarPath)
                 }
             }
         }
@@ -503,7 +503,8 @@ class ScanApiService(private val context: Context) {
         scanMode: String,
         barcodeData: String?,
         orderId: String?,
-        imageId: String
+        imageId: String,
+        avatarPath: String? = null
     ): ScanResult {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val finalUrl = "$baseUrl/api/upload/image"
@@ -578,6 +579,29 @@ class ScanApiService(private val context: Context) {
             Log.d(TAG, "Streamed $totalBytes bytes from ${file.name}")
 
             writer.append("\r\n")
+
+            // Stream avatar file if provided
+            if (avatarPath != null) {
+                val avatarFile = java.io.File(avatarPath)
+                if (avatarFile.exists()) {
+                    writer.append("--$boundary\r\n")
+                    writer.append("Content-Disposition: form-data; name=\"avatar\"; filename=\"${avatarFile.name}\"\r\n")
+                    writer.append("Content-Type: image/webp\r\n\r\n")
+                    writer.flush()
+
+                    val avatarStream = java.io.FileInputStream(avatarFile)
+                    var avatarBytesRead: Int
+                    while (avatarStream.read(buffer).also { avatarBytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, avatarBytesRead)
+                    }
+                    outputStream.flush()
+                    avatarStream.close()
+
+                    writer.append("\r\n")
+                    Log.d(TAG, "Attached avatar: ${avatarFile.length()} bytes")
+                }
+            }
+
             writer.append("--$boundary--\r\n")
             writer.flush()
             writer.close()
@@ -1607,6 +1631,39 @@ class ScanApiService(private val context: Context) {
             barcodeData = targetDeviceId,
             quality = quality
         )
+    }
+
+    // ============ File & Attachment API methods ============
+
+    /**
+     * Fetch attachments for a specific entity (e.g. product photos).
+     * Uses the /api/attachments/{model}/{id} endpoint.
+     * Server auto-resolves EAN to smart code for products.
+     */
+    suspend fun fetchAttachments(resModel: String, resId: String): List<com.xelth.eckwms_movfast.ui.data.AttachmentInfo> = withContext(Dispatchers.IO) {
+        val encodedId = java.net.URLEncoder.encode(resId, "UTF-8")
+        val result = authenticatedGetWithFailover("/api/attachments/$resModel/$encodedId")
+        if (result is ScanResult.Success) {
+            try {
+                val jsonArray = JSONArray(result.data)
+                val list = mutableListOf<com.xelth.eckwms_movfast.ui.data.AttachmentInfo>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    list.add(com.xelth.eckwms_movfast.ui.data.AttachmentInfo(
+                        id = obj.optString("id", ""),
+                        fileId = obj.optString("file_id", ""),
+                        mimeType = obj.optString("mime_type", ""),
+                        isMain = obj.optBoolean("is_main", false),
+                        createdAt = obj.optString("created_at", "")
+                    ))
+                }
+                Log.i(TAG, "Fetched ${list.size} attachments for $resModel:$resId")
+                return@withContext list
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing attachments", e)
+            }
+        }
+        return@withContext emptyList()
     }
 
     // ============ QC & Explorer API methods ============

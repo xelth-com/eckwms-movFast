@@ -182,29 +182,36 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         viewModelScope.launch {
             addLog("Uploading repair photo for $targetDeviceId")
 
-            // 0. Generate imageId for deduplication
             val imageId = java.util.UUID.randomUUID().toString()
-            val quality = 75
+            val quality = SettingsManager.getImageQuality()
+            val ts = System.currentTimeMillis()
 
-            // Smart Crop to 224x224 (gradient-based)
+            // 1. Save ORIGINAL bitmap to disk (full resolution)
+            val tempFile = java.io.File(getApplication<Application>().cacheDir, "repair_$ts.webp")
             val bitmapCopy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, true)
-            val croppedBitmap = smartCrop(bitmapCopy, 224)
-            if (!bitmap.isRecycled) bitmap.recycle()
-
-            // 1. Save cropped bitmap to disk first (zero data loss)
-            val tempFile = java.io.File(getApplication<Application>().cacheDir, "repair_${System.currentTimeMillis()}.webp")
             withContext(Dispatchers.IO) {
                 tempFile.outputStream().use { out ->
-                    croppedBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
+                    bitmapCopy.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
                 }
             }
             val imagePath = tempFile.absolutePath
             val imageSize = tempFile.length()
+            addLog("📷 Original: ${bitmapCopy.width}x${bitmapCopy.height}, ${imageSize/1024}KB")
 
-            // Recycle cropped bitmap — file is on disk
+            // 2. Generate Smart Crop AVATAR (224x224) for DB sync
+            val croppedBitmap = smartCrop(bitmapCopy, 224)
+            val tempAvatarFile = java.io.File(getApplication<Application>().cacheDir, "avatar_$ts.webp")
+            withContext(Dispatchers.IO) {
+                tempAvatarFile.outputStream().use { out ->
+                    croppedBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+                }
+            }
+            addLog("✂️ Avatar: ${croppedBitmap.width}x${croppedBitmap.height}, ${tempAvatarFile.length()/1024}KB")
+
             if (!croppedBitmap.isRecycled) croppedBitmap.recycle()
+            if (!bitmap.isRecycled) bitmap.recycle()
 
-            // 2. Create DB record with PENDING status
+            // 3. Create DB record with PENDING status
             val historyId = repository.saveImageUpload(
                 imagePath = imagePath,
                 imageSize = imageSize,
@@ -212,25 +219,28 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 orderId = _activeOrderId.value
             )
 
-            // 3. Try direct upload from file
+            // 4. Upload BOTH original + avatar
             val deviceId = SettingsManager.getDeviceId(getApplication())
             try {
-                val result = scanApiService.uploadImageFile(imagePath, deviceId, "repair_photo", targetDeviceId, _activeOrderId.value, imageId)
+                val result = scanApiService.uploadImageFile(
+                    imagePath, deviceId, "repair_photo", targetDeviceId,
+                    _activeOrderId.value, imageId, tempAvatarFile.absolutePath
+                )
                 when (result) {
                     is ScanResult.Success -> {
-                        addLog("✅ Repair photo uploaded for $targetDeviceId")
+                        addLog("✅ Photo + avatar uploaded")
                         repository.updateScanStatus(historyId, ScanStatus.CONFIRMED)
-                        // Cleanup local file
-                        if (tempFile.delete()) addLog("Cleanup: deleted ${tempFile.name}")
+                        tempFile.delete()
+                        tempAvatarFile.delete()
                     }
                     is ScanResult.Error -> {
-                        addLog("❌ Repair photo failed: ${result.message}, queued for retry")
+                        addLog("❌ Upload failed: ${result.message}, queued")
                         repository.updateScanStatus(historyId, ScanStatus.FAILED)
                         repository.addImageUploadToSyncQueue(historyId)
                     }
                 }
             } catch (e: Exception) {
-                addLog("❌ Repair photo exception: ${e.message}, queued for retry")
+                addLog("❌ Exception: ${e.message}, queued")
                 repository.updateScanStatus(historyId, ScanStatus.FAILED)
                 repository.addImageUploadToSyncQueue(historyId)
             }
