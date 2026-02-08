@@ -1633,6 +1633,72 @@ class ScanApiService(private val context: Context) {
         )
     }
 
+    // ============ AI Image Analysis ============
+
+    /**
+     * Triggers AI analysis for a specific file ID.
+     * Implements Immediate Failover: Local -> Global
+     */
+    suspend fun analyzeImage(imageId: String): ScanResult = withContext(Dispatchers.IO) {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = internalAnalyzeImage(activeUrl, imageId)
+
+        // Auto-retry on 401
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                result = internalAnalyzeImage(activeUrl, imageId)
+            }
+        }
+
+        // Failover to Global
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ Analysis failed on $activeUrl. Failover to Global.")
+            result = internalAnalyzeImage(globalUrl, imageId)
+        }
+
+        return@withContext result
+    }
+
+    private suspend fun internalAnalyzeImage(baseUrl: String, imageId: String): ScanResult {
+        try {
+            val url = URL("$baseUrl/api/ai/analyze-image")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 30000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val jsonRequest = JSONObject().apply {
+                put("file_id", imageId)
+            }
+
+            val writer = OutputStreamWriter(connection.outputStream, "UTF-8")
+            writer.write(jsonRequest.toString())
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                return ScanResult.Success("ai_analysis", "Analysis Complete", response)
+            } else if (responseCode == 503) {
+                return ScanResult.Error("AI Service Unavailable (503). Check server keys.")
+            } else {
+                val errBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                return ScanResult.Error(errBody)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error analyzing image", e)
+            return ScanResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
     // ============ File & Attachment API methods ============
 
     /**

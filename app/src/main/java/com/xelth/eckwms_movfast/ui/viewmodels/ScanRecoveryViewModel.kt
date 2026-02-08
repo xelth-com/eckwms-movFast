@@ -144,6 +144,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _aiInteraction = MutableLiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?>(null)
     val aiInteraction: LiveData<com.xelth.eckwms_movfast.ui.data.AiInteraction?> = _aiInteraction
 
+    // --- AI IMAGE ANALYSIS ---
+    private val _aiAnalysisResult = MutableLiveData<JSONObject?>(null)
+    val aiAnalysisResult: LiveData<JSONObject?> = _aiAnalysisResult
+
+    private val _isAnalyzing = MutableLiveData<Boolean>(false)
+    val isAnalyzing: LiveData<Boolean> = _isAnalyzing
+
+    private var lastUploadedImageId: String? = null
+
+    fun clearAiAnalysisResult() {
+        _aiAnalysisResult.postValue(null)
+    }
+
     // --- REPAIR MODE BRIDGE ---
     // Temporary storage for photo captured during Repair Mode workflow
     private val _repairPhotoBitmap = MutableLiveData<Bitmap?>(null)
@@ -1660,6 +1673,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         addLog("Upload successful. Server response: ${result.data}")
                         _errorMessage.postValue("Image uploaded successfully.")
 
+                        // Capture server file ID for AI analysis
+                        try {
+                            val json = JSONObject(result.data)
+                            if (json.has("id")) {
+                                lastUploadedImageId = json.getString("id")
+                                addLog("Captured Server File ID: $lastUploadedImageId")
+                            }
+                        } catch (e: Exception) {
+                            addLog("Warning: Could not parse File ID from response")
+                        }
+
                         // 4. Update history status to CONFIRMED
                         repository.updateScanStatus(historyId, ScanStatus.CONFIRMED)
 
@@ -1693,6 +1717,42 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     fun endActiveOrderSession() {
         _activeOrderId.postValue(null)
         addLog("Active order session ended.")
+    }
+
+    fun analyzeLastImage() {
+        if (lastUploadedImageId == null) {
+            addLog("No uploaded image found. Please upload an image first.")
+            _errorMessage.postValue("Please upload an image first")
+            return
+        }
+
+        viewModelScope.launch {
+            _isAnalyzing.postValue(true)
+            addLog("Starting AI Analysis for $lastUploadedImageId...")
+
+            val result = scanApiService.analyzeImage(lastUploadedImageId!!)
+
+            when (result) {
+                is ScanResult.Success -> {
+                    try {
+                        val json = JSONObject(result.data)
+                        if (json.has("analysis")) {
+                            _aiAnalysisResult.postValue(json.getJSONObject("analysis"))
+                            addLog("AI Analysis Complete")
+                        } else {
+                            addLog("Unexpected analysis format")
+                        }
+                    } catch (e: Exception) {
+                        addLog("Error parsing analysis: ${e.message}")
+                    }
+                }
+                is ScanResult.Error -> {
+                    addLog("Analysis Failed: ${result.message}")
+                    _errorMessage.postValue(result.message)
+                }
+            }
+            _isAnalyzing.postValue(false)
+        }
     }
 
     /**

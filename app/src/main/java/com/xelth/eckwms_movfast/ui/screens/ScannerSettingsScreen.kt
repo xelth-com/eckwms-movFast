@@ -85,6 +85,7 @@ import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
 import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.material3.AlertDialog
 import com.xelth.eckwms_movfast.ui.data.ScanHistoryItem
 import com.xelth.eckwms_movfast.ui.data.ScanStatus
 import java.text.SimpleDateFormat
@@ -738,6 +739,49 @@ fun ImageUploadSection(
 ) {
     val singleRecoveryImage by viewModel.singleRecoveryImage.observeAsState()
     val isImageAvailable = singleRecoveryImage != null
+    val isAnalyzing by viewModel.isAnalyzing.observeAsState(false)
+    val analysisResult by viewModel.aiAnalysisResult.observeAsState()
+
+    // AI Analysis Result Dialog
+    if (analysisResult != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.clearAiAnalysisResult() },
+            title = { Text("AI Analysis Result") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    val condition = analysisResult!!.optString("condition", "unknown")
+                    val desc = analysisResult!!.optString("description", "")
+                    val ocr = analysisResult!!.optString("ocr_text", "")
+                    val tags = analysisResult!!.optJSONArray("tags")
+
+                    Text("Condition: $condition", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (desc.isNotEmpty()) {
+                        Text("Description:", fontWeight = FontWeight.Bold)
+                        Text(desc)
+                    }
+
+                    if (ocr.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("OCR Text:", fontWeight = FontWeight.Bold)
+                        Text(ocr, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    }
+
+                    if (tags != null && tags.length() > 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Tags:", fontWeight = FontWeight.Bold)
+                        val tagStr = (0 until tags.length()).joinToString(" ") { "#${tags.getString(it)}" }
+                        Text(tagStr, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.clearAiAnalysisResult() }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -751,14 +795,14 @@ fun ImageUploadSection(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Image Upload Tools",
+                text = "Image Tools (Upload & AI)",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Text(
-                text = "Upload the last captured image (from Stage 2 recovery) to the server.",
+                text = "Upload the last captured image, then analyze it with AI.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -770,7 +814,7 @@ fun ImageUploadSection(
                 Button(
                     onClick = { viewModel.uploadLastImage("dumb") },
                     modifier = Modifier.weight(1f),
-                    enabled = isImageAvailable
+                    enabled = isImageAvailable && !isAnalyzing
                 ) {
                     Text("Upload (Dumb)")
                 }
@@ -778,11 +822,32 @@ fun ImageUploadSection(
                 Button(
                     onClick = { viewModel.uploadLastImage("mlkit") },
                     modifier = Modifier.weight(1f),
-                    enabled = isImageAvailable
+                    enabled = isImageAvailable && !isAnalyzing
                 ) {
                     Text("Upload (ML Kit)")
                 }
             }
+
+            // AI Analyze Button
+            Button(
+                onClick = { viewModel.analyzeLastImage() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isImageAvailable && !isAnalyzing,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9C27B0))
+            ) {
+                if (isAnalyzing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Analyzing...", color = Color.White)
+                } else {
+                    Text("AI Analyze", color = Color.White)
+                }
+            }
+
             if (!isImageAvailable) {
                 Text(
                     text = "No image available. Use 'Enhanced Scan' to capture one.",
