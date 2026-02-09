@@ -2494,15 +2494,19 @@ class MainScreenViewModel : ViewModel() {
                     val typeLabel = if (entry.type == "box") "📦" else "🔧"
                     val photoIcon = if (entry.photo != null) " 📷" else ""
 
-                    if (localProd != null) {
-                        val qtyServer = localProd.qtyAvailable
-                        val qtyStr = if (qtyServer % 1.0 == 0.0) qtyServer.toInt().toString() else "%.1f".format(qtyServer)
-                        addLog("$typeLabel ${localProd.name} (Svr:$qtyStr) x${entry.quantity}$photoIcon")
-                        _inventoryStatus.value = "${localProd.defaultCode} (Svr:$qtyStr) x${entry.quantity}"
+                    // Show previous count from inventory_records (PDA truth) or product DB
+                    val expectedQty = expectedInventory[cleanCode]?.quantity
+                    val displayName = entry.displayName ?: localProd?.name ?: effectiveCode.takeLast(20)
+                    if (expectedQty != null) {
+                        val expStr = if (expectedQty % 1.0 == 0.0) expectedQty.toInt().toString() else "%.1f".format(expectedQty)
+                        addLog("$typeLabel $displayName ${entry.quantity}/$expStr$photoIcon")
+                        _inventoryStatus.value = "$displayName ${entry.quantity}/$expStr"
+                    } else if (localProd != null) {
+                        addLog("$typeLabel ${localProd.name} x${entry.quantity}$photoIcon")
+                        _inventoryStatus.value = "${localProd.defaultCode} x${entry.quantity}"
                     } else {
-                        val displayItem = effectiveCode.takeLast(20)
-                        addLog("$typeLabel $displayItem x${entry.quantity}$photoIcon")
-                        _inventoryStatus.value = "$typeLabel $displayItem"
+                        addLog("$typeLabel $displayName x${entry.quantity}$photoIcon")
+                        _inventoryStatus.value = "$typeLabel $displayName"
                     }
                     updateInventoryConsole()
                 }
@@ -2862,7 +2866,11 @@ class MainScreenViewModel : ViewModel() {
 
     /** Persist current inventory session to local DB (PDA = source of truth) */
     private fun saveCurrentInventoryToLocal(location: String, items: Map<String, InventoryEntry>) {
-        if (location.isEmpty() || items.isEmpty()) return
+        android.util.Log.e("INVENTORY", "saveCurrentInventoryToLocal: loc='$location', items=${items.size}")
+        if (location.isEmpty() || items.isEmpty()) {
+            android.util.Log.e("INVENTORY", "saveCurrentInventoryToLocal: SKIP (empty loc or items)")
+            return
+        }
         val records = items.map { (barcode, entry) ->
             com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity(
                 locationBarcode = location,
@@ -2872,21 +2880,24 @@ class MainScreenViewModel : ViewModel() {
                 type = entry.type
             )
         }
+        android.util.Log.e("INVENTORY", "saveCurrentInventoryToLocal: ${records.size} records, callback=${onSaveInventoryRecords != null}")
         viewModelScope.launch {
             try {
                 onSaveInventoryRecords?.invoke(location, records)
-                android.util.Log.d("INVENTORY", "Saved ${records.size} records for $location")
+                android.util.Log.e("INVENTORY", "✅ Saved ${records.size} inventory records for $location")
             } catch (e: Exception) {
-                android.util.Log.e("INVENTORY", "Failed to save inventory records", e)
+                android.util.Log.e("INVENTORY", "❌ Failed to save inventory records", e)
             }
         }
     }
 
     /** Load previously counted inventory from local DB and populate expectedInventory */
     private fun loadLocalInventoryRecords(location: String) {
+        android.util.Log.e("INVENTORY", "loadLocalInventoryRecords: loc='$location', callback=${onLoadInventoryRecords != null}")
         viewModelScope.launch {
             try {
                 val records = onLoadInventoryRecords?.invoke(location) ?: emptyList()
+                android.util.Log.e("INVENTORY", "loadLocalInventoryRecords: got ${records.size} records")
                 if (records.isNotEmpty()) {
                     records.forEach { rec ->
                         if (!expectedInventory.containsKey(rec.productBarcode)) {
