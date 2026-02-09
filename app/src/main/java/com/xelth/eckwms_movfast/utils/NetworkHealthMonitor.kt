@@ -17,6 +17,8 @@ import java.net.URL
 object NetworkHealthMonitor {
     private const val TAG = "NetworkHealthMonitor"
     private const val HEALTH_CHECK_TIMEOUT_MS = 5000L // 5 seconds per server
+    private const val MAX_PROBE_FAILURES = 3 // Stop probing after N consecutive failures
+    private var probeFailCount = 0
 
     /**
      * Result of a server health check
@@ -42,15 +44,22 @@ object NetworkHealthMonitor {
         val preferredLocal = SettingsManager.getPreferredLocalUrl()
         var effectiveLocalUrl = localServerUrl
 
-        if (!preferredLocal.isNullOrEmpty() && preferredLocal != localServerUrl) {
-             Log.d(TAG, "🕵️ OPTIMISTIC CHECK: Sniffing preferred local: $preferredLocal")
+        if (!preferredLocal.isNullOrEmpty() && preferredLocal != localServerUrl && probeFailCount < MAX_PROBE_FAILURES) {
+             Log.d(TAG, "🕵️ OPTIMISTIC CHECK: Sniffing preferred local: $preferredLocal (fails: $probeFailCount/$MAX_PROBE_FAILURES)")
              val probeResult = checkServerHealth(preferredLocal, "PROBE_LOCAL")
              if (probeResult.isReachable) {
                  Log.i(TAG, "🚀 PREFERRED LOCAL IS ALIVE! Switching primary URL to: $preferredLocal")
                  SettingsManager.saveServerUrl(preferredLocal)
-                 // Update the variable for the rest of this function run
                  effectiveLocalUrl = preferredLocal
+                 probeFailCount = 0
+             } else {
+                 probeFailCount++
+                 if (probeFailCount >= MAX_PROBE_FAILURES) {
+                     Log.w(TAG, "🛑 PROBE_LOCAL failed $MAX_PROBE_FAILURES times, suspending probes for $preferredLocal")
+                 }
              }
+        } else if (probeFailCount >= MAX_PROBE_FAILURES) {
+             Log.d(TAG, "🛑 PROBE_LOCAL suspended (failed $probeFailCount times): $preferredLocal")
         }
         // -----------------------------------
 

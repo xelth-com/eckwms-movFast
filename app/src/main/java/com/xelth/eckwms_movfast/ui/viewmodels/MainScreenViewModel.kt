@@ -476,8 +476,16 @@ class MainScreenViewModel : ViewModel() {
                             _smartContext.postValue(SmartContext.LocationSelected(barcode, loc, photo))
                             _activeSlotPhoto.postValue(photo)
                             _smartStatus.postValue("AT: $name")
-                            addLog("Selected Location: $name")
+                            addLog("📍 Selected: $name")
                             renderSmartGrid(SmartContext.LocationSelected(barcode, loc, photo))
+                            // Fetch and display location contents
+                            if (loc != null) {
+                                fetchAndDisplayLocationContents(barcode, loc.id)
+                            } else if (barcode.startsWith("p") && barcode.length == 19) {
+                                // Fallback: extract Odoo ID from p-code even without local DB match
+                                val id = barcode.substring(1).trimStart('0').toLongOrNull()
+                                if (id != null) fetchAndDisplayLocationContents(barcode, id)
+                            }
                         }
                         // Box (b...)
                         prefix == 'b' -> {
@@ -495,8 +503,15 @@ class MainScreenViewModel : ViewModel() {
                             val photo = onLoadItemPhoto?.invoke(barcode)
                             _smartContext.postValue(SmartContext.ItemSelected(barcode, prod, photo))
                             _activeSlotPhoto.postValue(photo)
-                            _smartStatus.postValue("ITEM: ${prod?.defaultCode ?: barcode.takeLast(10)}")
-                            addLog("Selected Item: $name")
+                            if (prod != null) {
+                                val qtyStr = if (prod.qtyAvailable % 1.0 == 0.0) prod.qtyAvailable.toInt().toString() else "%.1f".format(prod.qtyAvailable)
+                                _smartStatus.postValue("${prod.defaultCode}: $qtyStr")
+                                addLog("🔧 ${prod.name}")
+                                addLog("📊 Stock: $qtyStr")
+                            } else {
+                                _smartStatus.postValue("ITEM: ${barcode.takeLast(10)}")
+                                addLog("Selected Item: $name")
+                            }
                             renderSmartGrid(SmartContext.ItemSelected(barcode, prod, photo))
                         }
                     }
@@ -514,7 +529,7 @@ class MainScreenViewModel : ViewModel() {
                         }
                         // Item + Item = switch selection
                         else -> {
-                            resetSmartContext()
+                            _smartContext.value = SmartContext.Idle
                             handleSmartScan(barcode, type)
                         }
                     }
@@ -532,7 +547,7 @@ class MainScreenViewModel : ViewModel() {
                         }
                         // Place + Place = switch
                         else -> {
-                            resetSmartContext()
+                            _smartContext.value = SmartContext.Idle
                             handleSmartScan(barcode, type)
                         }
                     }
@@ -550,11 +565,54 @@ class MainScreenViewModel : ViewModel() {
                         }
                         // Box + Box = switch
                         else -> {
-                            resetSmartContext()
+                            _smartContext.value = SmartContext.Idle
                             handleSmartScan(barcode, type)
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun fetchAndDisplayLocationContents(barcode: String, locationId: Long) {
+        viewModelScope.launch {
+            // 1. Local inventory records (green = PDA counted)
+            try {
+                val localRecords = onLoadInventoryRecords?.invoke(barcode) ?: emptyList()
+                if (localRecords.isNotEmpty()) {
+                    addLog("🟢 PDA records (${localRecords.size}):")
+                    localRecords.forEach { rec ->
+                        val qtyStr = if (rec.quantity % 1.0 == 0.0) rec.quantity.toInt().toString() else "%.1f".format(rec.quantity)
+                        addLog("  🟢 ${rec.productName.take(20)}: $qtyStr")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SMART_SCAN", "Local records error: ${e.message}")
+            }
+
+            // 2. Server contents (blue = server confirmed)
+            try {
+                val result = onFetchLocationContents?.invoke(locationId)
+                if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
+                    val raw = result.data?.trim() ?: ""
+                    if (raw.isNotEmpty() && raw != "null" && raw != "[]") {
+                        val arr = org.json.JSONArray(raw)
+                        addLog("🔵 Server (${arr.length()}):")
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val name = obj.optString("product_name", "Unknown").take(20)
+                            val qty = obj.optDouble("quantity", 0.0)
+                            val qtyStr = if (qty % 1.0 == 0.0) qty.toInt().toString() else "%.1f".format(qty)
+                            addLog("  🔵 $name: $qtyStr")
+                        }
+                    } else {
+                        addLog("🔵 Server: empty")
+                    }
+                } else if (result is com.xelth.eckwms_movfast.api.ScanResult.Error) {
+                    addLog("🟡 Server: ${result.message}")
+                }
+            } catch (e: Exception) {
+                addLog("🟡 Server error: ${e.message}")
             }
         }
     }
@@ -614,11 +672,16 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "capture_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "capture_barcode"))
 
-        // 4. Cancel button
-        uiItems.add(mapOf("type" to "button", "label" to "CANCEL", "color" to "#D32F2F", "action" to "act_smart_cancel"))
-
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
+
+        // 4. X button (half-height, top-right corner like repair mode)
+        val cols = gridManager.contentGrid.cols
+        gridManager.contentGrid.placeContentAt(1, cols - 1,
+            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_smart_cancel"),
+            200
+        )
+
         updateRenderCells()
     }
 

@@ -874,13 +874,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         addLog("Smart recovery complete: ${healthState.displayName} - ${healthState.description}")
     }
 
-    // Loop scan removed - hardware scanner works automatically with physical button
-    // No need for programmatic loop scan
-    @Deprecated("Hardware scanner works automatically")
-    fun startHardwareScan() {
-        addLog("Hardware scanner is always ready - use physical button to scan")
-    }
-
     /**
      * Request to start single image recovery - prepares state for camera capture
      */
@@ -921,24 +914,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     }
 
     /**
-     * Legacy method for backward compatibility - now redirects to camera capture
-     * @deprecated Use requestSingleImageRecovery() and processCapturedImageForSingleRecovery() instead
-     */
-    @Deprecated("Use camera-based recovery methods instead")
-    fun trySingleImageRecovery() {
-        addLog("Chance 2: ML Kit single image analysis.")
-        _scanState.value = ScanState.ML_ANALYSIS_SINGLE
-        val image = scannerManager.getLastDecodedImage()
-        if (image != null) {
-            processCapturedImageForSingleRecovery(image)
-        } else {
-            addLog("ML Kit FAILED: Could not get image from scanner.")
-            _errorMessage.postValue("Could not get image from scanner.")
-            _scanState.postValue(ScanState.ML_ANALYSIS_FAILED)
-        }
-    }
-
-    /**
      * Request to start recovery session - prepares state for multi-image camera capture
      */
     fun requestRecoverySession() {
@@ -973,36 +948,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         if (recoveryImages.size >= RECOVERY_IMAGE_COUNT) {
             processRecoveryImages()
-        }
-    }
-
-    /**
-     * Legacy method for backward compatibility - now uses camera capture
-     * @deprecated Use requestRecoverySession() and processCapturedImageForRecoverySession() instead
-     */
-    @Deprecated("Use camera-based recovery methods instead")
-    fun startRecoverySession() {
-        requestRecoverySession()
-    }
-
-    /**
-     * Legacy method for backward compatibility - now uses camera capture
-     * @deprecated Use processCapturedImageForRecoverySession() instead
-     */
-    @Deprecated("Use camera-based recovery methods instead")
-    fun captureImageForRecovery() {
-        if (_scanState.value != ScanState.RECOVERY_SESSION_ACTIVE) return
-        addLog("Capturing image for recovery...")
-        scannerManager.startScan()
-        viewModelScope.launch {
-            delay(500)
-            val image = scannerManager.getLastDecodedImage()
-            if (image != null) {
-                processCapturedImageForRecoverySession(image)
-            } else {
-                addLog("Image capture FAILED.")
-                _errorMessage.postValue("Failed to capture image. Please try again.")
-            }
         }
     }
 
@@ -1251,14 +1196,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 _errorMessage.postValue("Failed to fetch map")
             }
         }
-    }
-
-    /**
-     * Workflow scan - hardware scanner works automatically
-     */
-    @Deprecated("Hardware scanner works automatically")
-    fun startWorkflowScan() {
-        addLog("[ViewModel] Workflow scan ready - use physical button to scan")
     }
 
     /**
