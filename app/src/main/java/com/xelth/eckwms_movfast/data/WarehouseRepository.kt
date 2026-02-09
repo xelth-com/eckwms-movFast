@@ -257,10 +257,28 @@ class WarehouseRepository(
 
     /**
      * Look up a product by barcode or SKU in the local offline cache.
-     * Returns instantly from local SQLite — works without network.
+     * For 'i' smart codes, also extracts EAN and tries that.
      */
     suspend fun getLocalProduct(barcode: String): ProductEntity? = withContext(Dispatchers.IO) {
-        db.referenceDao().getProductByBarcode(barcode)
+        // Try exact barcode/SKU match first
+        val byBarcode = db.referenceDao().getProductByBarcode(barcode)
+        if (byBarcode != null) return@withContext byBarcode
+
+        // Fallback: decode 'i' smart code to extract EAN
+        if (barcode.startsWith("i", ignoreCase = true) && barcode.length == 19) {
+            try {
+                val upper = barcode.uppercase()
+                val splitCharIdx = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(upper[1])
+                if (splitCharIdx > 0) {
+                    val dataPart = upper.substring(2)
+                    if (dataPart.length >= splitCharIdx) {
+                        val ean = dataPart.substring(dataPart.length - splitCharIdx)
+                        return@withContext db.referenceDao().getProductByBarcode(ean)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        null
     }
 
     /** Update product quantity in local cache after inventory count (upsert) */
@@ -286,10 +304,24 @@ class WarehouseRepository(
 
     /**
      * Look up a location by barcode in the local offline cache.
-     * Returns instantly from local SQLite — works without network.
+     * For 'p' smart codes (p + 18-digit Odoo ID), also tries lookup by extracted ID.
      */
     suspend fun getLocalLocation(barcode: String): LocationEntity? = withContext(Dispatchers.IO) {
-        db.referenceDao().getLocationByBarcode(barcode)
+        // Try exact barcode match first
+        val byBarcode = db.referenceDao().getLocationByBarcode(barcode)
+        if (byBarcode != null) return@withContext byBarcode
+
+        // Fallback: extract Odoo ID from 'p' smart code
+        if (barcode.startsWith("p") && barcode.length == 19) {
+            try {
+                val idStr = barcode.substring(1).trimStart('0')
+                if (idStr.isNotEmpty()) {
+                    val id = idStr.toLong()
+                    return@withContext db.referenceDao().getLocationById(id)
+                }
+            } catch (_: NumberFormatException) {}
+        }
+        null
     }
 
     /**

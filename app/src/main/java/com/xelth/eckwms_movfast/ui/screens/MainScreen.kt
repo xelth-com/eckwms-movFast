@@ -199,6 +199,29 @@ fun MainScreen(
         mainViewModel.onUpdateProductQty = { barcode, qty -> repo.updateLocalProductQty(barcode, qty) }
         mainViewModel.onSaveInventoryRecords = { loc, records -> repo.saveInventoryRecords(loc, records) }
         mainViewModel.onLoadInventoryRecords = { loc -> repo.getInventoryRecords(loc) }
+
+        // Long vibration for unexpected new item needing photo
+        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val vm = context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+            vm?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        }
+        mainViewModel.onLongVibrate = {
+            try {
+                vibrator?.let { v ->
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        v.vibrate(longArrayOf(0, 200, 100, 200), -1)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("Vibrate", "Vibration failed: ${e.message}")
+            }
+        }
     }
 
     // Load receiving workflow JSON
@@ -500,15 +523,51 @@ fun MainScreen(
                         )
                     }
                 } else {
-                    ConsoleView(
-                        logs = consoleLogs,
+                    // Idle / Smart Context mode
+                    val smartStatus by mainViewModel.smartStatus.observeAsState("")
+                    val smartPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(consoleHeight)
-                            .padding(bottom = 8.dp),
-                        scannerEnabled = scannerEnabled,
-                        onScannerToggle = { mainViewModel.toggleScanner() }
-                    )
+                    ) {
+                        if (smartPhoto != null) {
+                            Image(
+                                bitmap = smartPhoto!!.asImageBitmap(),
+                                contentDescription = "Smart context photo",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .alpha(0.15f),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            if (smartStatus.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = smartStatus,
+                                        color = Color(0xFF4CAF50),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            ConsoleView(
+                                logs = consoleLogs,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(bottom = 8.dp),
+                                scannerEnabled = scannerEnabled,
+                                onScannerToggle = { mainViewModel.toggleScanner() }
+                            )
+                        }
+                    }
                 }
             }
 

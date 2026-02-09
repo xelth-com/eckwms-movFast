@@ -168,6 +168,20 @@ class MainScreenViewModel : ViewModel() {
     var onSaveInventoryRecords: (suspend (locationBarcode: String, records: List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>) -> Unit)? = null
     var onLoadInventoryRecords: (suspend (locationBarcode: String) -> List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>)? = null
 
+    // --- SMART CONTEXT STATE (Main Menu / Idle) ---
+    sealed class SmartContext {
+        object Idle : SmartContext()
+        data class ItemSelected(val barcode: String, val product: com.xelth.eckwms_movfast.data.local.entity.ProductEntity?, val bitmap: Bitmap?) : SmartContext()
+        data class BoxSelected(val barcode: String, val bitmap: Bitmap?) : SmartContext()
+        data class LocationSelected(val barcode: String, val location: com.xelth.eckwms_movfast.data.local.entity.LocationEntity?, val bitmap: Bitmap?) : SmartContext()
+    }
+
+    private val _smartContext = MutableLiveData<SmartContext>(SmartContext.Idle)
+    val smartContext: LiveData<SmartContext> = _smartContext
+
+    private val _smartStatus = MutableLiveData<String>("")
+    val smartStatus: LiveData<String> = _smartStatus
+
     private val _isRepairMode = MutableLiveData<Boolean>(false)
     val isRepairMode: LiveData<Boolean> = _isRepairMode
 
@@ -269,8 +283,12 @@ class MainScreenViewModel : ViewModel() {
         var type: String = "item",  // "item" or "box"
         var photo: Bitmap? = null,
         var displayName: String? = null,  // From offline DB (Fat Client)
-        var internalId: String? = null  // Decrypted Smart Code (i000.../b000...) for server upload
+        var internalId: String? = null,  // Decrypted Smart Code (i000.../b000...) for server upload
+        var needsPhoto: Boolean = false  // Flagged for photo, doesn't block scanning
     )
+
+    // Vibration callback (set by UI layer which has Context)
+    var onLongVibrate: (() -> Unit)? = null
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
     // Expected inventory from server (populated when location is scanned)
@@ -436,6 +454,174 @@ class MainScreenViewModel : ViewModel() {
         lastWidth = 0f
     }
 
+    // --- SMART CONTEXT LOGIC (Main Menu) ---
+
+    /**
+     * Handle scan in idle/main menu state.
+     * State machine: Idle -> ItemSelected/BoxSelected/LocationSelected -> Action
+     */
+    fun handleSmartScan(barcode: String, type: String) {
+        val currentState = _smartContext.value ?: SmartContext.Idle
+        val prefix = barcode.firstOrNull()?.lowercaseChar()
+
+        viewModelScope.launch {
+            when (currentState) {
+                is SmartContext.Idle -> {
+                    when {
+                        // Place (p... or LOC...)
+                        prefix == 'p' || barcode.startsWith("LOC", true) -> {
+                            val loc = onLookupLocation?.invoke(barcode)
+                            val name = loc?.name ?: barcode.takeLast(10)
+                            val photo = onLoadItemPhoto?.invoke(barcode)
+                            _smartContext.postValue(SmartContext.LocationSelected(barcode, loc, photo))
+                            _activeSlotPhoto.postValue(photo)
+                            _smartStatus.postValue("AT: $name")
+                            addLog("Selected Location: $name")
+                            renderSmartGrid(SmartContext.LocationSelected(barcode, loc, photo))
+                        }
+                        // Box (b...)
+                        prefix == 'b' -> {
+                            val photo = onLoadItemPhoto?.invoke(barcode)
+                            _smartContext.postValue(SmartContext.BoxSelected(barcode, photo))
+                            _activeSlotPhoto.postValue(photo)
+                            _smartStatus.postValue("BOX: ${barcode.takeLast(6)}")
+                            addLog("Selected Box: $barcode")
+                            renderSmartGrid(SmartContext.BoxSelected(barcode, photo))
+                        }
+                        // Default: Item (i... or numeric EAN)
+                        else -> {
+                            val prod = onLookupProduct?.invoke(barcode)
+                            val name = prod?.name ?: barcode
+                            val photo = onLoadItemPhoto?.invoke(barcode)
+                            _smartContext.postValue(SmartContext.ItemSelected(barcode, prod, photo))
+                            _activeSlotPhoto.postValue(photo)
+                            _smartStatus.postValue("ITEM: ${prod?.defaultCode ?: barcode.takeLast(10)}")
+                            addLog("Selected Item: $name")
+                            renderSmartGrid(SmartContext.ItemSelected(barcode, prod, photo))
+                        }
+                    }
+                }
+
+                is SmartContext.ItemSelected -> {
+                    when {
+                        // Item + Place = PUT
+                        prefix == 'p' || barcode.startsWith("LOC", true) -> {
+                            performMoveAction(currentState.barcode, barcode, "PUT_ITEM")
+                        }
+                        // Item + Box = PACK
+                        prefix == 'b' -> {
+                            performMoveAction(currentState.barcode, barcode, "PACK_ITEM")
+                        }
+                        // Item + Item = switch selection
+                        else -> {
+                            resetSmartContext()
+                            handleSmartScan(barcode, type)
+                        }
+                    }
+                }
+
+                is SmartContext.LocationSelected -> {
+                    when {
+                        // Place + Item = PICK
+                        prefix == 'i' || (barcode.all { it.isDigit() } && barcode.length > 5) -> {
+                            performMoveAction(barcode, currentState.barcode, "PICK_ITEM")
+                        }
+                        // Place + Box = PICK BOX
+                        prefix == 'b' -> {
+                            performMoveAction(barcode, currentState.barcode, "PICK_BOX")
+                        }
+                        // Place + Place = switch
+                        else -> {
+                            resetSmartContext()
+                            handleSmartScan(barcode, type)
+                        }
+                    }
+                }
+
+                is SmartContext.BoxSelected -> {
+                    when {
+                        // Box + Place = PUT BOX
+                        prefix == 'p' || barcode.startsWith("LOC", true) -> {
+                            performMoveAction(currentState.barcode, barcode, "PUT_BOX")
+                        }
+                        // Box + Item = PACK (put item into box)
+                        prefix == 'i' || (barcode.all { it.isDigit() } && barcode.length > 5) -> {
+                            performMoveAction(barcode, currentState.barcode, "PACK_ITEM")
+                        }
+                        // Box + Box = switch
+                        else -> {
+                            resetSmartContext()
+                            handleSmartScan(barcode, type)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun performMoveAction(item: String, target: String, actionType: String) {
+        viewModelScope.launch {
+            addLog("ACTION: $actionType")
+            addLog("  $item -> $target")
+
+            val payload = JSONObject().apply {
+                put("item", item)
+                put("target", target)
+                put("action", actionType)
+                put("timestamp", System.currentTimeMillis())
+            }
+
+            onRepairEventSend?.invoke("SMART_OPS", actionType, payload.toString())
+
+            _smartStatus.postValue("OK: $actionType")
+            resetSmartContext()
+            delay(2000)
+            _smartStatus.postValue("")
+        }
+    }
+
+    fun resetSmartContext() {
+        _smartContext.postValue(SmartContext.Idle)
+        _activeSlotPhoto.postValue(null)
+        _smartStatus.postValue("")
+        initializeGrid()
+    }
+
+    private fun renderSmartGrid(ctx: SmartContext) {
+        val uiItems = mutableListOf<Map<String, Any>>()
+
+        // 1. Info button (shows what's selected)
+        val infoLabel = when (ctx) {
+            is SmartContext.ItemSelected -> "ITEM\n${ctx.product?.defaultCode ?: "..."}"
+            is SmartContext.LocationSelected -> "LOC\n${ctx.location?.name ?: "..."}"
+            is SmartContext.BoxSelected -> "BOX\n${ctx.barcode.takeLast(6)}"
+            else -> ""
+        }
+        uiItems.add(mapOf("type" to "button", "label" to infoLabel, "color" to "#4CAF50", "action" to "act_noop"))
+
+        // 2. Context-specific actions
+        when (ctx) {
+            is SmartContext.ItemSelected -> {
+                uiItems.add(mapOf("type" to "button", "label" to "INFO", "color" to "#2196F3", "action" to "act_smart_info"))
+            }
+            is SmartContext.LocationSelected -> {
+                uiItems.add(mapOf("type" to "button", "label" to "COUNT", "color" to "#795548", "action" to "act_jump_inventory"))
+            }
+            else -> {}
+        }
+
+        // 3. Photo & Scan buttons (always available)
+        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "capture_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "capture_barcode"))
+
+        // 4. Cancel button
+        uiItems.add(mapOf("type" to "button", "label" to "CANCEL", "color" to "#D32F2F", "action" to "act_smart_cancel"))
+
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
+        updateRenderCells()
+    }
+
     fun onButtonClick(action: String): String {
         addLog("Button clicked: $action")
 
@@ -457,6 +643,24 @@ class MainScreenViewModel : ViewModel() {
 
         if (_isDeviceCheckMode.value == true) {
             return handleDeviceCheckButtonClick(action)
+        }
+
+        // Smart Context actions (main menu)
+        if (action == "act_smart_cancel") {
+            resetSmartContext()
+            return "handled"
+        }
+        if (action == "act_jump_inventory") {
+            val ctx = _smartContext.value
+            if (ctx is SmartContext.LocationSelected) {
+                resetSmartContext()
+                enterInventoryMode()
+                onInventoryScan(ctx.barcode, false)
+            }
+            return "handled"
+        }
+        if (action == "act_noop" || action == "act_smart_info") {
+            return "handled"
         }
 
         if (action == "navigate_repair") {
@@ -620,7 +824,8 @@ class MainScreenViewModel : ViewModel() {
                     _repairStatus.value = "AUTO: ${barcode}"
                 }
             } else {
-                Log.d("RepairMode", "No match in saved slots, ignoring (not in repair mode)")
+                Log.d("RepairMode", "No match in saved slots -> Smart Context")
+                handleSmartScan(barcode, "barcode")
             }
             return
         }
@@ -2482,12 +2687,13 @@ class MainScreenViewModel : ViewModel() {
                     lastScannedInventoryItem = cleanCode
                     _inventoryItemPhoto.value = entry.photo
 
-                    // --- AUTO-PHOTO TRIGGER ---
-                    // First scan of a new item with no photo → prompt camera
+                    // --- AUTO-PHOTO: open camera + long vibrate to alert ---
                     android.util.Log.e("AUTO_PHOTO", "Check: qty=${entry.quantity}, photo=${entry.photo != null}, barcode=$cleanCode")
                     if (entry.quantity == 1 && entry.photo == null) {
-                        addLog("📸 New item — requesting photo...")
-                        android.util.Log.e("AUTO_PHOTO", ">>> TRIGGERING camera for new item: $cleanCode")
+                        entry.needsPhoto = true
+                        addLog("📸 New item — take photo!")
+                        android.util.Log.e("AUTO_PHOTO", ">>> TRIGGERING camera + vibrate for: $cleanCode")
+                        onLongVibrate?.invoke()
                         _navigateToCamera.postValue(true)
                     }
 
@@ -2514,50 +2720,49 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
-    /** Attach photo to the last scanned inventory item or place */
+    /** Attach photo to the last scanned inventory item or place.
+     *  UI update is instant; disk save + upload runs in background. */
     fun onInventoryPhotoCaptured(bitmap: Bitmap) {
         val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
 
         when (lastScannedType) {
             "place" -> {
-                // Photo for current location
                 if (currentInventoryLocation.isEmpty()) {
                     addLog("⚠️ No location to attach photo to")
-                    _inventoryStatus.value = "Scan location first!"
                     return
                 }
                 _inventoryLocationPhoto.value = copy
-                // Save using decrypted internal ID or fallback to raw barcode
                 val saveId = decryptedLocationId ?: "p_$currentInventoryLocation"
-                onSaveItemPhoto?.invoke(saveId, copy)
-                addLog("📷 Place photo saved: ${saveId.takeLast(12)}")
-                _inventoryStatus.value = "📷 Place photo saved"
+                addLog("📷 Place photo saved")
+                // Save to disk in background
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    onSaveItemPhoto?.invoke(saveId, copy)
+                }
             }
             "item" -> {
-                // Photo for last scanned item
                 if (lastScannedInventoryItem.isEmpty()) {
                     addLog("⚠️ No item to attach photo to")
-                    _inventoryStatus.value = "Scan item first!"
                     return
                 }
                 val entry = inventoryItems[lastScannedInventoryItem]
                 if (entry != null) {
                     entry.photo = copy
+                    entry.needsPhoto = false
                     _inventoryItemPhoto.value = copy
-                    // Save using decrypted internal ID or fallback to prefix + barcode
                     val saveId = decryptedItemId ?: run {
                         val prefix = if (entry.type == "box") "b" else "i"
                         "$prefix$lastScannedInventoryItem"
                     }
-                    onSaveItemPhoto?.invoke(saveId, copy)
-                    addLog("📷 Item photo saved: ${saveId.takeLast(12)}")
-                    _inventoryStatus.value = "📷 → ${lastScannedInventoryItem.takeLast(12)}"
+                    addLog("📷 Item photo: ${saveId.takeLast(12)}")
                     updateInventoryConsole()
+                    // Save to disk in background
+                    viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        onSaveItemPhoto?.invoke(saveId, copy)
+                    }
                 }
             }
             else -> {
                 addLog("⚠️ Scan something first!")
-                _inventoryStatus.value = "Scan first, then photo"
             }
         }
     }

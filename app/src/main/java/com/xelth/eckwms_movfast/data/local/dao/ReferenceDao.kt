@@ -43,6 +43,9 @@ interface ReferenceDao {
     @Query("SELECT * FROM locations WHERE barcode = :barcode LIMIT 1")
     suspend fun getLocationByBarcode(barcode: String): LocationEntity?
 
+    @Query("SELECT * FROM locations WHERE id = :id LIMIT 1")
+    suspend fun getLocationById(id: Long): LocationEntity?
+
     @Query("DELETE FROM locations")
     suspend fun clearLocations()
 

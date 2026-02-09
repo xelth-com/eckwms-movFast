@@ -489,10 +489,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             val currentTime = System.currentTimeMillis()
 
-            // Проверка на дубликаты: сравниваем по effectiveCode (декриптованному) чтобы ловить
-            // дубликаты даже если сканер отправляет разные raw-строки для одного и того же QR
-            if (effectiveCode == lastProcessedBarcode && (currentTime - lastProcessedTime) < 2000) {
-                addLog("Ignoring duplicate scan: $effectiveCode (timeDiff=${currentTime - lastProcessedTime}ms)")
+            // Duplicate protection: only filter genuine optical double-reads (< 100ms).
+            // Hardware scanner: one press = one barcode, no real duplicates possible.
+            if (effectiveCode == lastProcessedBarcode && (currentTime - lastProcessedTime) < 100) {
+                addLog("Ignoring optical double-read: $effectiveCode (${currentTime - lastProcessedTime}ms)")
                 return@Observer
             }
 
