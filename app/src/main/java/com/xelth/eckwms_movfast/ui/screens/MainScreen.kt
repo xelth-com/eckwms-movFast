@@ -189,6 +189,12 @@ fun MainScreen(
         mainViewModel.onFetchLocationContents = { locationId ->
             scanApiService.fetchExplorerData("/api/explorer/locations/$locationId/contents")
         }
+        // Multi-user callbacks
+        mainViewModel.onFetchUsers = { scanApiService.fetchActiveUsers() }
+        mainViewModel.onVerifyPin = { userId, pin -> scanApiService.verifyUserPin(userId, pin) }
+        // Restore saved user + load user list from server
+        com.xelth.eckwms_movfast.ui.viewmodels.UserManager.restoreFromSettings()
+        mainViewModel.loadAvailableUsers()
     }
 
     // Wire Fat Client offline lookup callbacks
@@ -602,6 +608,7 @@ fun MainScreen(
                             "navigate_settings" -> navController.navigate("settings")
                             "navigate_qc" -> navController.navigate("qcScreen")
                             "navigate_explorer" -> navController.navigate("explorerScreen")
+                            "navigate_picking" -> navController.navigate("pickingList")
                         }
                     },
                     onButtonLongClick = { action ->
@@ -967,5 +974,121 @@ fun MainScreen(
                 }
             )
         }
+    }
+
+    // --- Multi-User Dialogs ---
+    val showUserDialog by mainViewModel.showUserDialog.observeAsState(false)
+    val userDialogMode by mainViewModel.userDialogMode.observeAsState("view")
+    val showPinDialog by mainViewModel.showPinDialog.observeAsState(false)
+
+    // User Selection Dialog
+    if (showUserDialog) {
+        val users = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.availableUsers.value
+        AlertDialog(
+            onDismissRequest = { mainViewModel.dismissUserDialog() },
+            title = {
+                Text(if (userDialogMode == "login") "Anmeldung" else "View User")
+            },
+            text = {
+                if (users.isEmpty()) {
+                    Text("No users available. Check server connection.", color = Color.Gray)
+                } else {
+                    LazyColumn {
+                        items(users) { user ->
+                            val currentUser = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value
+                            val viewingUser = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.value
+                            val isCurrent = currentUser?.id == user.id
+                            val isViewing = viewingUser?.id == user.id
+                            val bgColor = when {
+                                isCurrent && isViewing -> Color(0xFF1B5E20).copy(alpha = 0.3f) // Green hint
+                                isViewing -> Color(0xFFFDD835).copy(alpha = 0.2f) // Yellow hint
+                                else -> Color.Transparent
+                            }
+                            TextButton(
+                                onClick = { mainViewModel.onUserSelected(user) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(bgColor)
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        user.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    if (isCurrent) {
+                                        Text(
+                                            "current",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF4CAF50)
+                                        )
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = Color.Gray.copy(alpha = 0.2f))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { mainViewModel.dismissUserDialog() }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // PIN Input Dialog
+    if (showPinDialog) {
+        var pinValue by remember { mutableStateOf("") }
+        var pinError by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { mainViewModel.dismissPinDialog() },
+            title = { Text("PIN eingeben") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // PIN display (dots)
+                    Text(
+                        text = "●".repeat(pinValue.length) + "○".repeat((4 - pinValue.length).coerceAtLeast(0)),
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    if (pinError) {
+                        Text("Wrong PIN", color = Color.Red, style = MaterialTheme.typography.bodySmall)
+                    }
+                    // Numpad grid
+                    val buttons = listOf(
+                        listOf("1", "2", "3"),
+                        listOf("4", "5", "6"),
+                        listOf("7", "8", "9"),
+                        listOf("⌫", "0", "✓")
+                    )
+                    buttons.forEach { row ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        ) {
+                            row.forEach { digit ->
+                                TextButton(
+                                    onClick = {
+                                        pinError = false
+                                        when (digit) {
+                                            "⌫" -> if (pinValue.isNotEmpty()) pinValue = pinValue.dropLast(1)
+                                            "✓" -> if (pinValue.length == 4) mainViewModel.onPinSubmitted(pinValue)
+                                            else -> if (pinValue.length < 4) pinValue += digit
+                                        }
+                                    },
+                                    modifier = Modifier.size(64.dp)
+                                ) {
+                                    Text(digit, style = MaterialTheme.typography.headlineSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel") }
+            }
+        )
     }
 }

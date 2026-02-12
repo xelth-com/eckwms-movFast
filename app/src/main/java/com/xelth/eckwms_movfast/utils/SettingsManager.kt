@@ -437,4 +437,19 @@ object SettingsManager {
             ?.mapNotNull { parsePhotoFilename(it.name) }
             ?: emptyList()
     }
+
+    // --- Multi-User Persistence ---
+
+    private const val KEY_CURRENT_USER_ID = "current_user_id"
+    private const val KEY_CURRENT_USER_NAME = "current_user_name"
+
+    fun saveCurrentUser(id: String, name: String) {
+        prefs.edit()
+            .putString(KEY_CURRENT_USER_ID, id)
+            .putString(KEY_CURRENT_USER_NAME, name)
+            .apply()
+    }
+
+    fun getCurrentUserId(): String = prefs.getString(KEY_CURRENT_USER_ID, "") ?: ""
+    fun getCurrentUserName(): String = prefs.getString(KEY_CURRENT_USER_NAME, "") ?: ""
 }

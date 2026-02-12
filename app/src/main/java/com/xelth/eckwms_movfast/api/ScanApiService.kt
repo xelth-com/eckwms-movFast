@@ -1448,6 +1448,11 @@ class ScanApiService(private val context: Context) {
                 put("target_device_id", targetDeviceId)
                 put("event_type", eventType)
                 put("data", data)
+                // Multi-user audit trail
+                val actingId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
+                val ownerId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.value?.id
+                if (!actingId.isNullOrEmpty()) put("acting_user_id", actingId)
+                if (!ownerId.isNullOrEmpty()) put("owner_user_id", ownerId)
             }
 
             val outputStream = connection.outputStream
@@ -1828,6 +1833,227 @@ class ScanApiService(private val context: Context) {
         } catch (e: Exception) {
             ScanResult.Error(e.message ?: "Network error")
         }
+    }
+
+    // ============ Picking API ============
+
+    data class PickingRouteResponse(
+        val lines: List<com.xelth.eckwms_movfast.data.local.entity.PickLineEntity>,
+        val path: List<com.xelth.eckwms_movfast.ui.data.PathPoint>
+    )
+
+    suspend fun fetchActivePickings(): List<com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity>? = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/pickings/active")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonArray = JSONArray(response)
+                val list = mutableListOf<com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    list.add(com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity(
+                        id = obj.getLong("id"),
+                        name = obj.optString("name", ""),
+                        state = obj.optString("state", "assigned"),
+                        partnerName = obj.optString("partner_name", null),
+                        origin = obj.optString("origin", null),
+                        priority = obj.optString("priority", "0"),
+                        scheduledDate = try { java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).parse(obj.optString("scheduled_date"))?.time ?: 0L } catch (e: Exception) { 0L },
+                        locationId = obj.optLong("location_id", 0),
+                        locationDestId = obj.optLong("location_dest_id", 0),
+                        lineCount = obj.optInt("line_count", 0),
+                        pickedCount = obj.optInt("picked_count", 0)
+                    ))
+                }
+                Log.i(TAG, "Fetched ${list.size} active pickings")
+                return@withContext list
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching active pickings", e)
+        }
+        return@withContext null
+    }
+
+    suspend fun fetchPickingRoute(pickingId: Long): PickingRouteResponse? = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/pickings/$pickingId/route")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(response)
+
+                // Parse lines
+                val linesArray = json.optJSONArray("lines") ?: JSONArray()
+                val lines = mutableListOf<com.xelth.eckwms_movfast.data.local.entity.PickLineEntity>()
+                for (i in 0 until linesArray.length()) {
+                    val obj = linesArray.getJSONObject(i)
+                    lines.add(com.xelth.eckwms_movfast.data.local.entity.PickLineEntity(
+                        id = obj.getLong("id"),
+                        pickingId = obj.getLong("picking_id"),
+                        productId = obj.getLong("product_id"),
+                        productName = obj.optString("product_name", ""),
+                        productBarcode = obj.optString("product_barcode", null),
+                        productCode = obj.optString("product_code", null),
+                        qtyDemand = obj.optDouble("qty_demand", 0.0),
+                        qtyDone = obj.optDouble("qty_done", 0.0),
+                        locationId = obj.optLong("location_id", 0),
+                        locationName = obj.optString("location_name", ""),
+                        locationBarcode = obj.optString("location_barcode", null),
+                        rackId = if (obj.has("rack_id") && !obj.isNull("rack_id")) obj.getLong("rack_id") else null,
+                        rackName = obj.optString("rack_name", null),
+                        rackX = obj.optInt("rack_x", 0),
+                        rackY = obj.optInt("rack_y", 0),
+                        rackWidth = obj.optInt("rack_width", 0),
+                        rackHeight = obj.optInt("rack_height", 0),
+                        state = obj.optString("state", "assigned"),
+                        sequence = obj.optInt("sequence", 0)
+                    ))
+                }
+
+                // Parse route path
+                val routeObj = json.optJSONObject("route")
+                val pathArray = routeObj?.optJSONArray("path") ?: JSONArray()
+                val path = mutableListOf<com.xelth.eckwms_movfast.ui.data.PathPoint>()
+                for (i in 0 until pathArray.length()) {
+                    val pt = pathArray.getJSONObject(i)
+                    path.add(com.xelth.eckwms_movfast.ui.data.PathPoint(pt.getInt("x"), pt.getInt("y")))
+                }
+
+                Log.i(TAG, "Fetched route for picking $pickingId: ${lines.size} lines, ${path.size} path points")
+                return@withContext PickingRouteResponse(lines, path)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching picking route", e)
+        }
+        return@withContext null
+    }
+
+    suspend fun confirmPickLine(pickingId: Long, lineId: Long, qtyDone: Double, productBarcode: String, locationBarcode: String): Boolean = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/pickings/$pickingId/lines/$lineId/confirm")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("qty_done", qtyDone)
+                put("scanned_product_barcode", productBarcode)
+                put("scanned_location_barcode", locationBarcode)
+            }
+            connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
+
+            val success = connection.responseCode == HttpURLConnection.HTTP_OK
+            if (success) Log.i(TAG, "Confirmed pick line $lineId (qty=$qtyDone)")
+            else Log.w(TAG, "Confirm failed: HTTP ${connection.responseCode}")
+            return@withContext success
+        } catch (e: Exception) {
+            Log.e(TAG, "Error confirming pick line", e)
+            return@withContext false
+        }
+    }
+
+    suspend fun validatePicking(pickingId: Long): Boolean = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/pickings/$pickingId/validate")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+            connection.outputStream.bufferedWriter().use { it.write("{}") }
+
+            val success = connection.responseCode == HttpURLConnection.HTTP_OK
+            if (success) Log.i(TAG, "Validated picking $pickingId")
+            else Log.w(TAG, "Validate failed: HTTP ${connection.responseCode}")
+            return@withContext success
+        } catch (e: Exception) {
+            Log.e(TAG, "Error validating picking", e)
+            return@withContext false
+        }
+    }
+
+    // --- Multi-User API ---
+
+    suspend fun fetchActiveUsers(): List<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>? = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/users/active")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 15000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonArray = JSONArray(response)
+                val list = mutableListOf<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    list.add(com.xelth.eckwms_movfast.ui.viewmodels.AppUser(
+                        id = obj.getString("id"),
+                        name = obj.optString("name", obj.optString("username", "")),
+                        role = obj.optString("role", "user")
+                    ))
+                }
+                Log.i(TAG, "Fetched ${list.size} active users")
+                return@withContext list
+            } else {
+                Log.w(TAG, "fetchActiveUsers: HTTP ${connection.responseCode}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching active users", e)
+        }
+        return@withContext null
+    }
+
+    suspend fun verifyUserPin(userId: String, pin: String): Boolean = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/users/verify-pin")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 15000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("userId", userId)
+                put("pin", pin)
+            }
+            connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
+
+            return@withContext connection.responseCode == HttpURLConnection.HTTP_OK
+        } catch (e: Exception) {
+            Log.e(TAG, "Error verifying user PIN", e)
+        }
+        return@withContext false
     }
 }
 

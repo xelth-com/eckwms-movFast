@@ -242,6 +242,28 @@ class MainScreenViewModel : ViewModel() {
 
     fun dismissShipmentPicker() { _showShipmentPicker.value = false }
 
+    // --- MULTI-USER STATE ---
+    private val _showUserDialog = MutableLiveData<Boolean>(false)
+    val showUserDialog: LiveData<Boolean> = _showUserDialog
+
+    // "login" = long press (Anmeldung with PIN), "view" = short press (switch view)
+    private val _userDialogMode = MutableLiveData<String>("view")
+    val userDialogMode: LiveData<String> = _userDialogMode
+
+    private val _showPinDialog = MutableLiveData<Boolean>(false)
+    val showPinDialog: LiveData<Boolean> = _showPinDialog
+
+    // Temporarily holds the user selected for PIN verification
+    private var pendingLoginUser: AppUser? = null
+
+    // Callback for verifying PIN (set by UI layer, backed by ScanApiService)
+    var onVerifyPin: (suspend (userId: String, pin: String) -> Boolean)? = null
+    // Callback for fetching user list
+    var onFetchUsers: (suspend () -> List<AppUser>?)? = null
+
+    fun dismissUserDialog() { _showUserDialog.value = false }
+    fun dismissPinDialog() { _showPinDialog.value = false; pendingLoginUser = null }
+
     // Camera navigation for receiving — holds scan_mode string, null when not navigating
     private val _receivingCameraNav = MutableLiveData<String?>(null)
     val receivingCameraNav: LiveData<String?> = _receivingCameraNav
@@ -418,6 +440,7 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("device_check", "✅\nCheck", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
             MainMenuButton("restock", "📋\nRestock", "#50E3C2", "navigate_restock", PRIORITIES.DEFAULT),
             MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT),
+            MainMenuButton("picking", "📦\nPicking", "#3F51B5", "navigate_picking", PRIORITIES.DEFAULT),
             MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
             MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT)
         )
@@ -437,9 +460,73 @@ class MainScreenViewModel : ViewModel() {
     }
 
     private fun updateRenderCells() {
+        injectUserButton() // Always inject user button at (2,0) in every mode
         viewModelScope.launch {
             val cells = gridManager.getRenderStructure()
             _renderCells.postValue(cells)
+        }
+    }
+
+    /**
+     * Inject the user button at grid position (2, 0) — HALF_LEFT slot under network indicator.
+     * Called at the end of every render*Grid() method so it persists across all modes.
+     */
+    private fun injectUserButton() {
+        val label = UserManager.getButtonLabel()
+        val color = UserManager.getButtonColor()
+        val btnData = mapOf(
+            "type" to "button",
+            "label" to label,
+            "color" to color,
+            "action" to "act_user_profile"
+        )
+        gridManager.contentGrid.placeContentAt(2, 0, btnData, 200)
+    }
+
+    /** Fetch users from server and populate UserManager. */
+    fun loadAvailableUsers() {
+        viewModelScope.launch {
+            val users = onFetchUsers?.invoke()
+            if (users != null) {
+                UserManager.setAvailableUsers(users)
+                addLog("Loaded ${users.size} users")
+            }
+        }
+    }
+
+    /** Handle user selected from the dialog. */
+    fun onUserSelected(user: AppUser) {
+        if (_userDialogMode.value == "login") {
+            // Login mode: need PIN verification
+            pendingLoginUser = user
+            _showUserDialog.value = false
+            _showPinDialog.value = true
+        } else {
+            // View mode: switch viewing user immediately
+            UserManager.switchView(user)
+            addLog("👁 Viewing as ${user.name}")
+            _showUserDialog.value = false
+            injectUserButton()
+            updateRenderCells()
+        }
+    }
+
+    /** Handle PIN entry result. */
+    fun onPinSubmitted(pin: String) {
+        val user = pendingLoginUser ?: return
+        viewModelScope.launch {
+            val verified = onVerifyPin?.invoke(user.id, pin) ?: false
+            if (verified) {
+                UserManager.login(user)
+                addLog("✅ Logged in as ${user.name}")
+                _showPinDialog.postValue(false)
+                pendingLoginUser = null
+                injectUserButton()
+                updateRenderCells()
+            } else {
+                addLog("❌ Wrong PIN for ${user.name}")
+                // Keep PIN dialog open for retry
+            }
         }
     }
 
@@ -688,6 +775,17 @@ class MainScreenViewModel : ViewModel() {
     fun onButtonClick(action: String): String {
         addLog("Button clicked: $action")
 
+        // User button — works in ALL modes (short press = switch view)
+        if (action == "act_user_profile") {
+            if (!UserManager.isLoggedIn()) {
+                _userDialogMode.value = "login"
+            } else {
+                _userDialogMode.value = "view"
+            }
+            _showUserDialog.value = true
+            return "handled"
+        }
+
         if (_isRestockMode.value == true) {
             return handleRestockButtonClick(action)
         }
@@ -760,6 +858,12 @@ class MainScreenViewModel : ViewModel() {
      */
     fun onButtonLongClick(action: String): String {
         addLog("Long press: $action")
+        // User button long press = Login (Anmeldung) in ALL modes
+        if (action == "act_user_profile") {
+            _userDialogMode.value = "login"
+            _showUserDialog.value = true
+            return "handled"
+        }
         return when (action) {
             "act_photo" -> "capture_photo_continuous"
             "act_scan" -> "capture_barcode_continuous"
@@ -1940,7 +2044,7 @@ class MainScreenViewModel : ViewModel() {
         val backLabel = if (isContentsStep && packagingSubLevel) "◀️\nBACK" else "↩️\nUNDO"
         uiItems.add(mapOf("type" to "button", "label" to backLabel, "color" to backColor, "action" to backAction))
         uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO",
-            "color" to if (isContentsStep) "#1A1A1A" else "#9C27B0",
+            "color" to if (isContentsStep) "#263238" else "#9C27B0",
             "action" to if (isContentsStep) "act_noop" else "act_photo"))
         uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
@@ -1951,22 +2055,23 @@ class MainScreenViewModel : ViewModel() {
             val colors = step["colors"] as? Map<String, String>
 
             if (isContentsStep && index == currentStepIndex) {
-                // Current contents step → becomes "OK" button
+                // Current contents step → OK or packaging pick indicator
+                val okLabel = if (packagingSubLevel) "📦\nPick" else "OK \u2713"
                 val okColor: Any = colors?.get("active") ?: "#FFCA28"
                 uiItems.add(mapOf(
                     "type" to "button",
-                    "label" to "OK \u2713",
+                    "label" to okLabel,
                     "color" to okColor,
-                    "action" to "act_contents_ok"
+                    "action" to if (packagingSubLevel) "act_noop" else "act_contents_ok"
                 ))
             } else {
                 val label = step["label"] as? String ?: "Step ${index + 1}"
                 val color = when {
                     index < currentStepIndex -> colors?.get("done") ?: "#4CAF50"
                     index == currentStepIndex -> colors?.get("active") ?: "#FF9800"
-                    // Dim all non-current steps when in contents mode
-                    isContentsStep -> "#1A1A1A"
-                    else -> colors?.get("pending") ?: "#424242"
+                    // Subtle blue-grey tint for non-current steps during contents
+                    isContentsStep -> "#263238"
+                    else -> colors?.get("pending") ?: "#37474F"
                 }
                 uiItems.add(mapOf(
                     "type" to "button",
@@ -2009,14 +2114,16 @@ class MainScreenViewModel : ViewModel() {
                     val isActive = activeContentItem == key
                     val barcode = contentsBarcodes[key]
                     val displayLabel = when {
-                        barcode != null -> "$label \u2713"  // has barcode
-                        isOn -> "$label \u25CF"             // toggled on (filled circle)
-                        else -> label
+                        barcode != null -> "$label\n\u2713"       // has barcode → green with checkmark
+                        isActive -> "$label\n\uD83D\uDCE1"        // active for scan → blue with 📡
+                        isOn -> "$label\n+"                        // present, not scanning → blue-grey with +
+                        else -> label                              // not present → grey
                     }
                     val color = when {
-                        isActive -> "#66BB6A"   // bright green = active for scanning
-                        isOn -> "#388E3C"       // dark green = on but not active
-                        else -> "#424242"        // grey = off
+                        barcode != null -> "#2E7D32"  // green = has barcode
+                        isActive -> "#1565C0"          // blue = active for scanning
+                        isOn -> "#37474F"              // blue-grey = present
+                        else -> "#616161"              // grey = not present
                     }
                     uiItems.add(mapOf(
                         "type" to "button",
@@ -2025,18 +2132,18 @@ class MainScreenViewModel : ViewModel() {
                         "action" to "act_toggle_$key"
                     ))
                 }
-                // Packaging button
+                // Packaging button — always visible with current selection
                 if (packaging != null) {
                     val pkgLabel = if (selectedPackaging != null) {
                         @Suppress("UNCHECKED_CAST")
                         val options = packaging["options"] as? List<Map<String, String>> ?: emptyList()
                         val selected = options.find { it["value"] == selectedPackaging }
-                        selected?.get("label") ?: "Packaging \u25BC"
-                    } else "Packaging \u25BC"
+                        "\uD83D\uDCE6\n${selected?.get("label") ?: selectedPackaging}"
+                    } else "\uD83D\uDCE6\nPackaging"
                     uiItems.add(mapOf(
                         "type" to "button",
                         "label" to pkgLabel,
-                        "color" to if (selectedPackaging != null) "#4CAF50" else "#5C6BC0",
+                        "color" to if (selectedPackaging != null) "#5C6BC0" else "#455A64",
                         "action" to "act_packaging"
                     ))
                 }
@@ -2055,7 +2162,7 @@ class MainScreenViewModel : ViewModel() {
         val cols = gridManager.contentGrid.cols
         gridManager.contentGrid.placeContentAt(1, cols - 1,
             mapOf("type" to "button", "label" to "\u2715",
-                "color" to if (isContentsStep) "#1A1A1A" else "#F44336",
+                "color" to if (isContentsStep) "#263238" else "#F44336",
                 "action" to if (isContentsStep) "act_noop" else "act_exit"),
             200
         )
