@@ -2016,7 +2016,8 @@ class ScanApiService(private val context: Context) {
                     val obj = jsonArray.getJSONObject(i)
                     list.add(com.xelth.eckwms_movfast.ui.viewmodels.AppUser(
                         id = obj.getString("id"),
-                        name = obj.optString("name", obj.optString("username", "")),
+                        username = obj.optString("username", ""),
+                        name = obj.optString("name", ""),
                         role = obj.optString("role", "user")
                     ))
                 }

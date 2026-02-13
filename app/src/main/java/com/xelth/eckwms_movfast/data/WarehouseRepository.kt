@@ -124,6 +124,32 @@ class WarehouseRepository(
         SyncManager.scheduleSync(context)
     }
 
+    /**
+     * Queue a repair/workflow event for reliable delivery.
+     * Persists to Room DB first, then triggers SyncWorker.
+     */
+    suspend fun addRepairEventToSyncQueue(
+        targetDeviceId: String,
+        eventType: String,
+        data: String
+    ): Long = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("targetDeviceId", targetDeviceId)
+            put("eventType", eventType)
+            put("data", data)
+        }.toString()
+
+        val queueEntity = SyncQueueEntity(
+            type = "repair_event",
+            payload = payload
+        )
+        val queueId = db.syncQueueDao().addToQueue(queueEntity)
+        Log.d(TAG, "Queued repair_event #$queueId: $eventType -> $targetDeviceId")
+
+        SyncManager.scheduleSync(context)
+        queueId
+    }
+
     suspend fun addImageUploadToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
         val scan = db.scanDao().getScanById(scanId)
         if (scan == null || scan.imagePath == null || scan.imageId == null) {

@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.xelth.eckwms_movfast.data.local.dao.AttachmentDao
 import com.xelth.eckwms_movfast.data.local.dao.FileResourceDao
+import com.xelth.eckwms_movfast.data.local.dao.PickingDao
 import com.xelth.eckwms_movfast.data.local.dao.ReferenceDao
 import com.xelth.eckwms_movfast.data.local.dao.ScanDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
@@ -13,6 +14,8 @@ import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
 import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
+import com.xelth.eckwms_movfast.data.local.entity.PickLineEntity
+import com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity
 import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
@@ -25,9 +28,11 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         LocationEntity::class,
         FileResourceEntity::class,
         AttachmentEntity::class,
-        InventoryRecordEntity::class
+        InventoryRecordEntity::class,
+        PickingOrderEntity::class,
+        PickLineEntity::class
     ],
-    version = 7,  // Added inventory_records table (PDA source of truth)
+    version = 8,  // Added picking_orders and pick_lines tables
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -36,6 +41,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun referenceDao(): ReferenceDao
     abstract fun fileResourceDao(): FileResourceDao
     abstract fun attachmentDao(): AttachmentDao
+    abstract fun pickingDao(): PickingDao
 
     companion object {
         @Volatile

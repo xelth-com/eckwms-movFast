@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateMapOf
@@ -614,6 +615,7 @@ fun MainScreen(
                     onButtonLongClick = { action ->
                         val result = mainViewModel.onButtonLongClick(action)
                         when (result) {
+                            "handled" -> { /* Already handled by ViewModel (e.g. user button) */ }
                             "capture_photo_continuous" -> {
                                 navController.navigate("cameraScanScreen?scan_mode=workflow_capture_continuous")
                             }
@@ -621,16 +623,18 @@ fun MainScreen(
                                 navController.navigate("cameraScanScreen?scan_mode=barcode_continuous")
                             }
                             else -> {
-                                // Existing intake sheet logic
-                                intakeLongPressAction = action
-                                intakeFormState.clear()
-                                try {
-                                    val inputStream = context.assets.open("workflows/device_intake.json")
-                                    val json = inputStream.bufferedReader().use { it.readText() }
-                                    intakeConfigJson = json
-                                    showIntakeSheet = true
-                                } catch (e: Exception) {
-                                    mainViewModel.addLog("Error loading intake config: ${e.message}")
+                                // Intake sheet for repair slots only
+                                if (action.startsWith("slot_")) {
+                                    intakeLongPressAction = action
+                                    intakeFormState.clear()
+                                    try {
+                                        val inputStream = context.assets.open("workflows/device_intake.json")
+                                        val json = inputStream.bufferedReader().use { it.readText() }
+                                        intakeConfigJson = json
+                                        showIntakeSheet = true
+                                    } catch (e: Exception) {
+                                        mainViewModel.addLog("Error loading intake config: ${e.message}")
+                                    }
                                 }
                             }
                         }
@@ -896,6 +900,9 @@ fun MainScreen(
         if (showDeleteConfirm) {
             AlertDialog(
                 onDismissRequest = { showDeleteConfirm = false },
+                containerColor = Color(0xFF1E1E1E),
+                titleContentColor = Color.White,
+                textContentColor = Color.White,
                 title = { Text("Delete Slot?") },
                 text = { Text("Unbind device $slotBarcode and clear all data?") },
                 confirmButton = {
@@ -906,12 +913,15 @@ fun MainScreen(
                     }) { Text("Delete", color = Color.Red) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+                    TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel", color = Color.White) }
                 }
             )
         } else {
             AlertDialog(
                 onDismissRequest = { showSlotMenu = false },
+                containerColor = Color(0xFF1E1E1E),
+                titleContentColor = Color.White,
+                textContentColor = Color.White,
                 title = { Text("Slot: ${slotBarcode.takeLast(10)}") },
                 text = {
                     Column {
@@ -970,7 +980,7 @@ fun MainScreen(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { showSlotMenu = false }) { Text("Close") }
+                    TextButton(onClick = { showSlotMenu = false }) { Text("Close", color = Color.White) }
                 }
             )
         }
@@ -980,28 +990,32 @@ fun MainScreen(
     val showUserDialog by mainViewModel.showUserDialog.observeAsState(false)
     val userDialogMode by mainViewModel.userDialogMode.observeAsState("view")
     val showPinDialog by mainViewModel.showPinDialog.observeAsState(false)
+    // Collect StateFlows as Compose state (reactive!)
+    val availableUsers by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.availableUsers.collectAsState()
+    val currentUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.collectAsState()
+    val viewingUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.collectAsState()
 
     // User Selection Dialog
     if (showUserDialog) {
-        val users = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.availableUsers.value
         AlertDialog(
             onDismissRequest = { mainViewModel.dismissUserDialog() },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
             title = {
                 Text(if (userDialogMode == "login") "Anmeldung" else "View User")
             },
             text = {
-                if (users.isEmpty()) {
+                if (availableUsers.isEmpty()) {
                     Text("No users available. Check server connection.", color = Color.Gray)
                 } else {
                     LazyColumn {
-                        items(users) { user ->
-                            val currentUser = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value
-                            val viewingUser = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.value
-                            val isCurrent = currentUser?.id == user.id
-                            val isViewing = viewingUser?.id == user.id
+                        items(availableUsers) { user ->
+                            val isCurrent = currentUserState?.id == user.id
+                            val isViewing = viewingUserState?.id == user.id
                             val bgColor = when {
-                                isCurrent && isViewing -> Color(0xFF1B5E20).copy(alpha = 0.3f) // Green hint
-                                isViewing -> Color(0xFFFDD835).copy(alpha = 0.2f) // Yellow hint
+                                isCurrent && isViewing -> Color(0xFF1B5E20).copy(alpha = 0.3f)
+                                isViewing -> Color(0xFFFDD835).copy(alpha = 0.2f)
                                 else -> Color.Transparent
                             }
                             TextButton(
@@ -1012,8 +1026,9 @@ fun MainScreen(
                             ) {
                                 Column(modifier = Modifier.fillMaxWidth()) {
                                     Text(
-                                        user.name,
+                                        user.getDialogName(),
                                         style = MaterialTheme.typography.bodyLarge,
+                                        color = Color.White,
                                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                                     )
                                     if (isCurrent) {
@@ -1031,7 +1046,7 @@ fun MainScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { mainViewModel.dismissUserDialog() }) { Text("Cancel") }
+                TextButton(onClick = { mainViewModel.dismissUserDialog() }) { Text("Cancel", color = Color.White) }
             }
         )
     }
@@ -1042,6 +1057,9 @@ fun MainScreen(
         var pinError by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { mainViewModel.dismissPinDialog() },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
             title = { Text("PIN eingeben") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1049,6 +1067,7 @@ fun MainScreen(
                     Text(
                         text = "●".repeat(pinValue.length) + "○".repeat((4 - pinValue.length).coerceAtLeast(0)),
                         style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
                     if (pinError) {
@@ -1078,7 +1097,7 @@ fun MainScreen(
                                     },
                                     modifier = Modifier.size(64.dp)
                                 ) {
-                                    Text(digit, style = MaterialTheme.typography.headlineSmall)
+                                    Text(digit, style = MaterialTheme.typography.headlineSmall, color = Color.White)
                                 }
                             }
                         }
@@ -1087,7 +1106,7 @@ fun MainScreen(
             },
             confirmButton = {},
             dismissButton = {
-                TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel") }
+                TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel", color = Color.White) }
             }
         )
     }

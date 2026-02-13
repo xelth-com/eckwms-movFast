@@ -24,6 +24,7 @@ fun HexagonalButton(
     modifier: Modifier = Modifier,
     label: String,
     colorHex: String,
+    textColorHex: String? = null,
     enabled: Boolean = true,
     side: HexagonSide = HexagonSide.FULL,
     onClick: () -> Unit,
@@ -70,9 +71,13 @@ fun HexagonalButton(
         contentAlignment = Alignment.Center
     ) {
         if (enabled) {
+            val textColor = if (textColorHex != null) {
+                try { Color(android.graphics.Color.parseColor(textColorHex)) } catch (e: Exception) { Color.White }
+            } else Color.White
+
             Text(
                 text = label,
-                color = Color.White,
+                color = textColor,
                 textAlign = TextAlign.Center,
                 fontSize = fontSize,
                 lineHeight = lineHeight,

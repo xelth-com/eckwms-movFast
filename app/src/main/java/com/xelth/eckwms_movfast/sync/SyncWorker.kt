@@ -75,6 +75,16 @@ class SyncWorker(
                         handleRetry(job)
                     }
                 }
+                "repair_event" -> {
+                    val result = processRepairEventJob(job.payload)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Repair event job ${job.id} completed successfully")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
                 else -> {
                     Log.w(TAG, "Unknown job type: ${job.type}")
                     database.syncQueueDao().deleteJob(job)
@@ -246,6 +256,32 @@ class SyncWorker(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image upload job: ${e.message}", e)
+            false
+        }
+    }
+
+    private suspend fun processRepairEventJob(payload: String): Boolean {
+        return try {
+            val json = JSONObject(payload)
+            val targetDeviceId = json.getString("targetDeviceId")
+            val eventType = json.getString("eventType")
+            val data = json.getString("data")
+
+            Log.d(TAG, "Sending repair event: $eventType -> $targetDeviceId")
+
+            val result = apiService.sendRepairEvent(targetDeviceId, eventType, data)
+            when (result) {
+                is ScanResult.Success -> {
+                    Log.d(TAG, "✅ Repair event delivered: $eventType")
+                    true
+                }
+                is ScanResult.Error -> {
+                    Log.e(TAG, "❌ Repair event failed: ${result.message}")
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing repair event job: ${e.message}", e)
             false
         }
     }

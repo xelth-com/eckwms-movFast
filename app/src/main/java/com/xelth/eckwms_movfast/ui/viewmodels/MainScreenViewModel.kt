@@ -474,22 +474,30 @@ class MainScreenViewModel : ViewModel() {
     private fun injectUserButton() {
         val label = UserManager.getButtonLabel()
         val color = UserManager.getButtonColor()
+        val textColor = UserManager.getButtonTextColor()
         val btnData = mapOf(
             "type" to "button",
             "label" to label,
             "color" to color,
+            "textColor" to textColor,
             "action" to "act_user_profile"
         )
+        // Clear first — placeContentAt rejects same-priority updates (200 > 200 = false)
+        gridManager.contentGrid.getSlot(2, 0)?.clearContent()
         gridManager.contentGrid.placeContentAt(2, 0, btnData, 200)
     }
 
     /** Fetch users from server and populate UserManager. */
     fun loadAvailableUsers() {
         viewModelScope.launch {
+            Log.d("UserManager", "loadAvailableUsers: callback=${onFetchUsers != null}")
             val users = onFetchUsers?.invoke()
+            Log.d("UserManager", "loadAvailableUsers: result=${users?.size ?: "null"}")
             if (users != null) {
                 UserManager.setAvailableUsers(users)
                 addLog("Loaded ${users.size} users")
+            } else {
+                addLog("Failed to load users")
             }
         }
     }

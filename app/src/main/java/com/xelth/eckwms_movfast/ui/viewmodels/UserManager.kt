@@ -7,23 +7,18 @@ import kotlinx.coroutines.flow.asStateFlow
 
 data class AppUser(
     val id: String,
-    val name: String,
+    val username: String,  // nickname (short, for button display)
+    val name: String,      // full name (for dialogs)
     val role: String
 ) {
-    /**
-     * Display label for the hexagonal half-button (max 3 lines).
-     * Short names → big letters. Long names → abbreviated.
-     */
+    /** Display label for the hex button — uses username (nickname), not full name. */
     fun getDisplayLabel(): String {
-        val display = name.ifEmpty { id.take(6) }
-        val parts = display.split(" ")
-        return when {
-            parts.size == 1 && parts[0].length <= 5 -> parts[0]
-            parts.size == 1 -> parts[0].take(6)
-            parts.size >= 2 -> "${parts[0].take(1)}.\n${parts[1].take(7)}"
-            else -> display.take(8)
-        }
+        val display = username.ifEmpty { name.ifEmpty { id.take(6) } }
+        return if (display.length <= 6) display else display.take(6)
     }
+
+    /** Display name for dialogs — full name if available, otherwise username. */
+    fun getDialogName(): String = if (name.isNotEmpty()) "$name ($username)" else username
 }
 
 /**
@@ -58,7 +53,7 @@ object UserManager {
         _currentUser.value = user
         _viewingUser.value = user
         // Persist to survive app restart
-        SettingsManager.saveCurrentUser(user.id, user.name)
+        SettingsManager.saveCurrentUser(user.id, user.username)
     }
 
     /** Short press: switch to view another user's data. */
@@ -76,11 +71,18 @@ object UserManager {
     fun isActingAsSelf(): Boolean =
         _currentUser.value != null && _currentUser.value?.id == _viewingUser.value?.id
 
-    /** Color hex for the user button. */
+    /** Background color for the user button (dark tones matching network indicator). */
     fun getButtonColor(): String = when {
-        _currentUser.value == null -> "#F44336"  // Red: not logged in
-        isActingAsSelf() -> "#4CAF50"            // Green: acting as self
-        else -> "#FFEB3B"                        // Yellow: viewing another user
+        _currentUser.value == null -> "#8B0000"  // Dark red: not logged in
+        isActingAsSelf() -> "#1B5E20"            // Dark green: acting as self
+        else -> "#5D4037"                        // Dark brown: viewing another user
+    }
+
+    /** Text color for the user button (matching network indicator style). */
+    fun getButtonTextColor(): String = when {
+        _currentUser.value == null -> "#FFFFFF"  // White on dark red
+        isActingAsSelf() -> "#4CAF50"            // Light green on dark green
+        else -> "#FFEB3B"                        // Yellow on dark brown
     }
 
     /** Label for the user button. */
@@ -92,9 +94,9 @@ object UserManager {
     /** Restore persisted user on app start. */
     fun restoreFromSettings() {
         val id = SettingsManager.getCurrentUserId()
-        val name = SettingsManager.getCurrentUserName()
-        if (id.isNotEmpty() && name.isNotEmpty()) {
-            val restored = AppUser(id, name, "")
+        val username = SettingsManager.getCurrentUserName() // stored as username
+        if (id.isNotEmpty() && username.isNotEmpty()) {
+            val restored = AppUser(id, username, "", "")
             _currentUser.value = restored
             _viewingUser.value = restored
         }

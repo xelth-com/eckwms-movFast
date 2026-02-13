@@ -182,14 +182,37 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         _scannedBarcode.postValue(barcode)
     }
 
-    /** Send a repair event (barcode scan linked to a device) to the server */
+    /** Send a repair event (barcode scan linked to a device) to the server.
+     *  Persist-first: always saved to SyncQueue so data survives network failures. */
     fun sendRepairEvent(targetDeviceId: String, eventType: String, data: String) {
         viewModelScope.launch {
             addLog("Repair event: $eventType -> $targetDeviceId ($data)")
+
+            // 1. Persist to SyncQueue (survives app restart / network failure)
+            repository.addRepairEventToSyncQueue(targetDeviceId, eventType, data)
+            addLog("💾 Queued repair event for reliable delivery")
+
+            // 2. Try immediate delivery
             val result = scanApiService.sendRepairEvent(targetDeviceId, eventType, data)
             when (result) {
-                is ScanResult.Success -> addLog("✅ Repair event sent: $eventType")
-                is ScanResult.Error -> addLog("❌ Repair event failed: ${result.message}")
+                is ScanResult.Success -> {
+                    addLog("✅ Repair event sent: $eventType")
+                    // Remove from queue — delivered successfully
+                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(getApplication())
+                    val jobs = db.syncQueueDao().getAllJobs()
+                    // Find the matching job we just queued (most recent repair_event for this target+type)
+                    val matchingJob = jobs.lastOrNull { job ->
+                        job.type == "repair_event" && try {
+                            val json = org.json.JSONObject(job.payload)
+                            json.getString("targetDeviceId") == targetDeviceId &&
+                            json.getString("eventType") == eventType
+                        } catch (_: Exception) { false }
+                    }
+                    matchingJob?.let { db.syncQueueDao().deleteJob(it) }
+                }
+                is ScanResult.Error -> {
+                    addLog("⚠️ Direct send failed: ${result.message} — SyncWorker will retry")
+                }
             }
         }
     }

@@ -117,6 +117,7 @@ fun SelectionAreaSheet(
                 }
 
                 val action = if (content is Map<*, *>) content["action"] as? String else null
+                val textColor = if (content is Map<*, *>) content["textColor"] as? String else null
 
                 HexagonalButton(
                     modifier = Modifier
@@ -124,6 +125,7 @@ fun SelectionAreaSheet(
                         .offset(x = offsetX, y = offsetY),
                     label = label,
                     colorHex = color,
+                    textColorHex = textColor,
                     enabled = enabled,
                     side = buttonSide,
                     onClick = {

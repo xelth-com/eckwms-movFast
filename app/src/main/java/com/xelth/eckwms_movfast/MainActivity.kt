@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.navigation.compose.NavHost
@@ -24,9 +25,12 @@ import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.screens.DatabaseViewerScreen
 import com.xelth.eckwms_movfast.ui.screens.QcScreen
 import com.xelth.eckwms_movfast.ui.screens.ExplorerScreen
+import com.xelth.eckwms_movfast.ui.screens.PickingListScreen
+import com.xelth.eckwms_movfast.ui.screens.PickingExecuteScreen
 import com.xelth.eckwms_movfast.ui.screens.ScannerSettingsScreen
 import com.xelth.eckwms_movfast.ui.screens.WarehouseMapScreen
 import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
+import com.xelth.eckwms_movfast.ui.viewmodels.PickingViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.utils.BitmapCache
 
@@ -35,6 +39,8 @@ class MainActivity : ComponentActivity() {
     private val viewModel: ScanRecoveryViewModel by viewModels {
         ScanRecoveryViewModel.Companion.Factory(application)
     }
+
+    private val pickingViewModel: PickingViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -292,14 +298,64 @@ class MainActivity : ComponentActivity() {
                     ) { backStackEntry ->
                         val warehouseId = backStackEntry.arguments?.getString("warehouseId") ?: "1"
                         val target = backStackEntry.arguments?.getString("target")
-                        
+
                         LaunchedEffect(warehouseId) {
                             viewModel.fetchAndShowMap(warehouseId, target)
                         }
-                        
+
                         WarehouseMapScreen(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    // --- Picking Routes ---
+                    composable("pickingList") {
+                        PickingListScreen(
+                            viewModel = pickingViewModel,
+                            onPickingSelected = { pickingId ->
+                                pickingViewModel.selectPicking(pickingId)
+                                navController.navigate("pickingExecute")
+                            },
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    composable("pickingExecute") {
+                        val routeStops by pickingViewModel.routeStops.collectAsState()
+                        val routePath by pickingViewModel.routePath.collectAsState()
+                        val currentIndex by pickingViewModel.currentLineIndex.collectAsState()
+
+                        // Wire hardware scanner to picking ViewModel
+                        val scanResult by (application as EckwmsApp).scannerManager.scanResult.observeAsState()
+                        LaunchedEffect(scanResult) {
+                            scanResult?.let { barcode ->
+                                pickingViewModel.processScan(barcode)
+                            }
+                        }
+
+                        PickingExecuteScreen(
+                            viewModel = pickingViewModel,
+                            onShowMap = {
+                                // Load warehouse map with route overlay
+                                viewModel.fetchAndShowMap("8", null) // WH id=8
+                                navController.navigate("pickingMap")
+                            },
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    composable("pickingMap") {
+                        val routeStops by pickingViewModel.routeStops.collectAsState()
+                        val routePath by pickingViewModel.routePath.collectAsState()
+                        val currentIndex by pickingViewModel.currentLineIndex.collectAsState()
+
+                        WarehouseMapScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            routeStops = routeStops,
+                            routePath = routePath,
+                            currentStopIndex = currentIndex
                         )
                     }
                 }

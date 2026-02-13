@@ -22,3 +22,15 @@ data class MapRack(
     @SerialName("location_id") val locationId: Long? = null,
     @SerialName("location_barcode") val locationBarcode: String? = null
 )
+
+// Route overlay data for picking navigation
+data class RouteStop(
+    val rackId: Long,
+    val sequence: Int,
+    val productName: String = "",
+    val qty: Double = 0.0,
+    val isCompleted: Boolean = false,
+    val isCurrent: Boolean = false
+)
+
+data class PathPoint(val x: Int, val y: Int)
