@@ -452,4 +452,46 @@ object SettingsManager {
 
     fun getCurrentUserId(): String = prefs.getString(KEY_CURRENT_USER_ID, "") ?: ""
     fun getCurrentUserName(): String = prefs.getString(KEY_CURRENT_USER_NAME, "") ?: ""
+
+    // --- Mesh Networking ---
+
+    private const val KEY_INSTANCE_ID = "instance_id"
+    private const val KEY_MESH_ID = "mesh_id"
+    private const val KEY_SYNC_NETWORK_KEY = "sync_network_key"
+    private const val KEY_RELAY_URL = "relay_url"
+    private const val DEFAULT_RELAY_URL = "https://9eck.com"
+
+    fun saveInstanceId(id: String) = prefs.edit().putString(KEY_INSTANCE_ID, id.trim()).commit()
+    fun getInstanceId(): String {
+        val saved = prefs.getString(KEY_INSTANCE_ID, null)
+        if (saved != null) return saved
+        // Auto-generate from device ID
+        val generated = "pda_${getDeviceId(appContext)}"
+        saveInstanceId(generated)
+        return generated
+    }
+
+    fun saveMeshId(meshId: String) = prefs.edit().putString(KEY_MESH_ID, meshId.trim()).commit()
+    fun getMeshId(): String? = prefs.getString(KEY_MESH_ID, null)
+
+    fun saveSyncNetworkKey(key: String) {
+        prefs.edit().putString(KEY_SYNC_NETWORK_KEY, key.trim()).commit()
+        // Recompute mesh_id when key changes
+        saveMeshId(computeMeshId(key.trim()))
+    }
+    fun getSyncNetworkKey(): String? = prefs.getString(KEY_SYNC_NETWORK_KEY, null)
+
+    fun saveRelayUrl(url: String) = prefs.edit().putString(KEY_RELAY_URL, url.trim()).commit()
+    fun getRelayUrl(): String = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL
+
+    /**
+     * Compute mesh_id from SYNC_NETWORK_KEY.
+     * mesh_id = sha256(key)[:8 bytes] = 16 hex characters.
+     * Must match the Rust server's compute_mesh_id().
+     */
+    fun computeMeshId(syncNetworkKey: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = md.digest(syncNetworkKey.toByteArray(Charsets.UTF_8))
+        return hash.take(8).joinToString("") { "%02x".format(it) }
+    }
 }

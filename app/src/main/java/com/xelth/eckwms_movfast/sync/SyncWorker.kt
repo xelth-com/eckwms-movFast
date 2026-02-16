@@ -10,6 +10,7 @@ import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -26,6 +27,13 @@ class SyncWorker(
 
     override suspend fun doWork(): Result {
         Log.d(TAG, "Sync worker started")
+
+        // 0. Send heartbeat to relay (non-fatal)
+        try {
+            sendHeartbeatToRelay()
+        } catch (e: Exception) {
+            Log.w(TAG, "Heartbeat failed (non-fatal): ${e.message}")
+        }
 
         // 1. PULL Metadata (Avatars, Attachments) — non-fatal
         try {
@@ -283,6 +291,18 @@ class SyncWorker(
         } catch (e: Exception) {
             Log.e(TAG, "Error processing repair event job: ${e.message}", e)
             false
+        }
+    }
+
+    private suspend fun sendHeartbeatToRelay() {
+        val meshId = SettingsManager.getMeshId() ?: return
+        val instanceId = SettingsManager.getInstanceId()
+        val relayUrl = SettingsManager.getRelayUrl()
+
+        val relay = RelayClient(relayUrl, instanceId, meshId)
+        val result = relay.sendHeartbeat().getOrNull()
+        if (result != null) {
+            Log.d(TAG, "Heartbeat OK: ${result.status}")
         }
     }
 
