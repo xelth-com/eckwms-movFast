@@ -222,7 +222,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         viewModelScope.launch {
             addLog("Uploading repair photo for $targetDeviceId")
 
-            val imageId = java.util.UUID.randomUUID().toString()
             val quality = SettingsManager.getImageQuality()
             val ts = System.currentTimeMillis()
 
@@ -236,7 +235,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             }
             val imagePath = tempFile.absolutePath
             val imageSize = tempFile.length()
-            addLog("📷 Original: ${bitmapCopy.width}x${bitmapCopy.height}, ${imageSize/1024}KB")
+
+            // Deterministic CAS UUID from file bytes (MurmurHash3 x64_128)
+            val imageId = withContext(Dispatchers.IO) {
+                com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(tempFile.readBytes())
+            }
+            addLog("📷 Original: ${bitmapCopy.width}x${bitmapCopy.height}, ${imageSize/1024}KB, CAS=$imageId")
 
             // 2. Generate Smart Crop AVATAR (224x224) for DB sync
             val croppedBitmap = smartCrop(bitmapCopy, 224)
@@ -1610,10 +1614,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null) {
         viewModelScope.launch {
-            // 0. Generate imageId ONCE for deduplication
-            val imageId = java.util.UUID.randomUUID().toString()
-            addLog("Generated imageId: $imageId")
-
             // 1. Save bitmap to temp file for reference
             val tempFile = java.io.File(getApplication<Application>().cacheDir, "upload_${System.currentTimeMillis()}.webp")
             tempFile.outputStream().use { out ->
@@ -1621,6 +1621,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             }
             val imagePath = tempFile.absolutePath
             val imageSize = tempFile.length()
+
+            // 0. Deterministic CAS UUID from file bytes (MurmurHash3 x64_128)
+            val imageId = withContext(Dispatchers.IO) {
+                com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(tempFile.readBytes())
+            }
+            addLog("CAS imageId: $imageId")
 
             // 2. Create history item BEFORE upload (with PENDING status)
             val historyId = repository.saveImageUpload(
