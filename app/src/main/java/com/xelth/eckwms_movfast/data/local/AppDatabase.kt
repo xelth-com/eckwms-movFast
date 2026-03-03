@@ -9,10 +9,12 @@ import com.xelth.eckwms_movfast.data.local.dao.FileResourceDao
 import com.xelth.eckwms_movfast.data.local.dao.PickingDao
 import com.xelth.eckwms_movfast.data.local.dao.ReferenceDao
 import com.xelth.eckwms_movfast.data.local.dao.ScanDao
+import com.xelth.eckwms_movfast.data.local.dao.LocalPhotoDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
 import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
+import com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocationEntity
 import com.xelth.eckwms_movfast.data.local.entity.PickLineEntity
 import com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity
@@ -30,9 +32,10 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         AttachmentEntity::class,
         InventoryRecordEntity::class,
         PickingOrderEntity::class,
-        PickLineEntity::class
+        PickLineEntity::class,
+        LocalPhotoEntity::class
     ],
-    version = 8,  // Added picking_orders and pick_lines tables
+    version = 9,  // Added local_photos table for UUID-based photo pipeline
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fileResourceDao(): FileResourceDao
     abstract fun attachmentDao(): AttachmentDao
     abstract fun pickingDao(): PickingDao
+    abstract fun localPhotoDao(): LocalPhotoDao
 
     companion object {
         @Volatile

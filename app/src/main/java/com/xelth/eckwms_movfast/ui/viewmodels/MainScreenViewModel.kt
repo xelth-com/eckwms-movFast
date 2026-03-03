@@ -77,7 +77,8 @@ data class RepairSlot(
     var isBound: Boolean = false,
     var isActive: Boolean = false,
     var photo: Bitmap? = null,                          // background photo (first photo sent)
-    val allPhotos: MutableList<Bitmap> = mutableListOf() // all photos for avatar picker (max 20)
+    val allPhotos: MutableList<Bitmap> = mutableListOf(), // all photos for avatar picker (max 20)
+    val photoUuids: MutableList<String> = mutableListOf() // UUIDs of all photos (for DB + disk)
 )
 
 sealed class RepairAction {
@@ -87,6 +88,15 @@ sealed class RepairAction {
 }
 
 // Tracks the last sent action so it can be undone
+/** State for a native half-slot button (EXIT, etc.) rendered by SelectionAreaSheet. */
+data class HalfButtonState(
+    val label: String,
+    val colorHex: String,
+    val action: String,
+    val textColorHex: String? = null,
+    val enabled: Boolean = true
+)
+
 data class LastRepairAction(
     val targetDeviceId: String,
     val eventType: String, // "photo", "part_scan"
@@ -128,6 +138,10 @@ class MainScreenViewModel : ViewModel() {
     private val _renderCells = MutableLiveData<List<RenderCell>>(emptyList())
     val renderCells: LiveData<List<RenderCell>> = _renderCells
 
+    // Native half-slot: EXIT button (HALF_RIGHT row=1)
+    private val _exitButton = MutableLiveData<HalfButtonState?>(null)
+    val exitButton: LiveData<HalfButtonState?> = _exitButton
+
     private val _consoleLogs = MutableLiveData<List<String>>(emptyList())
     val consoleLogs: LiveData<List<String>> = _consoleLogs
 
@@ -157,6 +171,11 @@ class MainScreenViewModel : ViewModel() {
     var onSaveRepairPhoto: ((Int, Bitmap) -> Unit)? = null
     var onLoadRepairPhoto: ((Int) -> Bitmap?)? = null
     var onDeleteRepairPhoto: ((Int) -> Unit)? = null
+    // UUID-based photo persistence (backed by LocalPhotoDao + SettingsManager)
+    var onSavePhoto: ((uuid: String, slotIndex: Int, bitmap: Bitmap) -> Unit)? = null
+    var onLoadSlotPhotoUuids: (suspend (slotIndex: Int) -> List<String>)? = null
+    var onDeleteSlotPhotos: (suspend (slotIndex: Int) -> Unit)? = null
+    var onBindSlotPhotos: (suspend (slotIndex: Int, receiverId: String) -> Unit)? = null
     // Callback for fetching shipments (set by UI layer, backed by ScanApiService)
     var onFetchShipments: (suspend (limit: Int) -> ScanResult)? = null
     // Fat Client: offline lookup callbacks (set by UI layer, backed by WarehouseRepository)
@@ -456,35 +475,15 @@ class MainScreenViewModel : ViewModel() {
 
         gridManager.clearAndReset()
         gridManager.placeItems(contentItems, priority = PRIORITIES.SCAN_BUTTON)
+        _exitButton.postValue(null)
         updateRenderCells()
     }
 
     private fun updateRenderCells() {
-        injectUserButton() // Always inject user button at (2,0) in every mode
         viewModelScope.launch {
             val cells = gridManager.getRenderStructure()
             _renderCells.postValue(cells)
         }
-    }
-
-    /**
-     * Inject the user button at grid position (2, 0) — HALF_LEFT slot under network indicator.
-     * Called at the end of every render*Grid() method so it persists across all modes.
-     */
-    private fun injectUserButton() {
-        val label = UserManager.getButtonLabel()
-        val color = UserManager.getButtonColor()
-        val textColor = UserManager.getButtonTextColor()
-        val btnData = mapOf(
-            "type" to "button",
-            "label" to label,
-            "color" to color,
-            "textColor" to textColor,
-            "action" to "act_user_profile"
-        )
-        // Clear first — placeContentAt rejects same-priority updates (200 > 200 = false)
-        gridManager.contentGrid.getSlot(2, 0)?.clearContent()
-        gridManager.contentGrid.placeContentAt(2, 0, btnData, 200)
     }
 
     /** Fetch users from server and populate UserManager. */
@@ -514,8 +513,6 @@ class MainScreenViewModel : ViewModel() {
             UserManager.switchView(user)
             addLog("👁 Viewing as ${user.name}")
             _showUserDialog.value = false
-            injectUserButton()
-            updateRenderCells()
         }
     }
 
@@ -529,8 +526,6 @@ class MainScreenViewModel : ViewModel() {
                 addLog("✅ Logged in as ${user.name}")
                 _showPinDialog.postValue(false)
                 pendingLoginUser = null
-                injectUserButton()
-                updateRenderCells()
             } else {
                 addLog("❌ Wrong PIN for ${user.name}")
                 // Keep PIN dialog open for retry
@@ -770,12 +765,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
 
-        // 4. X button (half-height, top-right corner like repair mode)
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_smart_cancel"),
-            200
-        )
+        // 4. X button — native half-slot
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_smart_cancel"))
 
         updateRenderCells()
     }
@@ -1019,6 +1010,13 @@ class MainScreenViewModel : ViewModel() {
             slotWaitingForBind = null
             persistSlots()
             activateSlot(index)
+
+            // Bind orphaned photos in DB to this device barcode
+            viewModelScope.launch { onBindSlotPhotos?.invoke(index, barcode) }
+
+            // Trigger device_bound event to auto-create repair order on server
+            onRepairEventSend?.invoke(barcode, "device_bound", "{\"slot\": $index}")
+
             _repairStatus.value = "Bound: $barcode — Take ID photo"
             addLog("Slot #$index bound to $barcode")
             // Auto-trigger camera for identification photo
@@ -1056,10 +1054,16 @@ class MainScreenViewModel : ViewModel() {
             val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
             // Track all photos for avatar picker (limit 20)
             if (active.allPhotos.size < 20) active.allPhotos.add(copy)
+
+            // Save to UUID-based immutable storage
+            val uuid = java.util.UUID.randomUUID().toString()
+            active.photoUuids.add(uuid)
+            onSavePhoto?.invoke(uuid, active.index, copy)
+
             // First photo becomes the background, subsequent don't change it
             if (active.photo == null) {
                 active.photo = copy
-                onSaveRepairPhoto?.invoke(active.index, copy)
+                onSaveRepairPhoto?.invoke(active.index, copy) // legacy slot_N.webp for quick restore
                 _activeSlotPhoto.value = copy
                 Log.d("RepairMode", "First photo → background for slot ${active.index}")
             } else {
@@ -1155,7 +1159,7 @@ class MainScreenViewModel : ViewModel() {
 
     private fun clearSlot(index: Int) {
         if (index in slots.indices) {
-            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}, allPhotos=${slots[index].allPhotos.size}")
+            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}, allPhotos=${slots[index].allPhotos.size}, uuids=${slots[index].photoUuids.size}")
             slots[index].isBound = false
             slots[index].isActive = false
             slots[index].barcode = null
@@ -1163,7 +1167,10 @@ class MainScreenViewModel : ViewModel() {
             slots[index].photo = null
             slots[index].allPhotos.forEach { it.recycle() }
             slots[index].allPhotos.clear()
+            slots[index].photoUuids.clear()
             onDeleteRepairPhoto?.invoke(index)
+            // Delete UUID-based photos from DB + disk
+            viewModelScope.launch { onDeleteSlotPhotos?.invoke(index) }
         }
         persistSlots()
     }
@@ -1258,12 +1265,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT button — HALF_RIGHT at row=1 (first odd row, top-right area)
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        // EXIT button — native half-slot
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -2166,14 +2169,12 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT at HALF_RIGHT row=1 last col
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "\u2715",
-                "color" to if (isContentsStep) "#263238" else "#F44336",
-                "action" to if (isContentsStep) "act_noop" else "act_exit"),
-            200
-        )
+        // EXIT — native half-slot (dimmed during contents step)
+        _exitButton.postValue(HalfButtonState(
+            label = "\u2715",
+            colorHex = if (isContentsStep) "#263238" else "#F44336",
+            action = if (isContentsStep) "act_noop" else "act_exit"
+        ))
 
         updateRenderCells()
     }
@@ -2510,12 +2511,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT button at HALF_RIGHT
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        // EXIT button — native half-slot
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -3340,11 +3337,7 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -3475,11 +3468,7 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
 
         updateRenderCells()
     }

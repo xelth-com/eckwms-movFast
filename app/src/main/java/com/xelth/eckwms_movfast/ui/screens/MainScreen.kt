@@ -98,6 +98,13 @@ fun MainScreen(
     // Inventory mode state
     val isInventoryMode by mainViewModel.isInventoryMode.observeAsState(false)
 
+    // Multi-user state (collected early for SelectionAreaSheet)
+    val currentUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.collectAsState()
+    val viewingUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.collectAsState()
+
+    // Native half-slot buttons
+    val exitButtonState by mainViewModel.exitButton.observeAsState(null)
+
     // Read shared settings from ScanRecoveryViewModel
     val sharedGridRowCount by viewModel.gridRowCount.observeAsState(7)
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
@@ -107,6 +114,7 @@ fun MainScreen(
 
     // State for the Intake Bottom Sheet
     var showIntakeSheet by remember { mutableStateOf(false) }
+    var showNetworkPanel by remember { mutableStateOf(false) }
     var intakeConfigJson by remember { mutableStateOf("{}") }
     var intakeLongPressAction by remember { mutableStateOf("") }
     val intakeFormState = remember { mutableStateMapOf<String, Any>() }
@@ -155,6 +163,25 @@ fun MainScreen(
         }
         mainViewModel.onDeleteRepairPhoto = { index ->
             com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
+        }
+        // UUID-based photo persistence (immutable CAS)
+        val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+        val localPhotoDao = db.localPhotoDao()
+        mainViewModel.onSavePhoto = { uuid, slotIndex, bitmap ->
+            val origPath = com.xelth.eckwms_movfast.utils.SettingsManager.savePhotoOriginal(uuid, bitmap)
+            // DB insert is fire-and-forget via ScanRecoveryViewModel's scope
+            viewModel.insertLocalPhoto(uuid, slotIndex, origPath)
+        }
+        mainViewModel.onLoadSlotPhotoUuids = { slotIndex ->
+            localPhotoDao.getBySlotIndex(slotIndex).map { it.uuid }
+        }
+        mainViewModel.onDeleteSlotPhotos = { slotIndex ->
+            val photos = localPhotoDao.getBySlotIndex(slotIndex)
+            photos.forEach { com.xelth.eckwms_movfast.utils.SettingsManager.deletePhoto(it.uuid) }
+            localPhotoDao.deleteBySlotIndex(slotIndex)
+        }
+        mainViewModel.onBindSlotPhotos = { slotIndex, receiverId ->
+            localPhotoDao.bindSlotPhotos(slotIndex, receiverId)
         }
         // Device Check persistence
         mainViewModel.onSaveDeviceCheckSlots = { slots ->
@@ -592,6 +619,9 @@ fun MainScreen(
                     buttonGap = gridConfig.buttonGap,
                     networkState = networkHealthState,
                     regStatus = deviceRegistrationStatus,
+                    currentUser = currentUserState,
+                    viewingUser = viewingUserState,
+                    exitButton = exitButtonState,
                     onButtonClick = { action ->
                         val result = mainViewModel.onButtonClick(action)
                         android.util.Log.e("NAV_CAMERA", ">>> onButtonClick action=$action result=$result")
@@ -640,11 +670,28 @@ fun MainScreen(
                         }
                     },
                     onNetworkIndicatorClick = {
+                        showNetworkPanel = true
+                    },
+                    onNetworkIndicatorLongClick = {
                         navController.navigate("pairingScreen")
                     }
                 )
             }
         }
+    }
+
+    // Network Status Bottom Sheet
+    if (showNetworkPanel) {
+        NetworkPanelSheet(
+            networkHealthState = networkHealthState,
+            deviceRegistrationStatus = deviceRegistrationStatus,
+            onDismiss = { showNetworkPanel = false },
+            onRefresh = { viewModel.triggerManualHealthCheck() },
+            onRePair = {
+                showNetworkPanel = false
+                navController.navigate("pairingScreen")
+            }
+        )
     }
 
     // Intake ModalBottomSheet
@@ -990,10 +1037,7 @@ fun MainScreen(
     val showUserDialog by mainViewModel.showUserDialog.observeAsState(false)
     val userDialogMode by mainViewModel.userDialogMode.observeAsState("view")
     val showPinDialog by mainViewModel.showPinDialog.observeAsState(false)
-    // Collect StateFlows as Compose state (reactive!)
     val availableUsers by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.availableUsers.collectAsState()
-    val currentUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.collectAsState()
-    val viewingUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.collectAsState()
 
     // User Selection Dialog
     if (showUserDialog) {

@@ -1,6 +1,7 @@
 package com.xelth.eckwms_movfast.sync
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import androidx.work.CoroutineWorker
@@ -10,6 +11,7 @@ import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
+import com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity
 import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,6 +51,13 @@ class SyncWorker(
             Log.d(TAG, "Reference data sync: ${if (refSuccess) "OK" else "skipped/failed"}")
         } catch (e: Exception) {
             Log.w(TAG, "Reference sync error (non-fatal): ${e.message}")
+        }
+
+        // 2b. Upload pending local photos (UUID-based pipeline)
+        try {
+            uploadPendingLocalPhotos()
+        } catch (e: Exception) {
+            Log.w(TAG, "Local photo upload failed (non-fatal): ${e.message}")
         }
 
         // 3. Process Outgoing Queue
@@ -304,6 +313,74 @@ class SyncWorker(
         if (result != null) {
             Log.d(TAG, "Heartbeat OK: ${result.status}")
         }
+    }
+
+    private suspend fun uploadPendingLocalPhotos() = withContext(Dispatchers.IO) {
+        val localPhotoDao = database.localPhotoDao()
+        val pending = localPhotoDao.getPendingUploads()
+        if (pending.isEmpty()) return@withContext
+
+        Log.d(TAG, "📸 ${pending.size} local photos pending upload")
+        val deviceId = SettingsManager.getDeviceId(applicationContext)
+
+        for (photo in pending) {
+            val file = java.io.File(photo.originalPath)
+            if (!file.exists()) {
+                Log.w(TAG, "Photo file missing, marking ERROR: ${photo.uuid}")
+                localPhotoDao.updateSyncStatus(photo.uuid, LocalPhotoEntity.STATUS_ERROR)
+                continue
+            }
+
+            // Generate avatar if not yet created
+            var avatarPath = photo.avatarPath
+            if (avatarPath == null) {
+                avatarPath = SettingsManager.getPhotoAvatarPath(photo.uuid)
+                if (avatarPath == null) {
+                    // Generate smart crop avatar from original
+                    try {
+                        val bmp = android.graphics.BitmapFactory.decodeFile(photo.originalPath)
+                        if (bmp != null) {
+                            val cropped = smartCropForSync(bmp, 224)
+                            avatarPath = SettingsManager.savePhotoAvatar(photo.uuid, cropped)
+                            if (!cropped.isRecycled) cropped.recycle()
+                            if (!bmp.isRecycled) bmp.recycle()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Avatar generation failed for ${photo.uuid}: ${e.message}")
+                    }
+                }
+            }
+
+            Log.d(TAG, "🚀 Uploading local photo ${photo.uuid} → ${photo.receiverId}")
+            val result = apiService.uploadImageFile(
+                photo.originalPath, deviceId, "repair_photo",
+                photo.receiverId, null, photo.uuid, avatarPath
+            )
+
+            when (result) {
+                is ScanResult.Success -> {
+                    localPhotoDao.updateSyncStatus(photo.uuid, LocalPhotoEntity.STATUS_SYNCED)
+                    Log.d(TAG, "✅ Local photo synced: ${photo.uuid}")
+                }
+                is ScanResult.Error -> {
+                    Log.e(TAG, "❌ Local photo upload failed: ${result.message}")
+                    // Don't mark as ERROR — will retry next cycle
+                }
+            }
+        }
+    }
+
+    /** Center-focused smart crop for avatar generation (sync worker context) */
+    private fun smartCropForSync(source: Bitmap, targetSize: Int): Bitmap {
+        val size = minOf(source.width, source.height)
+        val x = (source.width - size) / 2
+        val y = (source.height - size) / 2
+        val cropped = Bitmap.createBitmap(source, x, y, size, size)
+        return if (size != targetSize) {
+            Bitmap.createScaledBitmap(cropped, targetSize, targetSize, true).also {
+                if (cropped != it) cropped.recycle()
+            }
+        } else cropped
     }
 
     private suspend fun handleRetry(job: com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity): Result {

@@ -13,7 +13,7 @@ object SettingsManager {
     private const val KEY_RESOLUTION = "image_resolution"
     private const val KEY_QUALITY = "image_quality"
     private const val KEY_SERVER_URL = "server_url"
-    private const val DEFAULT_SERVER_URL = "https://pda.repair/E"
+    private const val DEFAULT_SERVER_URL = ""  // Empty until paired via relay
     private lateinit var prefs: SharedPreferences
 
     private lateinit var appContext: Context
@@ -30,24 +30,25 @@ object SettingsManager {
      * causing API calls to hit the frontend instead of the Go backend.
      */
     private fun migrateServerUrls() {
-        val migrated = prefs.getBoolean("url_e_prefix_migrated", false)
+        val migrated = prefs.getBoolean("url_e_prefix_migrated_v2", false)
         if (migrated) return
 
+        // Remove hardcoded pda.repair defaults from legacy installs
         val serverUrl = prefs.getString(KEY_SERVER_URL, null)
-        if (serverUrl != null && serverUrl == "https://pda.repair") {
-            prefs.edit().putString(KEY_SERVER_URL, "https://pda.repair/E").apply()
+        if (serverUrl != null && serverUrl.contains("pda.repair")) {
+            prefs.edit().remove(KEY_SERVER_URL).apply()
         }
         val globalUrl = prefs.getString(KEY_GLOBAL_SERVER_URL, null)
-        if (globalUrl != null && globalUrl == "https://pda.repair") {
-            prefs.edit().putString(KEY_GLOBAL_SERVER_URL, "https://pda.repair/E").apply()
+        if (globalUrl != null && globalUrl.contains("pda.repair")) {
+            prefs.edit().remove(KEY_GLOBAL_SERVER_URL).apply()
         }
-        // Also clean connection history entries without /E
+        // Clean connection history of hardcoded URLs
         val history = prefs.getString("connection_history", "") ?: ""
-        if (history.contains("https://pda.repair") && !history.contains("https://pda.repair/E")) {
-            val fixed = history.replace("https://pda.repair", "https://pda.repair/E")
-            prefs.edit().putString("connection_history", fixed).apply()
+        if (history.contains("pda.repair")) {
+            val cleaned = history.split(",").filter { !it.contains("pda.repair") }.joinToString(",")
+            prefs.edit().putString("connection_history", cleaned).apply()
         }
-        prefs.edit().putBoolean("url_e_prefix_migrated", true).apply()
+        prefs.edit().putBoolean("url_e_prefix_migrated_v2", true).apply()
     }
 
     fun saveImageResolution(resolution: Int) = prefs.edit().putInt(KEY_RESOLUTION, resolution).apply()
@@ -73,7 +74,7 @@ object SettingsManager {
     }
 
     private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
-    private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair/E"
+    private const val DEFAULT_GLOBAL_SERVER_URL = ""  // Empty until paired via relay
 
     // Critical: Use commit() for immediate disk persistence
     fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).commit()
@@ -305,6 +306,66 @@ object SettingsManager {
     fun deleteRepairPhoto(slotIndex: Int) {
         File(repairPhotoDir(), "slot_$slotIndex.webp").delete()
         File(repairPhotoDir(), "slot_$slotIndex.jpg").delete() // cleanup old format
+    }
+
+    // --- UUID-Based Photo Storage (CAS-like, immutable) ---
+
+    private fun photosDir(): File {
+        val dir = File(appContext.filesDir, "photos")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /** Save original bitmap to photos/orig_{uuid}.webp, return file path */
+    fun savePhotoOriginal(uuid: String, bitmap: Bitmap): String {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+        }
+        Log.d("SettingsManager", "Saved photo orig_$uuid (${file.length() / 1024}KB)")
+        return file.absolutePath
+    }
+
+    /** Save smart-crop avatar to photos/avatar_{uuid}.webp, return file path */
+    fun savePhotoAvatar(uuid: String, bitmap: Bitmap): String {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+        }
+        Log.d("SettingsManager", "Saved avatar avatar_$uuid (${file.length() / 1024}KB)")
+        return file.absolutePath
+    }
+
+    /** Load original photo by UUID */
+    fun loadPhotoOriginal(uuid: String): Bitmap? {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        if (!file.exists()) return null
+        return try { BitmapFactory.decodeFile(file.absolutePath) } catch (e: Exception) { null }
+    }
+
+    /** Load avatar by UUID */
+    fun loadPhotoAvatar(uuid: String): Bitmap? {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        if (!file.exists()) return null
+        return try { BitmapFactory.decodeFile(file.absolutePath) } catch (e: Exception) { null }
+    }
+
+    /** Delete both original and avatar for a UUID */
+    fun deletePhoto(uuid: String) {
+        File(photosDir(), "orig_$uuid.webp").delete()
+        File(photosDir(), "avatar_$uuid.webp").delete()
+    }
+
+    /** Get original file path (for upload) without loading bitmap */
+    fun getPhotoOriginalPath(uuid: String): String? {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        return if (file.exists()) file.absolutePath else null
+    }
+
+    /** Get avatar file path (for upload) without loading bitmap */
+    fun getPhotoAvatarPath(uuid: String): String? {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        return if (file.exists()) file.absolutePath else null
     }
 
     // --- Item Photos (global, by internal ID) ---

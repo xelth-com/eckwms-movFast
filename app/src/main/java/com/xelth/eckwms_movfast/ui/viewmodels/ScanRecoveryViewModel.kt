@@ -287,6 +287,28 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    /** Insert a local photo record into Room DB (fire-and-forget) */
+    fun insertLocalPhoto(uuid: String, slotIndex: Int, originalPath: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(getApplication())
+                db.localPhotoDao().insert(
+                    com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity(
+                        uuid = uuid,
+                        receiverId = null,
+                        originalPath = originalPath,
+                        avatarPath = null,
+                        syncStatus = com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity.STATUS_PENDING,
+                        slotIndex = slotIndex
+                    )
+                )
+                Log.d(TAG, "LocalPhoto inserted: $uuid (slot=$slotIndex)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to insert local photo: ${e.message}")
+            }
+        }
+    }
+
     // --- MAP STATE ---
     private val _warehouseMap = MutableLiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?>(null)
     val warehouseMap: LiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?> = _warehouseMap
@@ -1891,7 +1913,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         _pairingStatus.postValue("Testing ${candidates.size} endpoints...")
 
-        val sortedCandidates = candidates.sortedBy { url ->
+        // Filter out link-local 169.254.x.x addresses when real network IPs are available
+        val hasRealIp = candidates.any { url ->
+            url.contains("192.168.") || url.contains("10.") || url.contains("172.")
+        }
+        val filteredCandidates = if (hasRealIp) {
+            val filtered = candidates.filter { !it.contains("169.254.") }
+            if (filtered.isNotEmpty()) {
+                addPairingLog("🔇 Filtered ${candidates.size - filtered.size} link-local (169.254.x.x) addresses")
+                filtered
+            } else candidates
+        } else candidates
+
+        val sortedCandidates = filteredCandidates.sortedBy { url ->
             if (url.contains("192.168.") || url.contains("10.") || url.contains("172.")) 0 else 1
         }
 
