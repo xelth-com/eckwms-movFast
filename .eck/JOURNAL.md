@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-03-07 — feat(android): Sunlight Mode — adaptive ergonomics for outdoor ops
+
+### Summary
+Automatic "Blind Mode" for warehouse workers in bright sunlight. Uses ambient light sensor to shift UX from visual to audio-haptic feedback.
+
+### New Files
+- `utils/SunlightModeManager.kt` — Singleton managing light sensor, haptic patterns, audio boost, and sunlight state flow
+
+### Changed Files
+- `ui/theme/Theme.kt` — Added `HighContrastColorScheme` (black/yellow) and `highContrast` parameter
+- `EckwmsApp.kt` — Initialize `SunlightModeManager` on app start
+- `MainActivity.kt` — Wire sensor lifecycle (onResume/onPause), pass sunlight state to theme
+- `ui/screens/MainScreen.kt` — Wire haptic callbacks, play success haptic on every scan
+- `ui/viewmodels/MainScreenViewModel.kt` — Added `onHapticSuccess/Error/Attention` callbacks, wired error haptic on PIN failure and upload errors
+
+### Technical Details
+- Light sensor: 10,000 lux threshold (ON), 3,000 lux (OFF) with 5-sample debounce to avoid flicker
+- Haptics: `VibrationEffect.createWaveform()` with distinct patterns (success=2 ticks, error=1 buzz, attention=3 pulses)
+- Audio: `ToneGenerator` chimes only play in sunlight mode; media volume auto-maxed and restored
+- Theme: `HighContrastColorScheme` uses black background with bright yellow text/accents for max outdoor readability
+
+---
+
+## 2026-03-04 — feat(architecture): Immutable CAS Photos & V2 SmartTag Decryptor
+- **Photo Pipeline**: Replaced legacy `slot_N.webp` overwriting with immutable UUID-based storage (`LocalPhotoEntity`).
+- **Offline Sync**: `SyncWorker` now lazily uploads pending photos and generates Smart Crop (224x224) avatars in the background.
+- **Murmur3 CAS**: Implemented pure Kotlin `ContentHash` (MurmurHash3 x64_128) to generate deterministic UUIDs from WebP bytes before upload. Matches Rust server exactly.
+- **Crypto Engine**: Completely rewrote `EckSecurityManager.tryDecryptBarcode` to support V2 Binary SmartTags. It now auto-detects dynamic IV lengths, handles arbitrary URL prefixes (looks for last `/`), and returns mapped UUIDs (`p-uuid`, `i-uuid`, `company-uuid`).
+- **ViewModels**: `MainScreenViewModel` and `PickingViewModel` updated to support 38+ char UUIDs alongside legacy 19-char codes.
+
+## 2026-03-02 — feat(repair): device_bound event + network fixes
+
+### Changes
+- **MainScreenViewModel.kt**: Fire `device_bound` event via `onRepairEventSend` when slot binds to barcode — triggers auto-creation of repair order on server
+- **SettingsManager.kt**: Removed hardcoded `pda.repair/E` defaults — server URLs now empty until paired via relay. Migration v2 clears legacy pda.repair URLs
+- **ScanRecoveryViewModel.kt**: Filter 169.254.x.x link-local addresses from pairing candidates when real network IPs (192.168/10/172) are available
+- **NetworkUtils.kt**: Added `isLinkLocalAddress` check to skip 169.254.x.x in device IP detection
+- **NetworkPanelSheet.kt**: Shows "NOT PAIRED" (grey) status when server URLs are empty instead of false "ONLINE"
+
+---
+
+## 2026-02-25 - docs(roadmap): Define CRM Integration Strategy
+### Summary
+Define CRM integration strategy in Roadmap — Phase 6.
+### Changes
+- Added integration targets: Twenty, Odoo, Salesforce, HubSpot
+- Defined Rust backend role as a high-speed middleware for CRM synchronization
+- Set goals for a unified mapping layer between Smart Codes and CRM UUIDs
+
+---
+
 ## 2026-02-16 - Phase 2: Mesh Networking (RelayClient + Heartbeat)
 ### Summary
 Added relay client and mesh_id support for P2P mesh networking. PDA can now register with the blind relay and participate in mesh node discovery.

@@ -330,6 +330,10 @@ class MainScreenViewModel : ViewModel() {
 
     // Vibration callback (set by UI layer which has Context)
     var onLongVibrate: (() -> Unit)? = null
+    // Haptic feedback callbacks (wired to SunlightModeManager by UI layer)
+    var onHapticSuccess: (() -> Unit)? = null
+    var onHapticError: (() -> Unit)? = null
+    var onHapticAttention: (() -> Unit)? = null
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
     // Expected inventory from server (populated when location is scanned)
@@ -528,6 +532,7 @@ class MainScreenViewModel : ViewModel() {
                 pendingLoginUser = null
             } else {
                 addLog("❌ Wrong PIN for ${user.name}")
+                onHapticError?.invoke()
                 // Keep PIN dialog open for retry
             }
         }
@@ -572,9 +577,12 @@ class MainScreenViewModel : ViewModel() {
                             if (loc != null) {
                                 fetchAndDisplayLocationContents(barcode, loc.id)
                             } else if (barcode.startsWith("p") && barcode.length == 19) {
-                                // Fallback: extract Odoo ID from p-code even without local DB match
+                                // Fallback: extract Odoo ID from legacy p-code
                                 val id = barcode.substring(1).trimStart('0').toLongOrNull()
                                 if (id != null) fetchAndDisplayLocationContents(barcode, id)
+                            } else if (barcode.startsWith("p-") && barcode.length == 38) {
+                                // SmartTag UUID location — no numeric Odoo ID available
+                                addLog("📍 UUID location: ${barcode.substring(2)}")
                             }
                         }
                         // Box (b...)
@@ -2019,6 +2027,7 @@ class MainScreenViewModel : ViewModel() {
             addLog("Sent workflow_complete event")
         } catch (e: Exception) {
             addLog("Send error: ${e.message}")
+            onHapticError?.invoke()
         }
 
         var photoCount = 0
@@ -2030,6 +2039,7 @@ class MainScreenViewModel : ViewModel() {
                     addLog("Uploaded photo: $key")
                 } catch (e: Exception) {
                     addLog("Photo upload error: ${e.message}")
+                    onHapticError?.invoke()
                 }
             }
         }
@@ -2708,10 +2718,12 @@ class MainScreenViewModel : ViewModel() {
         // 2. Check for Spoofing Attempts on Internal ID format
         // Raw barcodes (NOT Link Barcodes) that look like internal IDs are rejected
         // Skip if code was already decrypted from encrypted QR (proves authenticity)
+        val isLegacySmartCode = cleanCode.length == 19 &&
+                               cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
+        val isSmartTagCode = cleanCode.matches(Regex("^[a-z]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE))
         val isPotentialSpoof = !wasDecryptedUpstream &&
                                !isLinkBarcode &&
-                               cleanCode.length == 19 &&
-                               cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
+                               (isLegacySmartCode || isSmartTagCode)
 
         if (isPotentialSpoof) {
             addLog("⛔ SECURITY: Spoofed internal ID rejected")

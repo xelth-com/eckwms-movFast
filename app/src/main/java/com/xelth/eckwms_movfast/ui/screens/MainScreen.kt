@@ -234,28 +234,11 @@ fun MainScreen(
         mainViewModel.onSaveInventoryRecords = { loc, records -> repo.saveInventoryRecords(loc, records) }
         mainViewModel.onLoadInventoryRecords = { loc -> repo.getInventoryRecords(loc) }
 
-        // Long vibration for unexpected new item needing photo
-        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
-            vm?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-        }
-        mainViewModel.onLongVibrate = {
-            try {
-                vibrator?.let { v ->
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        v.vibrate(longArrayOf(0, 200, 100, 200), -1)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("Vibrate", "Vibration failed: ${e.message}")
-            }
-        }
+        // Wire haptic feedback through SunlightModeManager (replaces raw vibrator)
+        mainViewModel.onLongVibrate = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playAttention() }
+        mainViewModel.onHapticSuccess = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playSuccess() }
+        mainViewModel.onHapticError = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playError() }
+        mainViewModel.onHapticAttention = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playAttention() }
     }
 
     // Load receiving workflow JSON
@@ -278,6 +261,9 @@ fun MainScreen(
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
+            // Haptic: confirm scan received (two quick ticks)
+            com.xelth.eckwms_movfast.utils.SunlightModeManager.playSuccess()
+
             // Cross-mode auto-enter: device check takes priority over ALL modes
             if (mainViewModel.checkDeviceCheckAutoEnter(scannedBarcode!!)) {
                 viewModel.consumeScannedBarcode()

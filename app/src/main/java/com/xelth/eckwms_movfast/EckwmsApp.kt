@@ -11,6 +11,7 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.sync.SyncManager
 import com.xelth.eckwms_movfast.utils.CryptoManager
 import com.xelth.eckwms_movfast.utils.SettingsManager
+import com.xelth.eckwms_movfast.utils.SunlightModeManager
 
 class EckwmsApp : Application() {
     private val TAG = "EckwmsApp"
@@ -49,6 +50,10 @@ class EckwmsApp : Application() {
         // Schedule periodic sync to keep data in sync with server
         SyncManager.schedulePeriodicSync(this)
         Log.d(TAG, "Periodic sync scheduled")
+
+        // Initialize Sunlight Mode (ambient light → audio-haptic feedback)
+        SunlightModeManager.init(this)
+        Log.d(TAG, "SunlightModeManager initialized")
 
         // Запуск автоматического тестирования API сканера при запуске
         // Log.d(TAG, "Запуск автоматического тестирования API сканера...")
