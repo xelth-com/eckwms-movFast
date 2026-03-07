@@ -43,6 +43,13 @@ class MainActivity : ComponentActivity() {
 
     private val pickingViewModel: PickingViewModel by viewModels()
 
+    // Graceful RECORD_AUDIO permission request (for AdaptiveAudioManager)
+    private val micPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        android.util.Log.d("MainActivity", "RECORD_AUDIO permission: $granted")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -389,6 +396,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.startStatusMonitoring()
         SunlightModeManager.startListening()
+        // Request mic permission for adaptive audio (graceful — silently skips if denied)
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     /**

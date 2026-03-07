@@ -11,6 +11,7 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
 import com.xelth.eckwms_movfast.sync.SyncManager
 import com.xelth.eckwms_movfast.utils.CryptoManager
 import com.xelth.eckwms_movfast.utils.SettingsManager
+import com.xelth.eckwms_movfast.utils.AdaptiveAudioManager
 import com.xelth.eckwms_movfast.utils.SunlightModeManager
 
 class EckwmsApp : Application() {
@@ -54,6 +55,10 @@ class EckwmsApp : Application() {
         // Initialize Sunlight Mode (ambient light → audio-haptic feedback)
         SunlightModeManager.init(this)
         Log.d(TAG, "SunlightModeManager initialized")
+
+        // Initialize Adaptive Audio (mic-based ambient noise → volume adjustment)
+        AdaptiveAudioManager.init(this)
+        Log.d(TAG, "AdaptiveAudioManager initialized")
 
         // Запуск автоматического тестирования API сканера при запуске
         // Log.d(TAG, "Запуск автоматического тестирования API сканера...")

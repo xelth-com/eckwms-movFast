@@ -654,6 +654,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         com.xelth.eckwms_movfast.net.HybridMessageSender.setAiInteractionListener { aiInteraction ->
             addLog("⚡ AI Interaction: ${aiInteraction.type} - ${aiInteraction.message}")
+            // Trigger adaptive audio before AI prompt (worker needs to hear response)
+            com.xelth.eckwms_movfast.utils.AdaptiveAudioManager.triggerSample()
             _aiInteraction.postValue(aiInteraction)
         }
     }
@@ -1346,6 +1348,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     fun handleGeneralScanResult(barcode: String, type: String): Boolean {
         addLog("[Router] handleGeneralScanResult: '$barcode' type='$type'")
+        // Trigger adaptive audio sampling on scan events
+        com.xelth.eckwms_movfast.utils.AdaptiveAudioManager.triggerSample()
 
         // --- DECRYPTION LAYER ---
         // Strip encryption at the edge: decrypt ECK Smart QR → use plaintext everywhere
