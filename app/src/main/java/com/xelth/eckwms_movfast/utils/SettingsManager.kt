@@ -140,6 +140,12 @@ object SettingsManager {
     fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
     fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
 
+    // Dynamic repair order prefix (fetched from server /api/status)
+    private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
+    private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"
+    fun getRepairOrderPrefix(): String = prefs.getString(KEY_REPAIR_ORDER_PREFIX, DEFAULT_REPAIR_ORDER_PREFIX) ?: DEFAULT_REPAIR_ORDER_PREFIX
+    fun saveRepairOrderPrefix(prefix: String) = prefs.edit().putString(KEY_REPAIR_ORDER_PREFIX, prefix.trim()).commit()
+
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
     fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()

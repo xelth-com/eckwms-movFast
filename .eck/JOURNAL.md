@@ -2,6 +2,148 @@
 
 ---
 
+
+## 2026-03-07 — Agent Report
+
+# Task Complete: Adaptive Audio Manager
+
+## Date: 2026-03-07
+
+### Status
+COMPLETE — Trigger-based mic polling with EMA, dynamic cooldown, volume mapping
+
+---
+
+## What Was Done
+
+### AdaptiveAudioManager.kt (NEW)
+Singleton for ambient noise-aware volume adjustment:
+- **Trigger-Based**: No continuous mic usage. Samples ~150ms of audio via `AudioRecord` only when triggered
+- **Trigger Points**: `handleGeneralScanResult()` (every barcode scan), AI interaction push (WebSocket)
+- **Mute Check**: Aborts sampling if ringer is Silent or Vibrate
+- **EMA Smoothing**: alpha=0.3, tracks ambient dB level across samples
+- **Dynamic Cooldown**: Based on delta between new sample and EMA:
+  - delta < 5dB -> 60s cooldown (stable environment)
+  - 5 <= delta < 15dB -> 15s cooldown (moderate change)
+  - delta >= 15dB -> 5s cooldown (environment changed significantly)
+- **Volume Mapping**: <60dB -> 40% | 60-75dB -> 70% | >75dB -> 100% of max
+- **IO Thread**: All `AudioRecord` work on `Dispatchers.IO`, non-blocking
+
+### Integration
+- **AndroidManifest.xml**: Added `RECORD_AUDIO` permission
+- **EckwmsApp.kt**: `AdaptiveAudioManager.init(this)` on startup
+- **MainActivity.kt**: Graceful permission request via `ActivityResultLauncher` (silently skips if denied)
+- **ScanRecoveryViewModel.kt**: `triggerSample()` at scan routing entry and AI interaction push
+
+---
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `utils/AdaptiveAudioManager.kt` | **NEW** — Mic sampling, EMA, cooldown, volume mapping |
+| `AndroidManifest.xml` | Added `RECORD_AUDIO` permission |
+| `EckwmsApp.kt` | Init `AdaptiveAudioManager` |
+| `MainActivity.kt` | Permission request launcher |
+| `ui/viewmodels/ScanRecoveryViewModel.kt` | Trigger at scan + AI push |
+| `.eck/ROADMAP.md` | Added Adaptive Audio to Phase 7 |
+| `.eck/JOURNAL.md` | Journal entry |
+
+## Build
+- `assembleDebug` — **BUILD SUCCESSFUL**
+
+---
+
+**Agent**: Expert Developer (The Fixer)
+**Status**: Complete
+
+## 2026-03-07 — feat(ergonomics): Adaptive Audio Manager with dynamic mic polling
+
+### Summary
+Dynamically adjusts media volume based on ambient noise level. Uses trigger-based ~150ms mic samples (not continuous) with EMA smoothing and dynamic cooldown to save battery.
+
+### New Files
+- `utils/AdaptiveAudioManager.kt` — Singleton: `AudioRecord` sampling, EMA dB tracking, dynamic cooldown, volume mapping
+
+### Changed Files
+- `AndroidManifest.xml` — Added `RECORD_AUDIO` permission
+- `EckwmsApp.kt` — Init `AdaptiveAudioManager` on startup
+- `MainActivity.kt` — Graceful `RECORD_AUDIO` permission request via `ActivityResultLauncher`
+- `ScanRecoveryViewModel.kt` — Trigger sample at `handleGeneralScanResult` and AI interaction push
+
+### Technical Details
+- **Trigger points**: Barcode scan result, incoming AI interaction (WebSocket push)
+- **Mute-aware**: Skips sampling if ringer is Silent or Vibrate
+- **EMA**: alpha=0.3 for responsive but stable ambient dB tracking
+- **Dynamic cooldown**: delta <5dB -> 60s; 5-15dB -> 15s; >=15dB -> 5s
+- **Volume mapping**: <60dB -> 40%, 60-75dB -> 70%, >75dB -> 100% of max
+- **Battery-safe**: No continuous mic; samples only on trigger with cooldown gate
+
+---
+
+
+## 2026-03-07 — Agent Report
+
+# Task Complete: Phase 7 — Adaptive Ergonomics & Sunlight Mode
+
+## Date: 2026-03-07
+
+### Status
+✅ **COMPLETE — Ambient light detection, haptic vocabulary, audio boost, high-contrast UI**
+
+---
+
+## What Was Done
+
+### 1. SunlightModeManager.kt (NEW)
+Singleton managing automatic "Blind Mode" for outdoor operations:
+- **Light Sensor**: `Sensor.TYPE_LIGHT` with hysteresis (10k lux ON / 3k OFF) and 5-sample debounce
+- **Haptic Vocabulary** via `VibrationEffect.createWaveform()`:
+  - `playSuccess()` — Two quick ticks (50ms-80ms-50ms) — scan confirmed
+  - `playError()` — One long buzz (400ms) — mismatch/failure
+  - `playAttention()` — Three rhythmic pulses (150ms x3) — shield screen & read
+- **Audio Tones**: `ToneGenerator` chimes (ACK/NACK/BEEP2) only in sunlight mode
+- **Audio Boost**: Auto-maximizes media volume on activation, restores on deactivation
+- **StateFlow**: `isSunlightMode` and `currentLux` exposed for UI binding
+- **Manual Override**: `forceToggle()` for debug/settings
+
+### 2. Theme.kt — High-Contrast Color Scheme
+- Added `HighContrastColorScheme`: black background, bright yellow (#FFEB3B) text/accents, orange tertiary
+- New `highContrast: Boolean` parameter on `EckwmsmovFastTheme()` — when true, overrides all other scheme logic
+
+### 3. Integration Wiring
+- **EckwmsApp.kt**: `SunlightModeManager.init(this)` on app startup
+- **MainActivity.kt**: `startListening()`/`stopListening()` in onResume/onPause; `isSunlightMode` collected and passed to theme
+- **MainScreen.kt**: Replaced raw vibrator code with `SunlightModeManager` haptic callbacks; success haptic on every barcode scan
+- **MainScreenViewModel.kt**: Added `onHapticSuccess/Error/Attention` callbacks; error haptic on wrong PIN and upload failures
+
+### 4. Documentation
+- `.eck/ROADMAP.md`: Phase 7 section with all completed items
+- `.eck/JOURNAL.md`: Full journal entry with technical details
+
+---
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `utils/SunlightModeManager.kt` | **NEW** — Light sensor, haptics, audio boost, state management |
+| `ui/theme/Theme.kt` | Added `HighContrastColorScheme` + `highContrast` param |
+| `EckwmsApp.kt` | Init `SunlightModeManager` |
+| `MainActivity.kt` | Sensor lifecycle + theme binding |
+| `ui/screens/MainScreen.kt` | Haptic wiring, success feedback on scan |
+| `ui/viewmodels/MainScreenViewModel.kt` | Haptic callback fields + error feedback |
+| `.eck/ROADMAP.md` | Phase 7 definition |
+| `.eck/JOURNAL.md` | Journal entry |
+
+## Build
+- `assembleDebug` — **BUILD SUCCESSFUL**
+
+---
+
+**Agent**: Expert Developer (The Fixer)
+**Status**: ✅ Complete
+
 ## 2026-03-07 — feat(android): Sunlight Mode — adaptive ergonomics for outdoor ops
 
 ### Summary

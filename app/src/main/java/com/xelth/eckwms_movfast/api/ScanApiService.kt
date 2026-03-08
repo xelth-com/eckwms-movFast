@@ -905,6 +905,7 @@ class ScanApiService(private val context: Context) {
                     Log.d(TAG, "Device status check successful: $response")
 
                     // SECURE KEY ROTATION: Check for updated enc_key in heartbeat
+                    // + DYNAMIC CONFIG: Parse repair_order_prefix from server
                     try {
                         val json = JSONObject(response)
                         val encKey = json.optString("enc_key", "")
@@ -915,11 +916,20 @@ class ScanApiService(private val context: Context) {
                                 com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
                             }
                         }
+                        // Dynamic repair order prefix from server config
+                        val repairPrefix = json.optString("repair_order_prefix", "")
+                        if (repairPrefix.isNotEmpty()) {
+                            val currentPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
+                            if (repairPrefix != currentPrefix) {
+                                Log.i(TAG, "📋 Repair order prefix updated: $currentPrefix → $repairPrefix")
+                                com.xelth.eckwms_movfast.utils.SettingsManager.saveRepairOrderPrefix(repairPrefix)
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to parse enc_key from status check", e)
                     }
 
-                    // Go server returns {"status":"running","version":"1.0.0"}
+                    // Server returns {"status":"active","repair_order_prefix":"CS-DE-",...}
                     return@withContext ScanResult.Success(
                         type = "device_status",
                         message = "Server is running",

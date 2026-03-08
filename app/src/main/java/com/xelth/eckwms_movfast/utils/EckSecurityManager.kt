@@ -5,20 +5,42 @@ import org.bouncycastle.crypto.engines.AESEngine
 import org.bouncycastle.crypto.modes.GCMBlockCipher
 import org.bouncycastle.crypto.params.AEADParameters
 import org.bouncycastle.crypto.params.KeyParameter
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.util.UUID
 
 /**
- * Утилита для дешифровки ECK Smart QR-кодов (AES-192-GCM + Base32).
- * Использует Bouncy Castle для поддержки нестандартного 16-байтового nonce.
- * Алгоритм совместим с реализацией на Node.js и Go серверах.
+ * Decrypts ECK Smart QR codes (AES-192-GCM + Base32).
  *
- * Формат URL: ECKn.COM/{DATA:56}{IV:9}{SUFFIX:2} = 76 символов
+ * V1 (legacy): text-based, 16-byte nonce reconstructed from 9-char IV.
+ *   Format: ECKn.COM/{DATA:56}{IV:9}{SUFFIX:2} = 76 chars exactly.
+ *   Returns the decrypted plaintext string (e.g. "p000000000000000031").
+ *
+ * V2 (SmartTag): binary 19-byte payload, 12-byte nonce derived via SHA-256.
+ *   Format: {PREFIX}/{DATA:56}{IV:dynamic}{SUFFIX:2}, body >= 58 chars.
+ *   Returns "{type_prefix}-{uuid}" (e.g. "p-550e8400-e29b-41d4-a716-446655440000").
  */
 object EckSecurityManager {
     private const val TAG = "EckSecurity"
 
-    // Кастомный Base32 алфавит (Crockford-like)
+    // Custom Base32 alphabet (Crockford-like, excludes I, O, S, Z)
     private const val BASE32_CHARS = "0123456789ABCDEFGHJKLMNPQRTUVWXY"
     private val BASE32_LOOKUP = IntArray(256) { -1 }
+
+    // Entity type → prefix mapping
+    private val ENTITY_PREFIX = mapOf(
+        0x00 to "i",      // WMS Item
+        0x01 to "b",      // WMS Box
+        0x02 to "p",      // WMS Location
+        0x03 to "o",      // WMS Order
+        0x04 to "l",      // WMS Label
+        0x05 to "u",      // WMS User
+        0x10 to "company",    // Twenty Company
+        0x11 to "person",     // Twenty Person
+        0x12 to "opp",        // Twenty Opportunity
+        0x20 to "oprod",      // Odoo Product
+        0x21 to "opartner",   // Odoo Partner
+    )
 
     init {
         for (i in BASE32_CHARS.indices) {
@@ -28,63 +50,163 @@ object EckSecurityManager {
     }
 
     /**
-     * Пытается дешифровать ECK URL.
-     * @return расшифрованный путь (например "/p/000000000000000123") или null при ошибке
+     * Checks whether [barcode] looks like an encrypted ECK QR.
+     *
+     * V1 legacy: ECKn.COM/{67 chars} = 76 total.
+     * V2 SmartTag: any URL with `/` where the body after the last `/` is >= 58 chars.
+     */
+    fun isEncryptedEckUrl(barcode: String): Boolean {
+        val clean = barcode.trim()
+            .removePrefix("http://")
+            .removePrefix("https://")
+
+        // Must contain a slash
+        val slashIdx = clean.lastIndexOf('/')
+        if (slashIdx < 0) return false
+
+        val body = clean.substring(slashIdx + 1).uppercase()
+        // Body: 56 data + dynamic IV (>=0) + 2 suffix = at least 58 chars
+        if (body.length < 58) return false
+
+        // Quick validation: first 56 chars must all be valid Base32
+        for (i in 0 until 56) {
+            if (BASE32_LOOKUP[body[i].code] < 0) return false
+        }
+        return true
+    }
+
+    /**
+     * Attempts to decrypt an ECK QR barcode.
+     *
+     * V2 path (SmartTag): strips prefix + 2-char suffix, takes first 56 chars as data,
+     * remainder as iv_string. SHA-256(iv_string)[:12] = GCM nonce.
+     * Returns "{type_prefix}-{uuid}".
+     *
+     * V1 fallback: if V2 decryption fails AND length == 76, tries the legacy
+     * 16-byte nonce path. Returns the raw plaintext string.
      */
     fun tryDecryptBarcode(barcode: String): String? {
         val cleanCode = barcode.trim()
             .removePrefix("http://")
             .removePrefix("https://")
-            .uppercase()
 
-        // 1. Проверка формата: должно быть ровно 76 символов
-        if (cleanCode.length != 76) {
-            Log.d(TAG, "Invalid length: ${cleanCode.length} (expected 76)")
+        // Extract the body after the last '/'
+        val slashIdx = cleanCode.lastIndexOf('/')
+        if (slashIdx < 0) {
+            Log.d(TAG, "No slash found in barcode")
             return null
         }
+        val body = cleanCode.substring(slashIdx + 1).uppercase()
 
-        // 2. Проверка префикса
-        if (!cleanCode.startsWith("ECK1.COM/") &&
-            !cleanCode.startsWith("ECK2.COM/") &&
-            !cleanCode.startsWith("ECK3.COM/")) {
-            Log.d(TAG, "Invalid prefix")
+        val keyHex = SettingsManager.getEncKey()
+        if (keyHex.length != 48) {
+            Log.e(TAG, "Invalid ENC_KEY length: ${keyHex.length} (expected 48 hex chars)")
             return null
         }
+        val keyBytes = hexStringToByteArray(keyHex)
+
+        // Try V2 (SmartTag binary) first
+        val v2Result = tryDecryptV2(body, keyBytes)
+        if (v2Result != null) return v2Result
+
+        // Fallback to V1 (legacy text-based) for exactly 67-char body
+        // V1 body: {DATA:56}{IV:9}{SUFFIX:2} = 67
+        if (body.length == 67) {
+            return tryDecryptV1(body, keyBytes)
+        }
+
+        Log.e(TAG, "Decryption failed: no method succeeded")
+        return null
+    }
+
+    /**
+     * V2 decryption: binary SmartTag with dynamic IV.
+     * Body layout: {DATA:56}{IV:dynamic}{SUFFIX:2}
+     */
+    private fun tryDecryptV2(afterPrefix: String, keyBytes: ByteArray): String? {
+        if (afterPrefix.length < 58) return null // 56 data + 2 suffix minimum
 
         try {
-            // 3. Получаем ключ шифрования (24 байта = 48 hex символов для AES-192)
-            val keyHex = SettingsManager.getEncKey()
-            if (keyHex.length != 48) {
-                Log.e(TAG, "Invalid ENC_KEY length: ${keyHex.length} (expected 48 hex chars)")
+            // Strip 2-char suffix
+            val body = afterPrefix.substring(0, afterPrefix.length - 2)
+            if (body.length < 56) return null
+
+            val dataStr = body.substring(0, 56)
+            val ivString = body.substring(56)
+
+            // SHA-256(ivString)[:12] → 12-byte GCM nonce
+            val sha256 = MessageDigest.getInstance("SHA-256")
+            val ivHash = sha256.digest(ivString.toByteArray(Charsets.US_ASCII))
+            val nonce = ivHash.copyOfRange(0, 12)
+
+            // Base32 decode: 56 chars → 35 bytes
+            val ciphertext = base32DecodeFixed(dataStr)
+            if (ciphertext.size != 35) {
+                Log.d(TAG, "V2: Base32 decoded ${ciphertext.size} bytes, expected 35")
                 return null
             }
-            val keyBytes = hexStringToByteArray(keyHex)
 
-            // 4. Парсинг структуры URL
-            // Префикс (9: "ECKn.COM/") + Данные (56) + IV (9) + Суффикс (2) = 76
-            val base32Data = cleanCode.substring(9, 65)  // 56 символов Base32
-            val base32Iv = cleanCode.substring(65, 74)   // 9 символов ASCII IV
+            // AES-192-GCM decrypt with 12-byte nonce
+            val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
+            val params = AEADParameters(KeyParameter(keyBytes), 128, nonce, null)
+            cipher.init(false, params)
 
-            // 5. Декодирование Base32 → байты (56 символов = 35 байт)
+            val outputBytes = ByteArray(cipher.getOutputSize(ciphertext.size))
+            var len = cipher.processBytes(ciphertext, 0, ciphertext.size, outputBytes, 0)
+            len += cipher.doFinal(outputBytes, len)
+
+            if (len != 19) {
+                Log.d(TAG, "V2: Decrypted $len bytes, expected 19")
+                return null
+            }
+
+            // Parse 19-byte SmartTag
+            val plaintext = outputBytes.copyOfRange(0, 19)
+            val uuidBytes = plaintext.copyOfRange(0, 16)
+            val entityType = plaintext[16].toInt() and 0xFF
+            // bytes 17-18 = flags (not used in routing string)
+
+            // Convert 16 bytes → UUID
+            val bb = ByteBuffer.wrap(uuidBytes)
+            val msb = bb.long
+            val lsb = bb.long
+            val uuid = UUID(msb, lsb)
+
+            val typePrefix = ENTITY_PREFIX[entityType] ?: "x"
+            val result = "$typePrefix-$uuid"
+            Log.d(TAG, "V2 decryption SUCCESS: $result (entity=0x${"%02x".format(entityType)})")
+            return result
+
+        } catch (e: Exception) {
+            Log.d(TAG, "V2 decryption failed: ${e.javaClass.simpleName}: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * V1 decryption: legacy text-based with 16-byte nonce.
+     * Body layout: {DATA:56}{IV:9} (suffix already stripped by caller context — but
+     * here afterPrefix includes suffix, so: {DATA:56}{IV:9}{SUFFIX:2} = 67 chars)
+     */
+    private fun tryDecryptV1(afterPrefix: String, keyBytes: ByteArray): String? {
+        if (afterPrefix.length != 67) return null // 56 + 9 + 2
+
+        try {
+            val base32Data = afterPrefix.substring(0, 56)
+            val base32Iv = afterPrefix.substring(56, 65)
+
             val decodedData = base32DecodeFixed(base32Data)
             if (decodedData.size < 35) {
-                Log.e(TAG, "Decoded data too short: ${decodedData.size}")
+                Log.e(TAG, "V1: Decoded data too short: ${decodedData.size}")
                 return null
             }
 
-            // 6. Реконструкция IV (16 байт из 9 ASCII символов)
-            // Go: copy(iv[:9], betIv) + copy(iv[9:], betIv[:7])
+            // Reconstruct 16-byte IV from 9 ASCII chars
             val ivBytes = base32Iv.toByteArray(Charsets.US_ASCII)
             val iv = ByteArray(16)
             System.arraycopy(ivBytes, 0, iv, 0, 9)
             System.arraycopy(ivBytes, 0, iv, 9, 7)
 
-            // DEBUG
-            Log.e(TAG, "Key (first 8): ${keyBytes.take(8).joinToString("") { "%02x".format(it) }}")
-            Log.e(TAG, "IV: ${iv.joinToString("") { "%02x".format(it) }}")
-            Log.e(TAG, "Data (35 bytes): ${decodedData.joinToString("") { "%02x".format(it) }}")
-
-            // 7. Дешифровка с Bouncy Castle (поддерживает 16-байтовый nonce)
             val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
             val params = AEADParameters(KeyParameter(keyBytes), 128, iv, null)
             cipher.init(false, params)
@@ -94,22 +216,22 @@ object EckSecurityManager {
             len += cipher.doFinal(outputBytes, len)
 
             val result = String(outputBytes, 0, len, Charsets.UTF_8)
-            Log.d(TAG, "Decryption SUCCESS: $result")
+            Log.d(TAG, "V1 decryption SUCCESS: $result")
             return result
 
         } catch (e: Exception) {
-            Log.e(TAG, "Decryption failed: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "V1 decryption failed: ${e.javaClass.simpleName}: ${e.message}")
             return null
         }
     }
 
     /**
-     * Декодирует Base32 строку фиксированной длины (56 символов → 35 байт)
-     * Алгоритм из Node.js/Go: каждые 8 символов Base32 = 5 байт
+     * Decodes a Base32 string of fixed length (56 chars → 35 bytes).
+     * Each 8 Base32 chars → 5 bytes.
      */
     private fun base32DecodeFixed(input: String): ByteArray {
-        val iterations = input.length / 8  // 56 / 8 = 7 итераций
-        val output = ByteArray(iterations * 5)  // 7 * 5 = 35 байт
+        val iterations = input.length / 8
+        val output = ByteArray(iterations * 5)
 
         for (i in 0 until iterations) {
             val b0 = BASE32_LOOKUP[input[i * 8 + 0].code]
@@ -126,7 +248,6 @@ object EckSecurityManager {
                 return ByteArray(0)
             }
 
-            // 8 x 5-bit → 5 x 8-bit (из Node.js/Go betrugerToHex/fromBase32)
             output[i * 5 + 0] = ((b0 shl 3) or (b1 shr 2)).toByte()
             output[i * 5 + 1] = ((b1 shl 6) or (b2 shl 1) or (b3 shr 4)).toByte()
             output[i * 5 + 2] = ((b3 shl 4) or (b4 shr 1)).toByte()
@@ -146,19 +267,5 @@ object EckSecurityManager {
             i += 2
         }
         return data
-    }
-
-    /**
-     * Проверяет, является ли баркод зашифрованным ECK URL
-     */
-    fun isEncryptedEckUrl(barcode: String): Boolean {
-        val clean = barcode.trim()
-            .removePrefix("http://")
-            .removePrefix("https://")
-            .uppercase()
-        return clean.length == 76 &&
-               (clean.startsWith("ECK1.COM/") ||
-                clean.startsWith("ECK2.COM/") ||
-                clean.startsWith("ECK3.COM/"))
     }
 }

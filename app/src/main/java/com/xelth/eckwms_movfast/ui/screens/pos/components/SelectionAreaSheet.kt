@@ -3,7 +3,9 @@ package com.xelth.eckwms_movfast.ui.screens.pos.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,11 +23,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import com.xelth.eckwms_movfast.ui.data.ConnectionType
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.RenderCell
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.SlotType
+import com.xelth.eckwms_movfast.ui.viewmodels.AppUser
+import com.xelth.eckwms_movfast.ui.viewmodels.HalfButtonState
 
 @Composable
 fun SelectionAreaSheet(
@@ -35,9 +40,13 @@ fun SelectionAreaSheet(
     buttonGap: Dp = 6.dp,
     networkState: NetworkHealthState = NetworkHealthState.Checking,
     regStatus: String = "unknown",
+    currentUser: AppUser? = null,
+    viewingUser: AppUser? = null,
+    exitButton: HalfButtonState? = null,
     onButtonClick: (String) -> Unit = {},
     onButtonLongClick: (String) -> Unit = {},
-    onNetworkIndicatorClick: () -> Unit = {}
+    onNetworkIndicatorClick: () -> Unit = {},
+    onNetworkIndicatorLongClick: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -89,12 +98,50 @@ fun SelectionAreaSheet(
                     NetworkIndicatorButton(
                         modifier = Modifier
                             .size(width = buttonWidth, height = cellHeight)
-                            .offset(x = offsetX, y = offsetY)
-                            .clickable { onNetworkIndicatorClick() },
+                            .offset(x = offsetX, y = offsetY),
                         side = buttonSide,
                         networkState = networkState,
-                        regStatus = regStatus
+                        regStatus = regStatus,
+                        onClick = onNetworkIndicatorClick,
+                        onLongClick = onNetworkIndicatorLongClick
                     )
+                    return@forEach
+                }
+
+                // User Profile: HALF_LEFT at row=2 — native reactive component
+                if (slotType == SlotType.HALF_LEFT && row == 2) {
+                    UserIndicatorButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        side = buttonSide,
+                        currentUser = currentUser,
+                        viewingUser = viewingUser,
+                        onClick = { onButtonClick("act_user_profile") },
+                        onLongClick = { onButtonLongClick("act_user_profile") }
+                    )
+                    return@forEach
+                }
+
+                // EXIT button: HALF_RIGHT at row=1 — native reactive component
+                if (slotType == SlotType.HALF_RIGHT && row == 1 && exitButton != null) {
+                    HexagonalButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        label = exitButton.label,
+                        colorHex = exitButton.colorHex,
+                        textColorHex = exitButton.textColorHex,
+                        enabled = exitButton.enabled,
+                        side = buttonSide,
+                        onClick = { onButtonClick(exitButton.action) },
+                        onLongClick = { onButtonLongClick(exitButton.action) }
+                    )
+                    return@forEach
+                }
+
+                // Skip any other unhandled HALF slots
+                if (slotType == SlotType.HALF_LEFT || slotType == SlotType.HALF_RIGHT) {
                     return@forEach
                 }
 
@@ -146,12 +193,15 @@ fun SelectionAreaSheet(
  * Network indicator inside a HALF_LEFT hexagonal button.
  * Shows connection icon, server hash, and latency.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NetworkIndicatorButton(
     modifier: Modifier = Modifier,
     side: HexagonSide,
     networkState: NetworkHealthState,
-    regStatus: String
+    regStatus: String,
+    onClick: () -> Unit = {},
+    onLongClick: () -> Unit = {}
 ) {
     val isApproved = regStatus == "active" || regStatus == "running"
 
@@ -172,7 +222,11 @@ fun NetworkIndicatorButton(
     Box(
         modifier = modifier
             .clip(HexagonShape(side))
-            .background(bgColor),
+            .background(bgColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (networkState.isConnected()) {
@@ -208,6 +262,64 @@ fun NetworkIndicatorButton(
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+/**
+ * User Profile indicator inside a HALF_LEFT hexagonal button.
+ * Shows current user or Login prompt. Native reactive component.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun UserIndicatorButton(
+    modifier: Modifier = Modifier,
+    side: HexagonSide,
+    currentUser: AppUser?,
+    viewingUser: AppUser?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val isLoggedIn = currentUser != null
+    val isActingAsSelf = isLoggedIn && currentUser?.id == viewingUser?.id
+
+    val bgColor = when {
+        !isLoggedIn -> Color(0xFF8B0000)     // Dark red: not logged in
+        isActingAsSelf -> Color(0xFF1B5E20)  // Dark green: acting as self
+        else -> Color(0xFF5D4037)            // Dark brown: viewing another user
+    }
+
+    val textColor = when {
+        !isLoggedIn -> Color.White
+        isActingAsSelf -> Color(0xFF4CAF50)  // Light green
+        else -> Color(0xFFFFEB3B)            // Yellow
+    }
+
+    val label = (viewingUser ?: currentUser)?.getDisplayLabel() ?: "LOG\nIN"
+
+    Box(
+        modifier = modifier
+            .clip(HexagonShape(side))
+            .background(bgColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            textAlign = TextAlign.Center,
+            fontSize = when {
+                label.contains("\n") -> 14.sp
+                label.length > 7 -> 12.sp
+                label.length > 5 -> 14.sp
+                else -> 16.sp
+            },
+            lineHeight = 16.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 

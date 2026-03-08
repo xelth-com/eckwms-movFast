@@ -13,8 +13,7 @@ data class AppUser(
 ) {
     /** Display label for the hex button — uses username (nickname), not full name. */
     fun getDisplayLabel(): String {
-        val display = username.ifEmpty { name.ifEmpty { id.take(6) } }
-        return if (display.length <= 6) display else display.take(6)
+        return username.ifEmpty { name.ifEmpty { id.take(8) } }
     }
 
     /** Display name for dialogs — full name if available, otherwise username. */
@@ -70,26 +69,6 @@ object UserManager {
 
     fun isActingAsSelf(): Boolean =
         _currentUser.value != null && _currentUser.value?.id == _viewingUser.value?.id
-
-    /** Background color for the user button (dark tones matching network indicator). */
-    fun getButtonColor(): String = when {
-        _currentUser.value == null -> "#8B0000"  // Dark red: not logged in
-        isActingAsSelf() -> "#1B5E20"            // Dark green: acting as self
-        else -> "#5D4037"                        // Dark brown: viewing another user
-    }
-
-    /** Text color for the user button (matching network indicator style). */
-    fun getButtonTextColor(): String = when {
-        _currentUser.value == null -> "#FFFFFF"  // White on dark red
-        isActingAsSelf() -> "#4CAF50"            // Light green on dark green
-        else -> "#FFEB3B"                        // Yellow on dark brown
-    }
-
-    /** Label for the user button. */
-    fun getButtonLabel(): String {
-        val user = _viewingUser.value ?: _currentUser.value
-        return user?.getDisplayLabel() ?: "LOG\nIN"
-    }
 
     /** Restore persisted user on app start. */
     fun restoreFromSettings() {

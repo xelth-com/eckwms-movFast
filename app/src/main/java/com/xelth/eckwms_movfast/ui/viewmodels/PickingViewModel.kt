@@ -186,7 +186,7 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
 
         if (!_locationVerified.value) {
             // --- Expecting location scan ---
-            // Smart place code: 'p' + 18-digit zero-padded Odoo location ID
+            // Smart place code: legacy 'p' + 18-digit ID, or SmartTag 'p-uuid'
             if (code.startsWith("p") && code.length == 19) {
                 val scannedLocId = code.substring(1).trimStart('0').toLongOrNull()
                 if (scannedLocId != null && scannedLocId == currentLine.locationId) {
@@ -195,12 +195,21 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
                     Log.d(TAG, "Location verified via smart place code: $scannedLocId")
                     return
                 }
+            } else if (code.startsWith("p-") && code.length == 38) {
+                // SmartTag UUID — compare by location barcode string
+                val locBarcode = currentLine.locationBarcode
+                if (locBarcode != null && code.equals(locBarcode, ignoreCase = true)) {
+                    _locationVerified.value = true
+                    _errorMessage.value = null
+                    Log.d(TAG, "Location verified via SmartTag UUID: ${code.substring(2)}")
+                    return
+                }
             }
             // Direct barcode comparison
             onLocationScanned(code)
         } else {
             // --- Expecting product scan ---
-            // Smart item code: 'i' + base36(EAN length) + padded serial + EAN
+            // Smart item code: legacy 'i' + base36(EAN length) + padded serial + EAN
             if (code.startsWith("i") && code.length == 19) {
                 val eanLen = code[1].toString().toIntOrNull(36)
                 if (eanLen != null && eanLen in 1..18) {
@@ -211,6 +220,7 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             }
+            // SmartTag UUID item — pass through to product scan (server resolves UUID)
             // Direct barcode comparison
             onProductScanned(code)
         }
