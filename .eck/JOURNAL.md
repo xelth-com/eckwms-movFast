@@ -3,6 +3,34 @@
 ---
 
 
+
+## 2026-03-09 — Agent Report
+
+# Agent Report
+
+## UUID Migration: Android Local DB & Models (Long → String)
+
+### What was done
+Migrated all Android entity IDs from `Long` to `String` to match the Rust server's UUID-based primary keys (Phase 17).
+
+### Files modified (16 files)
+
+**Entities:** ProductEntity, LocationEntity, PickingOrderEntity, PickLineEntity — all `id` fields → `String`
+**DAOs:** PickingDao, ReferenceDao — parameter types Long → String
+**Data classes:** WarehouseMap.kt — all ID fields → String
+**API parsing (ScanApiService.kt):** All `getLong`/`optLong` → `optString` for ID fields; method signatures updated
+**ViewModels:** PickingViewModel, MainScreenViewModel, ScanRecoveryViewModel — all Long ID params/types → String
+**UI Screens:** PickingListScreen callback type updated
+**Database:** AppDatabase version 9 → 10 (destructive migration)
+**Repository:** WarehouseRepository — stub product uses UUID, location lookup adapted
+
+### Build result
+`assembleDebug` — BUILD SUCCESSFUL
+
+### Notes
+- Destructive migration (v10) wipes local DB on first launch — expected
+- Also added `nul` to .gitignore (Windows reserved filename artifact)
+
 ## 2026-03-07 — Agent Report
 
 # Task Complete: Adaptive Audio Manager
