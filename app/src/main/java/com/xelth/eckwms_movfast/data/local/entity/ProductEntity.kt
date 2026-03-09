@@ -5,11 +5,11 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "products")
 data class ProductEntity(
-    @PrimaryKey val id: Long,
-    val defaultCode: String,    // SKU (default_code in Odoo)
+    @PrimaryKey val id: String,
+    val defaultCode: String,
     val name: String,
-    val barcode: String?,       // EAN13, nullable in Odoo
-    val qtyAvailable: Double = 0.0, // Stock on hand (aggregated from stock_quant)
+    val barcode: String?,
+    val qtyAvailable: Double = 0.0,
     val listPrice: Double = 0.0,
     val weight: Double = 0.0,
     val active: Boolean = true,

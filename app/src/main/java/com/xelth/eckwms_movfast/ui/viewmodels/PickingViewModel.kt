@@ -77,7 +77,7 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun selectPicking(pickingId: Long) {
+    fun selectPicking(pickingId: String) {
         viewModelScope.launch {
             _uiState.value = PickingUiState.LOADING
             try {
@@ -188,8 +188,8 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
             // --- Expecting location scan ---
             // Smart place code: legacy 'p' + 18-digit ID, or SmartTag 'p-uuid'
             if (code.startsWith("p") && code.length == 19) {
-                val scannedLocId = code.substring(1).trimStart('0').toLongOrNull()
-                if (scannedLocId != null && scannedLocId == currentLine.locationId) {
+                val scannedLocId = code.substring(1).trimStart('0')
+                if (scannedLocId.isNotEmpty() && scannedLocId == currentLine.locationId) {
                     _locationVerified.value = true
                     _errorMessage.value = null
                     Log.d(TAG, "Location verified via smart place code: $scannedLocId")

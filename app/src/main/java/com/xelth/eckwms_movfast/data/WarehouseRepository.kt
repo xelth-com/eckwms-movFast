@@ -313,7 +313,7 @@ class WarehouseRepository(
         if (rows == 0) {
             // Product not in local DB yet (smart code or unsynced). Create stub.
             val stub = ProductEntity(
-                id = System.nanoTime(),
+                id = java.util.UUID.randomUUID().toString(),
                 defaultCode = barcode,
                 name = "Item $barcode",
                 barcode = barcode,
@@ -342,8 +342,7 @@ class WarehouseRepository(
             try {
                 val idStr = barcode.substring(1).trimStart('0')
                 if (idStr.isNotEmpty()) {
-                    val id = idStr.toLong()
-                    return@withContext db.referenceDao().getLocationById(id)
+                    return@withContext db.referenceDao().getLocationById(idStr)
                 }
             } catch (_: NumberFormatException) {}
         }

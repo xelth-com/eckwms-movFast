@@ -152,7 +152,7 @@ class ScanApiService(private val context: Context) {
                 Log.d(TAG, "Extracted checksum: $responseChecksum")
 
                 // Parse AI interaction if present
-                val aiInteraction = if (responseJson.has("ai_interaction")) {
+                var aiInteraction = if (responseJson.has("ai_interaction") && !responseJson.isNull("ai_interaction")) {
                     try {
                         val aiJson = responseJson.getJSONObject("ai_interaction")
                         val id = aiJson.optString("id", null)
@@ -187,6 +187,31 @@ class ScanApiService(private val context: Context) {
                         null
                     }
                 } else null
+
+                // Synthesize AiInteraction for ambiguous collisions
+                if (aiInteraction == null && responseJson.optString("type") == "ambiguous") {
+                    try {
+                        val dataObj = responseJson.optJSONObject("data")
+                        val candidatesArray = dataObj?.optJSONArray("candidates")
+                        if (candidatesArray != null && candidatesArray.length() > 0) {
+                            val optionsList = mutableListOf<String>()
+                            for (i in 0 until candidatesArray.length()) {
+                                val c = candidatesArray.getJSONObject(i)
+                                optionsList.add(c.optString("title", "Unknown"))
+                            }
+                            aiInteraction = com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                                id = "collision_" + System.currentTimeMillis(),
+                                type = "question",
+                                message = responseJson.optString("message", "Multiple matches found. Select one:"),
+                                options = optionsList,
+                                data = mapOf("raw_candidates" to dataObj.toString()),
+                                barcode = barcode
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to build ambiguous interaction: ${e.message}")
+                    }
+                }
 
                 if (aiInteraction != null) {
                     Log.d(TAG, "AI Interaction detected: ${aiInteraction.type} - ${aiInteraction.message}")
@@ -309,7 +334,7 @@ class ScanApiService(private val context: Context) {
                 Log.d(TAG, "Extracted checksum (msgId=$msgId): $responseChecksum")
 
                 // Parse AI interaction if present
-                val aiInteraction = if (responseJson.has("ai_interaction")) {
+                var aiInteraction = if (responseJson.has("ai_interaction") && !responseJson.isNull("ai_interaction")) {
                     try {
                         val aiJson = responseJson.getJSONObject("ai_interaction")
                         val id = aiJson.optString("id", null)
@@ -344,6 +369,31 @@ class ScanApiService(private val context: Context) {
                         null
                     }
                 } else null
+
+                // Synthesize AiInteraction for ambiguous collisions
+                if (aiInteraction == null && responseJson.optString("type") == "ambiguous") {
+                    try {
+                        val dataObj = responseJson.optJSONObject("data")
+                        val candidatesArray = dataObj?.optJSONArray("candidates")
+                        if (candidatesArray != null && candidatesArray.length() > 0) {
+                            val optionsList = mutableListOf<String>()
+                            for (i in 0 until candidatesArray.length()) {
+                                val c = candidatesArray.getJSONObject(i)
+                                optionsList.add(c.optString("title", "Unknown"))
+                            }
+                            aiInteraction = com.xelth.eckwms_movfast.ui.data.AiInteraction(
+                                id = "collision_" + System.currentTimeMillis(),
+                                type = "question",
+                                message = responseJson.optString("message", "Multiple matches found. Select one:"),
+                                options = optionsList,
+                                data = mapOf("raw_candidates" to dataObj.toString()),
+                                barcode = barcode
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to build ambiguous interaction (msgId=$msgId): ${e.message}")
+                    }
+                }
 
                 if (aiInteraction != null) {
                     Log.d(TAG, "AI Interaction detected (msgId=$msgId): ${aiInteraction.type} - ${aiInteraction.message}")
@@ -1533,7 +1583,7 @@ class ScanApiService(private val context: Context) {
                     } ?: ""
 
                     list.add(ProductEntity(
-                        id = obj.getLong("id"),
+                        id = obj.optString("id", ""),
                         defaultCode = defaultCode,
                         name = obj.optString("name", ""),
                         barcode = barcode,
@@ -1591,12 +1641,12 @@ class ScanApiService(private val context: Context) {
                 val list = mutableListOf<LocationEntity>()
 
                 // Recursively flatten location tree (server may return nested children)
-                fun parseLocation(obj: JSONObject, parentId: Long?) {
+                fun parseLocation(obj: JSONObject, parentId: String?) {
                     val barcode = obj.opt("barcode")?.let {
                         if (it is Boolean || it.toString() == "false") null else it.toString()
                     }
                     list.add(LocationEntity(
-                        id = obj.getLong("id"),
+                        id = obj.optString("id", ""),
                         name = obj.optString("name", ""),
                         completeName = obj.optString("complete_name", ""),
                         barcode = barcode,
@@ -1608,7 +1658,7 @@ class ScanApiService(private val context: Context) {
                     val children = obj.optJSONArray("children")
                     if (children != null) {
                         for (j in 0 until children.length()) {
-                            parseLocation(children.getJSONObject(j), obj.getLong("id"))
+                            parseLocation(children.getJSONObject(j), obj.optString("id", ""))
                         }
                     }
                 }
@@ -1870,15 +1920,15 @@ class ScanApiService(private val context: Context) {
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     list.add(com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity(
-                        id = obj.getLong("id"),
+                        id = obj.optString("id", ""),
                         name = obj.optString("name", ""),
                         state = obj.optString("state", "assigned"),
                         partnerName = obj.optString("partner_name", null),
                         origin = obj.optString("origin", null),
                         priority = obj.optString("priority", "0"),
                         scheduledDate = try { java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).parse(obj.optString("scheduled_date"))?.time ?: 0L } catch (e: Exception) { 0L },
-                        locationId = obj.optLong("location_id", 0),
-                        locationDestId = obj.optLong("location_dest_id", 0),
+                        locationId = obj.optString("location_id", ""),
+                        locationDestId = obj.optString("location_dest_id", ""),
                         lineCount = obj.optInt("line_count", 0),
                         pickedCount = obj.optInt("picked_count", 0)
                     ))
@@ -1892,7 +1942,7 @@ class ScanApiService(private val context: Context) {
         return@withContext null
     }
 
-    suspend fun fetchPickingRoute(pickingId: Long): PickingRouteResponse? = withContext(Dispatchers.IO) {
+    suspend fun fetchPickingRoute(pickingId: String): PickingRouteResponse? = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/pickings/$pickingId/route")
@@ -1913,18 +1963,18 @@ class ScanApiService(private val context: Context) {
                 for (i in 0 until linesArray.length()) {
                     val obj = linesArray.getJSONObject(i)
                     lines.add(com.xelth.eckwms_movfast.data.local.entity.PickLineEntity(
-                        id = obj.getLong("id"),
-                        pickingId = obj.getLong("picking_id"),
-                        productId = obj.getLong("product_id"),
+                        id = obj.optString("id", ""),
+                        pickingId = obj.optString("picking_id", ""),
+                        productId = obj.optString("product_id", ""),
                         productName = obj.optString("product_name", ""),
                         productBarcode = obj.optString("product_barcode", null),
                         productCode = obj.optString("product_code", null),
                         qtyDemand = obj.optDouble("qty_demand", 0.0),
                         qtyDone = obj.optDouble("qty_done", 0.0),
-                        locationId = obj.optLong("location_id", 0),
+                        locationId = obj.optString("location_id", ""),
                         locationName = obj.optString("location_name", ""),
                         locationBarcode = obj.optString("location_barcode", null),
-                        rackId = if (obj.has("rack_id") && !obj.isNull("rack_id")) obj.getLong("rack_id") else null,
+                        rackId = if (obj.has("rack_id") && !obj.isNull("rack_id")) obj.optString("rack_id") else null,
                         rackName = obj.optString("rack_name", null),
                         rackX = obj.optInt("rack_x", 0),
                         rackY = obj.optInt("rack_y", 0),
@@ -1953,7 +2003,7 @@ class ScanApiService(private val context: Context) {
         return@withContext null
     }
 
-    suspend fun confirmPickLine(pickingId: Long, lineId: Long, qtyDone: Double, productBarcode: String, locationBarcode: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun confirmPickLine(pickingId: String, lineId: String, qtyDone: Double, productBarcode: String, locationBarcode: String): Boolean = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/pickings/$pickingId/lines/$lineId/confirm")
@@ -1982,7 +2032,7 @@ class ScanApiService(private val context: Context) {
         }
     }
 
-    suspend fun validatePicking(pickingId: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun validatePicking(pickingId: String): Boolean = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/pickings/$pickingId/validate")

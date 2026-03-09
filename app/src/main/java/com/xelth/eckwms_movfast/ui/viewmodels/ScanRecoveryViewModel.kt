@@ -317,8 +317,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     private val _warehouseMap = MutableLiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?>(null)
     val warehouseMap: LiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?> = _warehouseMap
     
-    private val _targetRackId = MutableLiveData<Long?>(null)
-    val targetRackId: LiveData<Long?> = _targetRackId
+    private val _targetRackId = MutableLiveData<String?>(null)
+    val targetRackId: LiveData<String?> = _targetRackId
 
     /**
      * Clear the current AI interaction (dismiss dialog/banner)
@@ -336,6 +336,39 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val currentInteraction = _aiInteraction.value
         if (currentInteraction != null) {
             addLog("User responded to AI ${currentInteraction.type}: $response")
+
+            // Intercept collision resolution locally (no server roundtrip needed)
+            if (currentInteraction.id?.startsWith("collision_") == true) {
+                try {
+                    val rawStr = currentInteraction.data?.get("raw_candidates") as? String
+                    if (rawStr != null) {
+                        val rawObj = org.json.JSONObject(rawStr)
+                        val cArray = rawObj.getJSONArray("candidates")
+                        for (i in 0 until cArray.length()) {
+                            val c = cArray.getJSONObject(i)
+                            if (c.optString("title") == response) {
+                                val cType = c.optString("type")
+                                val cId = c.optString("id")
+                                val cBarcode = c.optString("barcode")
+                                if (cType == "order") {
+                                    addLog("Resolved collision → Order: $response")
+                                    _activeOrderId.postValue(cBarcode.ifEmpty { cId })
+                                } else {
+                                    addLog("Resolved collision → Item: $response")
+                                    // Feed exact UUID as SmartTag to hit Trust 100% path
+                                    val smartTag = "i-$cId"
+                                    handleGeneralScanResult(smartTag, "resolved_collision")
+                                }
+                                break
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    addLog("Error resolving collision: ${e.message}")
+                }
+                clearAiInteraction()
+                return
+            }
 
             // Normalize response for backend compatibility (Gemini expects "yes")
             val normalizedResponse = if (
@@ -1399,8 +1432,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     addLog("[Audit] Scan #$scanId → PROCESSED_LOCALLY")
                 }
 
-                // Order ID session activation
-                effectiveCode.startsWith("CS-DE-") && effectiveCode.length > 10 -> {
+                // Order ID session activation (dynamic prefix from server config)
+                run {
+                    val orderPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
+                    orderPrefix.isNotEmpty() && effectiveCode.startsWith(orderPrefix) && effectiveCode.length > orderPrefix.length
+                } -> {
                     addLog("[Router] → ROUTE A: Order ID activation")
                     _activeOrderId.postValue(effectiveCode)
                     addLog("ACTIVE ORDER SET: $effectiveCode")
@@ -1443,8 +1479,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                                  barcode.startsWith("eck3.com", ignoreCase = true) ||
                                  barcode.startsWith("http://eck", ignoreCase = true) ||
                                  barcode.startsWith("https://eck", ignoreCase = true)
-        return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) ||
-               (barcode.startsWith("CS-DE-") && barcode.length > 10)
+        val orderPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
+        val isOrderSessionCheck = orderPrefix.isNotEmpty() && barcode.startsWith(orderPrefix) && barcode.length > orderPrefix.length
+        return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) || isOrderSessionCheck
     }
 
     /**

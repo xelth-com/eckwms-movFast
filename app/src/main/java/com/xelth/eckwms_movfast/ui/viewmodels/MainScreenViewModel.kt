@@ -182,7 +182,7 @@ class MainScreenViewModel : ViewModel() {
     var onUpdateProductQty: (suspend (barcode: String, qty: Double) -> Unit)? = null
     var onLookupProduct: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.ProductEntity?)? = null
     var onLookupLocation: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.LocationEntity?)? = null
-    var onFetchLocationContents: (suspend (locationId: Long) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
+    var onFetchLocationContents: (suspend (locationId: String) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
     // Inventory records persistence (PDA = source of truth)
     var onSaveInventoryRecords: (suspend (locationBarcode: String, records: List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>) -> Unit)? = null
     var onLoadInventoryRecords: (suspend (locationBarcode: String) -> List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>)? = null
@@ -578,8 +578,8 @@ class MainScreenViewModel : ViewModel() {
                                 fetchAndDisplayLocationContents(barcode, loc.id)
                             } else if (barcode.startsWith("p") && barcode.length == 19) {
                                 // Fallback: extract Odoo ID from legacy p-code
-                                val id = barcode.substring(1).trimStart('0').toLongOrNull()
-                                if (id != null) fetchAndDisplayLocationContents(barcode, id)
+                                val id = barcode.substring(1).trimStart('0')
+                                if (id.isNotEmpty()) fetchAndDisplayLocationContents(barcode, id)
                             } else if (barcode.startsWith("p-") && barcode.length == 38) {
                                 // SmartTag UUID location — no numeric Odoo ID available
                                 addLog("📍 UUID location: ${barcode.substring(2)}")
@@ -672,7 +672,7 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
-    private fun fetchAndDisplayLocationContents(barcode: String, locationId: Long) {
+    private fun fetchAndDisplayLocationContents(barcode: String, locationId: String) {
         viewModelScope.launch {
             // 1. Local inventory records (green = PDA counted)
             try {
@@ -3033,8 +3033,8 @@ class MainScreenViewModel : ViewModel() {
     }
 
     private fun fetchExpectedInventory() {
-        val locationId = decryptedLocationId?.substring(1)?.toLongOrNull()
-        if (locationId == null || locationId == 0L) {
+        val locationId = decryptedLocationId?.substring(1)?.trimStart('0')
+        if (locationId.isNullOrEmpty()) {
             android.util.Log.e("INVENTORY", "fetchExpected: no Odoo ID from decryptedLocationId=$decryptedLocationId")
             return
         }

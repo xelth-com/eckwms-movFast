@@ -35,7 +35,7 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         PickLineEntity::class,
         LocalPhotoEntity::class
     ],
-    version = 9,  // Added local_photos table for UUID-based photo pipeline
+    version = 10,  // UUID migration: all IDs changed from Long to String
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
