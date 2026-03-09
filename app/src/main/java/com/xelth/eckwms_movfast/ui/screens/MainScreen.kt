@@ -64,6 +64,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import android.graphics.Bitmap
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +86,11 @@ fun MainScreen(
     // Repair mode state
     val isRepairMode by mainViewModel.isRepairMode.observeAsState(false)
     val repairStatus by mainViewModel.repairStatus.observeAsState("")
+
+    // Active slot history and photos
+    val activeSlotHistory by mainViewModel.activeSlotHistory.observeAsState(emptyList())
+    val activeSlotPhotosList by mainViewModel.activeSlotPhotosList.observeAsState(emptyList())
+    var fullScreenPhoto by remember { mutableStateOf<Bitmap?>(null) }
 
     // Receiving mode state
     val isReceivingMode by mainViewModel.isReceivingMode.observeAsState(false)
@@ -364,19 +373,72 @@ fun MainScreen(
                                 contentDescription = "Device photo",
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .alpha(0.2f),
+                                    .alpha(0.4f),
                                 contentScale = ContentScale.Crop
                             )
                         }
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
+
+                        // Overlay with history, thumbnails, status
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .padding(bottom = overlap),
+                            verticalArrangement = Arrangement.Bottom
                         ) {
+                            // History items (last 3)
+                            activeSlotHistory.takeLast(3).forEach { msg ->
+                                Text(
+                                    text = msg,
+                                    color = Color(0xFFE0E0E0),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .padding(bottom = 4.dp)
+                                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            // Thumbnails row
+                            if (activeSlotPhotosList.isNotEmpty()) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                ) {
+                                    activeSlotPhotosList.take(4).forEach { bmp ->
+                                        Image(
+                                            bitmap = bmp.asImageBitmap(),
+                                            contentDescription = "Thumbnail",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(50.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.Black)
+                                                .clickable { fullScreenPhoto = bmp }
+                                        )
+                                    }
+                                    if (activeSlotPhotosList.size > 4) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(50.dp)
+                                                .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("+${activeSlotPhotosList.size - 4}", color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Current status
                             Text(
                                 text = repairStatus,
                                 color = Color.White,
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .background(Color(0xFF4CAF50).copy(alpha = 0.8f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
                             )
                         }
                     }
@@ -1139,5 +1201,28 @@ fun MainScreen(
                 TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel", color = Color.White) }
             }
         )
+    }
+
+    // Full-screen photo overlay
+    if (fullScreenPhoto != null) {
+        Dialog(
+            onDismissRequest = { fullScreenPhoto = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = true)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.95f))
+                    .clickable { fullScreenPhoto = null },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = fullScreenPhoto!!.asImageBitmap(),
+                    contentDescription = "Full screen",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
     }
 }

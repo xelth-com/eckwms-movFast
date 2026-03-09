@@ -78,7 +78,8 @@ data class RepairSlot(
     var isActive: Boolean = false,
     var photo: Bitmap? = null,                          // background photo (first photo sent)
     val allPhotos: MutableList<Bitmap> = mutableListOf(), // all photos for avatar picker (max 20)
-    val photoUuids: MutableList<String> = mutableListOf() // UUIDs of all photos (for DB + disk)
+    val photoUuids: MutableList<String> = mutableListOf(), // UUIDs of all photos (for DB + disk)
+    val history: MutableList<String> = mutableListOf()    // Action history for this slot
 )
 
 sealed class RepairAction {
@@ -212,6 +213,13 @@ class MainScreenViewModel : ViewModel() {
 
     private val _activeSlotPhoto = MutableLiveData<Bitmap?>(null)
     val activeSlotPhoto: LiveData<Bitmap?> = _activeSlotPhoto
+
+    // LiveData for the active slot's history and photos to trigger UI recomposition
+    private val _activeSlotHistory = MutableLiveData<List<String>>(emptyList())
+    val activeSlotHistory: LiveData<List<String>> = _activeSlotHistory
+
+    private val _activeSlotPhotosList = MutableLiveData<List<Bitmap>>(emptyList())
+    val activeSlotPhotosList: LiveData<List<Bitmap>> = _activeSlotPhotosList
 
     fun consumeNavigateToCamera() { _navigateToCamera.value = false }
 
@@ -893,6 +901,7 @@ class MainScreenViewModel : ViewModel() {
             if (savedBarcode != null) {
                 slot.barcode = savedBarcode
                 slot.isBound = true
+                if (slot.history.isEmpty()) slot.history.add("Restored from DB")
                 // Restore photo from disk if not already in memory
                 if (slot.photo == null) {
                     slot.photo = onLoadRepairPhoto?.invoke(slot.index)
@@ -1015,6 +1024,7 @@ class MainScreenViewModel : ViewModel() {
             slots.forEach { if (it.barcode == barcode) clearSlot(it.index) }
             slots[index].barcode = barcode
             slots[index].isBound = true
+            slots[index].history.add("Device bound: ${barcode.takeLast(8)}")
             slotWaitingForBind = null
             persistSlots()
             activateSlot(index)
@@ -1077,6 +1087,10 @@ class MainScreenViewModel : ViewModel() {
             } else {
                 Log.d("RepairMode", "Photo #${active.allPhotos.size} for slot ${active.index} (background unchanged)")
             }
+            active.history.add("Photo attached")
+            _activeSlotPhotosList.value = active.allPhotos.toList()
+            _activeSlotHistory.value = active.history.toList()
+
             uploadPhoto(active.barcode!!, bitmap)
             _repairStatus.value = "Photo sent -> ${active.barcode} (#${active.allPhotos.size})"
             resetActiveTimer(active.index)
@@ -1095,6 +1109,8 @@ class MainScreenViewModel : ViewModel() {
         val photo = slots[index].photo
         Log.d("RepairMode", "activateSlot($index): photo=${if (photo != null) "exists (recycled=${photo.isRecycled})" else "null"}")
         _activeSlotPhoto.value = photo
+        _activeSlotHistory.value = slots[index].history.toList()
+        _activeSlotPhotosList.value = slots[index].allPhotos.toList()
         renderRepairGrid()
         startActiveTimer(index)
     }
@@ -1140,6 +1156,13 @@ class MainScreenViewModel : ViewModel() {
         addLog("Data scan '$partBarcode' -> device '$deviceBarcode'")
         _repairStatus.value = "Sent: $partBarcode -> $deviceBarcode"
         lastSentAction = LastRepairAction(deviceBarcode, "part_scan", partBarcode)
+
+        val active = slots.find { it.isActive }
+        if (active != null) {
+            active.history.add("Added part: ${partBarcode.takeLast(8)}")
+            _activeSlotHistory.value = active.history.toList()
+        }
+
         onRepairEventSend?.invoke(deviceBarcode, "part_scan", partBarcode)
         renderRepairGrid()
     }
@@ -1176,6 +1199,7 @@ class MainScreenViewModel : ViewModel() {
             slots[index].allPhotos.forEach { it.recycle() }
             slots[index].allPhotos.clear()
             slots[index].photoUuids.clear()
+            slots[index].history.clear()
             onDeleteRepairPhoto?.invoke(index)
             // Delete UUID-based photos from DB + disk
             viewModelScope.launch { onDeleteSlotPhotos?.invoke(index) }
