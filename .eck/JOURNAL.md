@@ -5,6 +5,36 @@
 
 
 
+
+## 2026-03-09 — Agent Report
+
+# Agent Report
+
+## Repair Mode UX Improvements — Complete
+
+### Changes Made
+
+**MainScreenViewModel.kt:**
+- Added `history: MutableList<String>` field to `RepairSlot` data class
+- Added `_activeSlotHistory` and `_activeSlotPhotosList` LiveData fields for UI recomposition
+- History entries added on: device bind, photo capture, part scan, DB restore
+- `activateSlot()` now publishes history + photos list to LiveData
+- `clearSlot()` now clears history
+- `sendPartScan()` tracks part additions in history
+
+**MainScreen.kt:**
+- Increased background photo opacity from `0.2f` to `0.4f`
+- Replaced centered status text with bottom-aligned Column overlay:
+  - Last 3 history items with semi-transparent dark background pills
+  - Thumbnail row (max 4 + "+N" overflow indicator), clickable
+  - Status text on green semi-transparent background
+- Added full-screen photo Dialog overlay (tap to dismiss)
+- Added imports: `Dialog`, `DialogProperties`, `clip`, `Bitmap`
+
+### Post-build:
+- App data cleared via `adb shell pm clear` for fresh smoke test
+- APK installed and launched successfully
+
 ## 2026-03-09 — Agent Report
 
 # Agent Report
