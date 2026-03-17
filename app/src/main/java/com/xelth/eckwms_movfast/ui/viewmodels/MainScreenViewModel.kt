@@ -211,6 +211,11 @@ class MainScreenViewModel : ViewModel() {
     private val _navigateToCamera = MutableLiveData<Boolean>(false)
     val navigateToCamera: LiveData<Boolean> = _navigateToCamera
 
+    // CRM entity navigation from inventory scan
+    private val _navigateToCrm = MutableLiveData<Pair<String, String>?>()
+    val navigateToCrm: LiveData<Pair<String, String>?> = _navigateToCrm
+    fun consumeNavigateToCrm() { _navigateToCrm.value = null }
+
     private val _activeSlotPhoto = MutableLiveData<Bitmap?>(null)
     val activeSlotPhoto: LiveData<Bitmap?> = _activeSlotPhoto
 
@@ -2729,6 +2734,19 @@ class MainScreenViewModel : ViewModel() {
             } else {
                 addLog(">>> $cleanCode")
             }
+        }
+
+        // --- CRM ENTITY INTERCEPT ---
+        // If decrypted code is a CRM entity (company/person/opp), navigate to CRM screen
+        val crmPattern = Regex("^(company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
+        val crmMatch = crmPattern.matchEntire(effectiveCode)
+        if (crmMatch != null) {
+            val entityType = crmMatch.groupValues[1].lowercase()
+            val entityId = crmMatch.groupValues[2]
+            android.util.Log.d("INVENTORY", "CRM entity detected: $entityType $entityId")
+            addLog("CRM: $entityType $entityId")
+            _navigateToCrm.postValue(Pair(entityType, entityId))
+            return
         }
 
         // --- SECURITY FILTER ---

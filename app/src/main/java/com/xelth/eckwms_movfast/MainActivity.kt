@@ -17,6 +17,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
+import com.xelth.eckwms_movfast.ui.screens.CrmEntityScreen
 import com.xelth.eckwms_movfast.ui.screens.ImageViewerScreen
 import com.xelth.eckwms_movfast.ui.screens.MainScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
@@ -99,6 +100,15 @@ class MainActivity : ComponentActivity() {
                             navController.navigate("mainMenu") {
                                 popUpTo("mainMenu") { inclusive = true }
                             }
+                            viewModel.resetNavigationCommand()
+                        }
+                        com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.TO_CRM -> {
+                            val eType = viewModel.pendingCrmEntityType.value ?: ""
+                            val eId = viewModel.pendingCrmEntityId.value ?: ""
+                            if (eType.isNotEmpty() && eId.isNotEmpty()) {
+                                navController.navigate("crmEntity/$eType/$eId")
+                            }
+                            viewModel.consumeCrmNavigation()
                             viewModel.resetNavigationCommand()
                         }
                         else -> {
@@ -365,6 +375,21 @@ class MainActivity : ComponentActivity() {
                             routeStops = routeStops,
                             routePath = routePath,
                             currentStopIndex = currentIndex
+                        )
+                    }
+
+                    // --- CRM Entity Route ---
+                    composable(
+                        route = "crmEntity/{entityType}/{entityId}",
+                        arguments = listOf(
+                            navArgument("entityType") { type = NavType.StringType },
+                            navArgument("entityId") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        CrmEntityScreen(
+                            entityType = backStackEntry.arguments?.getString("entityType") ?: "",
+                            entityId = backStackEntry.arguments?.getString("entityId") ?: "",
+                            onBack = { navController.popBackStack() }
                         )
                     }
                 }

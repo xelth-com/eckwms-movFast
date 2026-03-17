@@ -34,7 +34,7 @@ import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 
-enum class NavigationCommand { NONE, TO_PAIRING, BACK, TO_MAIN_REPAIR }
+enum class NavigationCommand { NONE, TO_PAIRING, BACK, TO_MAIN_REPAIR, TO_CRM }
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -115,6 +115,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val _navigationCommand = MutableLiveData(NavigationCommand.NONE)
     val navigationCommand: LiveData<NavigationCommand> = _navigationCommand
+
+    // --- CRM ENTITY NAVIGATION ---
+    private val _pendingCrmEntityType = MutableLiveData<String?>()
+    val pendingCrmEntityType: LiveData<String?> = _pendingCrmEntityType
+    private val _pendingCrmEntityId = MutableLiveData<String?>()
+    val pendingCrmEntityId: LiveData<String?> = _pendingCrmEntityId
+
+    fun consumeCrmNavigation() {
+        _pendingCrmEntityType.value = null
+        _pendingCrmEntityId.value = null
+    }
 
     // --- NETWORK HEALTH MONITORING ---
     // Start with cached state for instant UI, will update after health check
@@ -1397,6 +1408,24 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             } else {
                 addLog("[Decrypt] Failed — sending encrypted code to server")
             }
+        }
+
+        // --- CRM ENTITY ROUTING ---
+        // Intercept CRM entity types locally: company-{uuid}, person-{uuid}, opp-{uuid}
+        val crmMatch = Regex("^(company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
+            .matchEntire(effectiveCode)
+        if (crmMatch != null) {
+            val entityType = crmMatch.groupValues[1].lowercase()
+            val entityId = crmMatch.groupValues[2]
+            android.util.Log.d("SCAN_ROUTER", "CRM entity detected: type=$entityType id=$entityId")
+            addLog("[Router] → CRM: $entityType $entityId")
+            viewModelScope.launch {
+                repository.logRawScan(effectiveCode, type, _activeOrderId.value)
+            }
+            _pendingCrmEntityType.postValue(entityType)
+            _pendingCrmEntityId.postValue(entityId)
+            _navigationCommand.postValue(NavigationCommand.TO_CRM)
+            return true
         }
 
         // 1. ALWAYS log to audit trail first (using decrypted code)
