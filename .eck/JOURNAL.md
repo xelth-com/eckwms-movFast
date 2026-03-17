@@ -7,6 +7,41 @@
 
 
 
+
+## 2026-03-17 — Agent Report
+
+# Agent Report
+
+## Task: Remove Hardcoded QR Prefixes — Dynamic Prefixes from Server
+
+### Rust Backend (`eckwmsr`)
+- **`src/handlers/device.rs`**: Added `qr_prefixes` (Vec) and `qr_tenant_suffix` (String) to the `/api/status` JSON response alongside existing `status`, `repair_order_prefix`, and `enc_key` fields.
+- Committed to `master` branch as `93e33de`.
+
+### Android App (`eckwms-movFast`)
+
+**1. SettingsManager.kt** — Added storage for dynamic QR config:
+- `saveQrPrefixes(List<String>)` / `getQrPrefixes(): List<String>` — stores server-configured prefixes, merges with hardcoded fallbacks (`9eck.com/`, `xelth.com/`), deduplicates.
+- `saveQrTenantSuffix(String)` / `getQrTenantSuffix(): String` — defaults to `"IB"`.
+
+**2. ScanApiService.kt** — In `checkDeviceStatus()` response parser, added extraction of `qr_prefixes` (JSON array) and `qr_tenant_suffix` (string) from the server response, saving to SettingsManager.
+
+**3. EckSecurityManager.kt** — Added `isTrustedLinkBarcode(barcode)` helper that checks if a barcode starts with any dynamic prefix (from SettingsManager.getQrPrefixes() which includes server + fallbacks).
+
+**4. MainScreenViewModel.kt** — Replaced hardcoded `eck1.com/eck2.com/eck3.com` security filter check with `EckSecurityManager.isTrustedLinkBarcode()`.
+
+**5. ScanRecoveryViewModel.kt** — Same replacement in both `isLinkBarcode` checks within `handleGeneralScanResult()`.
+
+### Key Design Decisions
+- **Hardcoded fallbacks preserved**: `9eck.com/` and `xelth.com/` are always in the prefix list (relay domains).
+- **`isEncryptedEckUrl()` unchanged**: It was already prefix-agnostic (heuristic: any URL with Base32 body >= 58 chars). No ECK1.COM hardcoding existed there.
+- **Suffix not used in decryption logic**: The 2-char suffix is stripped positionally (last 2 chars of body). The actual suffix value doesn't affect decryption, only validation could use it later.
+- **Zero hardcoded ECK1/2/3.COM references remain** in Kotlin code (verified via grep).
+
+### Build Status
+- Rust: `cargo check` — OK (69 pre-existing warnings)
+- Android: `assembleDebug` — BUILD SUCCESSFUL (no new warnings)
+
 ## 2026-03-17 — Agent Report
 
 # Agent Report
