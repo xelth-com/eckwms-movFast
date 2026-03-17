@@ -6,6 +6,46 @@
 
 
 
+
+## 2026-03-17 — Agent Report
+
+# Agent Report
+
+## Task: Local SmartTag Decryption & Offline CRM Updates
+
+### What Was Already Done (Pre-existing)
+- **Step 1 (enc_key storage):** `SettingsManager.kt` already had `getEncKey()`/`saveEncKey()` (lines 134-141) with default dev key.
+- **Step 2 (Local decryption):** `EckSecurityManager.kt` already had complete V1+V2 AES-192-GCM decryption with custom Base32, SHA-256 nonce derivation, and entity type mapping. Already integrated in `MainScreenViewModel.onInventoryScan()`, `ScanRecoveryViewModel.handleGeneralScanResult()`, and `PickingViewModel.processScan()`.
+
+### What Was Implemented
+
+**Step 3: CRM Entity Scan Interception**
+
+1. **`ScanRecoveryViewModel.kt`** — Added `TO_CRM` to `NavigationCommand` enum. Added `pendingCrmEntityType`/`pendingCrmEntityId` LiveData fields. In `handleGeneralScanResult()`, added regex-based CRM entity detection (`company-{uuid}`, `person-{uuid}`, `opp-{uuid}`) that fires before the general routing logic, logs the audit scan, sets navigation state, and returns `true` (handled).
+
+2. **`MainScreenViewModel.kt`** — Added `navigateToCrm` LiveData (`Pair<String, String>?`). In `onInventoryScan()`, added CRM entity intercept between decryption layer and security filter that detects CRM prefixes and triggers navigation.
+
+**Step 4: CrmEntityScreen & Offline Save**
+
+3. **`CrmEntityScreen.kt`** (NEW) — Compose screen accepting `entityType` and `entityId`. Features:
+   - Color-coded header per entity type (blue=company, green=person, orange=opportunity)
+   - Entity info card with UUID display
+   - Status selector chips (contextual per type: e.g., Contacted/Qualified/Won/Lost for opportunities)
+   - Notes text field
+   - "Save Offline" button that queues a `crm_update` entry via `WarehouseRepository.queueCrmUpdate()`
+   - Success confirmation with sync status message
+
+4. **`WarehouseRepository.kt`** — Added `queueCrmUpdate()` method that creates a `SyncQueueEntity` with type `crm_update` and JSON payload `{entity_type, entity_id, changes, timestamp}`, then triggers `SyncManager.scheduleSync()`.
+
+5. **`MainActivity.kt`** — Added `TO_CRM` navigation command handler that reads pending entity type/id and navigates to `crmEntity/{type}/{id}`. Added composable route with `NavType.StringType` arguments.
+
+### Build Status
+`assembleDebug` — **BUILD SUCCESSFUL** (no new warnings)
+
+### Notes
+- The sync worker (`SyncWorker.kt`) will need a handler for `crm_update` queue type to POST changes to the server when online. Currently it queues but the server-side endpoint for CRM updates would need to exist.
+- Entity data is not fetched/displayed (no offline CRM cache yet) — the screen is write-only for now.
+
 ## 2026-03-09 — Agent Report
 
 # Agent Report

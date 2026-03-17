@@ -50,6 +50,20 @@ object EckSecurityManager {
     }
 
     /**
+     * Checks whether [barcode] starts with any configured QR prefix (dynamic from server
+     * + hardcoded fallbacks like 9eck.com/, xelth.com/).
+     * Used for security filtering: trusted link barcodes vs. potentially spoofed ones.
+     */
+    fun isTrustedLinkBarcode(barcode: String): Boolean {
+        val clean = barcode.trim()
+            .removePrefix("http://")
+            .removePrefix("https://")
+        return SettingsManager.getQrPrefixes().any { prefix ->
+            clean.startsWith(prefix, ignoreCase = true)
+        }
+    }
+
+    /**
      * Checks whether [barcode] looks like an encrypted ECK QR.
      *
      * V1 legacy: ECKn.COM/{67 chars} = 76 total.

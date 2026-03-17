@@ -146,6 +146,32 @@ object SettingsManager {
     fun getRepairOrderPrefix(): String = prefs.getString(KEY_REPAIR_ORDER_PREFIX, DEFAULT_REPAIR_ORDER_PREFIX) ?: DEFAULT_REPAIR_ORDER_PREFIX
     fun saveRepairOrderPrefix(prefix: String) = prefs.edit().putString(KEY_REPAIR_ORDER_PREFIX, prefix.trim()).commit()
 
+    // Dynamic QR prefixes + tenant suffix (fetched from server /api/status)
+    // Hardcoded fallbacks: 9eck.com/ and xelth.com/ (relay domains, always valid)
+    private const val KEY_QR_PREFIXES = "qr_prefixes"
+    private const val KEY_QR_TENANT_SUFFIX = "qr_tenant_suffix"
+    private const val DEFAULT_QR_TENANT_SUFFIX = "IB"
+    private val HARDCODED_FALLBACK_PREFIXES = listOf("9eck.com/", "xelth.com/")
+
+    fun saveQrPrefixes(prefixes: List<String>) {
+        val joined = prefixes.joinToString(",") { it.trim() }
+        prefs.edit().putString(KEY_QR_PREFIXES, joined).commit()
+    }
+
+    /** Returns merged list: server-configured prefixes + hardcoded fallbacks (deduplicated). */
+    fun getQrPrefixes(): List<String> {
+        val saved = prefs.getString(KEY_QR_PREFIXES, null)
+        val serverPrefixes = if (!saved.isNullOrEmpty()) {
+            saved.split(",").filter { it.isNotBlank() }
+        } else {
+            emptyList()
+        }
+        return (serverPrefixes + HARDCODED_FALLBACK_PREFIXES).distinct()
+    }
+
+    fun saveQrTenantSuffix(suffix: String) = prefs.edit().putString(KEY_QR_TENANT_SUFFIX, suffix.trim()).commit()
+    fun getQrTenantSuffix(): String = prefs.getString(KEY_QR_TENANT_SUFFIX, DEFAULT_QR_TENANT_SUFFIX) ?: DEFAULT_QR_TENANT_SUFFIX
+
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
     fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()

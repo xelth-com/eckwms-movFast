@@ -975,8 +975,19 @@ class ScanApiService(private val context: Context) {
                                 com.xelth.eckwms_movfast.utils.SettingsManager.saveRepairOrderPrefix(repairPrefix)
                             }
                         }
+                        // Dynamic QR prefixes from server config
+                        val qrPrefixesArr = json.optJSONArray("qr_prefixes")
+                        if (qrPrefixesArr != null && qrPrefixesArr.length() > 0) {
+                            val prefixes = (0 until qrPrefixesArr.length()).map { qrPrefixesArr.getString(it) }
+                            Log.i(TAG, "QR prefixes from server: $prefixes")
+                            com.xelth.eckwms_movfast.utils.SettingsManager.saveQrPrefixes(prefixes)
+                        }
+                        val qrSuffix = json.optString("qr_tenant_suffix", "")
+                        if (qrSuffix.isNotEmpty()) {
+                            com.xelth.eckwms_movfast.utils.SettingsManager.saveQrTenantSuffix(qrSuffix)
+                        }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse enc_key from status check", e)
+                        Log.e(TAG, "Failed to parse config from status check", e)
                     }
 
                     // Server returns {"status":"active","repair_order_prefix":"CS-DE-",...}

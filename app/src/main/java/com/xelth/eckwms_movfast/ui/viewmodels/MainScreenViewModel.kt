@@ -2750,12 +2750,8 @@ class MainScreenViewModel : ViewModel() {
         }
 
         // --- SECURITY FILTER ---
-        // 1. Check for Trusted Link Barcodes (eck1.com, eck2.com, eck3.com)
-        val isLinkBarcode = cleanCode.startsWith("eck1.com", ignoreCase = true) ||
-                            cleanCode.startsWith("eck2.com", ignoreCase = true) ||
-                            cleanCode.startsWith("eck3.com", ignoreCase = true) ||
-                            cleanCode.startsWith("http://eck", ignoreCase = true) ||
-                            cleanCode.startsWith("https://eck", ignoreCase = true)
+        // 1. Check for Trusted Link Barcodes (dynamic prefixes from server + hardcoded fallbacks)
+        val isLinkBarcode = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(cleanCode)
 
         // 2. Check for Spoofing Attempts on Internal ID format
         // Raw barcodes (NOT Link Barcodes) that look like internal IDs are rejected

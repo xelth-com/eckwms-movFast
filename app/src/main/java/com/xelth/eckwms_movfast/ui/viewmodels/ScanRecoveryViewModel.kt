@@ -1435,11 +1435,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             // 2. Routing Logic (uses effectiveCode for all decisions)
 
-            val isLinkBarcode = effectiveCode.startsWith("eck1.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("eck2.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("eck3.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("http://eck", ignoreCase = true) ||
-                                effectiveCode.startsWith("https://eck", ignoreCase = true)
+            val isLinkBarcode = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(effectiveCode)
 
             when {
                 // A. System Codes (Executed Locally) — but NOT Link Barcodes
@@ -1503,11 +1499,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         // Return value: was this a special command? (for UI)
         // Use original barcode for return check (pairing codes are never encrypted)
-        val isLinkBarcodeCheck = barcode.startsWith("eck1.com", ignoreCase = true) ||
-                                 barcode.startsWith("eck2.com", ignoreCase = true) ||
-                                 barcode.startsWith("eck3.com", ignoreCase = true) ||
-                                 barcode.startsWith("http://eck", ignoreCase = true) ||
-                                 barcode.startsWith("https://eck", ignoreCase = true)
+        val isLinkBarcodeCheck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(barcode)
         val orderPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
         val isOrderSessionCheck = orderPrefix.isNotEmpty() && barcode.startsWith(orderPrefix) && barcode.length > orderPrefix.length
         return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) || isOrderSessionCheck
