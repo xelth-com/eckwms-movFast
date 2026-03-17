@@ -8,6 +8,27 @@
 
 
 
+
+## 2026-03-17 — Agent Report
+
+# Agent Report
+
+## Task: Documentation Updates for Offline CRM & SmartTag Decryption
+
+### README.md
+Added a comprehensive **Features** section with 10 bullet points covering:
+- True Offline-First SmartTags (local AES-192-GCM decryption)
+- Dynamic QR Routing (server-fetched prefixes + relay fallbacks)
+- Offline CRM Editing (queued for mesh sync)
+- Plus existing features: mesh sync, multi-user, inventory, picking, repair mode, hardware scanner, hex grid
+
+### .eck/CONTEXT.md
+- Updated description to reflect Rust backend (was "eckwmsgo") and offline capabilities
+- Added `CrmEntityScreen` to Key Screens list
+- Added **Local Cryptography & SmartTags** section: full V2 decryption flow (7 steps), key storage, dynamic prefix routing via `isTrustedLinkBarcode()`
+- Added **Offline CRM Updates** section: scan interception → CrmEntityScreen → SyncQueueEntity with `crm_update` type → SyncManager push on connectivity restore
+- Fixed duplicate "Key Screens" section that existed in the file
+
 ## 2026-03-17 — Agent Report
 
 # Agent Report
