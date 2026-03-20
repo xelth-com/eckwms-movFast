@@ -9,6 +9,48 @@
 
 
 
+
+## 2026-03-17 — Agent Report
+
+# Agent Report
+
+## Task: Update All .eck Documentation Files
+
+### Files Updated
+
+**ENVIRONMENT.md** — Replaced stub with comprehensive config reference:
+- Android SharedPreferences keys (server connectivity, encryption/QR, mesh networking, dynamic config)
+- Rust backend environment variables (ENC_KEY, QR_PREFIXES, QR_TENANT_SUFFIX, etc.)
+
+**HANDOVER.md** — Complete rewrite reflecting current state (was Feb 2026 Go-era):
+- Architecture overview (Rust/Axum backend)
+- Recently completed features (offline SmartTags, dynamic QR prefixes, CRM screen, repair auto-order)
+- Known gaps (SyncWorker crm_update handler, CRM read, offline picking confirms)
+
+**OPERATIONS.md** — Added new log tags:
+- `EckSecurity` (SmartTag decryption), `SCAN_ROUTER` (routing decisions), `INVENTORY` (inventory scans), `CrmEntity` (CRM save/sync)
+
+**PHOTO_PIPELINE.md** — Fixed all Go references to Rust:
+- "Go Server" → "Rust Server" (3 occurrences)
+- `upload.go` → `handlers/upload.rs`, `filestore/service.go` → `utils/filestore.rs`, `smart_code.go` → `utils/smart_code.rs`
+- Added `file_resources` schema note (hash, width, height, avatar_data, context)
+
+**ROADMAP.md** — Updated Phase 6 CRM tasks:
+- Marked done: Dynamic QR Prefixes, CRM Entity Screen, Offline CRM Queue
+- Added new TODO items: CRM Entity Fetch (read mode), SyncWorker CRM Handler
+
+**SMART_CODES.md** — Major update:
+- Split Encrypted QR section into V1 (legacy text) and V2 (binary SmartTag) with full specs
+- Added entity type table (WMS 0x00-0x05, CRM 0x10-0x12, Odoo 0x20-0x21)
+- Added QR Prefix Configuration section (server config, client fetch, fallbacks)
+- Fixed `Go` code generation reference → `Rust`
+
+**TECH_DEBT.md** — Added 4 new items (#7-10):
+- SyncWorker missing `crm_update` handler
+- CRM screen write-only (no entity fetch)
+- No local CRM entity cache (no Room entity/DAO)
+- Pairing code detection still hardcodes `startsWith("ECK")`
+
 ## 2026-03-17 — Agent Report
 
 # Agent Report
