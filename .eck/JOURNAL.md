@@ -10,6 +10,35 @@
 
 
 
+
+## 2026-03-27 — Agent Report
+
+# Agent Report
+
+# Task: eckwms-movFast:implement-action-proof-component — DONE
+
+## What was done
+1. **Created `ActionProofView.kt`** — new Composable component with:
+   - Voice-to-Text input via `RecognizerIntent` (de-DE locale)
+   - Signature drawing via Compose `Canvas` + `detectDragGestures`
+   - GPS location capture via `LocationManager` (best provider selection)
+   - Runtime permission requests for `RECORD_AUDIO` and `ACCESS_FINE_LOCATION`
+   - Confirm button enabled only when required fields are filled
+   - Outputs a `Map<String, Any>` with `verified_by`, `proof_type`, `timestamp`, `location`, `signature_image`
+
+2. **Modified `DynamicUiRenderer.kt`** — added `"action_proof"` case to the `when(type)` block:
+   - Reads `key`, `requireGps`, `requireSignature`, `requireVoiceName`, `legalText` from JSON
+   - Passes proof data as JSON string to `onValueChange(key, jsonString)`
+
+3. **Modified `AndroidManifest.xml`** — added `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` permissions
+
+## Build verification
+- `assembleDebug` — BUILD SUCCESSFUL
+
+## Notes
+- Signature is currently captured as a boolean flag (`"captured"`). A future enhancement could render the Compose `Path` to a Bitmap and encode as Base64.
+- GPS uses `getLastKnownLocation` for speed; a future version could request a fresh fix if last-known is stale.
+
 ## 2026-03-17 — Agent Report
 
 # Agent Report
