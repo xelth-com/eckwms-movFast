@@ -15,7 +15,13 @@ import com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity
 import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.bouncycastle.crypto.engines.AESEngine
+import org.bouncycastle.crypto.modes.GCMBlockCipher
+import org.bouncycastle.crypto.params.AEADParameters
+import org.bouncycastle.crypto.params.KeyParameter
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 class SyncWorker(
     appContext: Context,
@@ -97,6 +103,16 @@ class SyncWorker(
                     if (result) {
                         database.syncQueueDao().deleteJob(job)
                         Log.d(TAG, "Repair event job ${job.id} completed successfully")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
+                "transaction" -> {
+                    val result = processTransactionJob(job.payload)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Transaction job ${job.id} synced successfully")
                         Result.success()
                     } else {
                         handleRetry(job)
@@ -368,6 +384,93 @@ class SyncWorker(
                 }
             }
         }
+    }
+
+    /**
+     * Processes a completed POS transaction: encrypts the payload with the mesh network key
+     * and pushes it to the first available peer (WMS server) via the Relay.
+     */
+    private suspend fun processTransactionJob(payload: String): Boolean {
+        return try {
+            val networkKey = SettingsManager.getSyncNetworkKey()
+            if (networkKey.isNullOrEmpty()) {
+                Log.e(TAG, "Cannot sync transaction: SYNC_NETWORK_KEY not configured")
+                return false
+            }
+
+            val meshId = SettingsManager.getMeshId()
+            val instanceId = SettingsManager.getInstanceId()
+            val relayUrl = SettingsManager.getRelayUrl()
+
+            if (meshId.isNullOrEmpty()) {
+                Log.e(TAG, "Cannot sync transaction: mesh_id not configured")
+                return false
+            }
+
+            val relay = RelayClient(relayUrl, instanceId, meshId)
+
+            // Find target: first peer in the mesh that isn't us
+            val meshStatus = relay.getMeshStatus().getOrNull()
+            val targetNode = meshStatus?.firstOrNull { it.instanceId != instanceId }
+
+            if (targetNode == null) {
+                Log.w(TAG, "No mesh peer found to deliver transaction, will retry")
+                return false
+            }
+
+            // Wrap payload with metadata
+            val wrappedPayload = JSONObject().apply {
+                put("type", "pos_transaction")
+                put("sender", instanceId)
+                put("timestamp", System.currentTimeMillis())
+                put("data", JSONObject(payload))
+            }.toString()
+
+            // Encrypt with AES-256-GCM derived from network key
+            val (ciphertext, nonce) = encryptPayload(wrappedPayload.toByteArray(), networkKey)
+
+            // Push to relay
+            val pushResult = relay.pushPacket(
+                targetInstanceId = targetNode.instanceId,
+                payloadCipher = ciphertext,
+                nonce = nonce,
+                ttlSeconds = 86400 // 24h TTL
+            )
+
+            if (pushResult.isSuccess) {
+                Log.d(TAG, "✅ Transaction synced to ${targetNode.instanceId} (packet: ${pushResult.getOrNull()})")
+                true
+            } else {
+                Log.e(TAG, "❌ Transaction push failed: ${pushResult.exceptionOrNull()?.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing transaction sync job: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Encrypts a payload using AES-256-GCM with a key derived from the network key via SHA-256.
+     * Returns Pair(ciphertext, nonce).
+     */
+    private fun encryptPayload(plaintext: ByteArray, networkKey: String): Pair<ByteArray, ByteArray> {
+        // Derive AES-256 key from network key via SHA-256
+        val keyBytes = MessageDigest.getInstance("SHA-256").digest(networkKey.toByteArray())
+
+        // Generate 12-byte random nonce (standard for AES-GCM)
+        val nonce = ByteArray(12)
+        SecureRandom().nextBytes(nonce)
+
+        val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
+        val params = AEADParameters(KeyParameter(keyBytes), 128, nonce)
+        cipher.init(true, params)
+
+        val output = ByteArray(cipher.getOutputSize(plaintext.size))
+        val len = cipher.processBytes(plaintext, 0, plaintext.size, output, 0)
+        cipher.doFinal(output, len)
+
+        return Pair(output, nonce)
     }
 
     /** Center-focused smart crop for avatar generation (sync worker context) */

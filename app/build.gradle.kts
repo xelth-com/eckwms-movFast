@@ -114,4 +114,7 @@ dependencies {
 
     // WebSocket for hybrid transport
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
+
+    // Kotlinx Collections Immutable (required by POS UI)
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7")
 }

@@ -25,12 +25,19 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.draw.rotate
 import com.xelth.eckwms_movfast.ui.data.ConnectionType
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
+import com.xelth.eckwms_movfast.ui.model.CategoryItem
+import com.xelth.eckwms_movfast.ui.model.ProductItem
+import com.xelth.eckwms_movfast.ui.screens.pos.components.icons.HandIcon
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.RenderCell
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.SlotType
 import com.xelth.eckwms_movfast.ui.viewmodels.AppUser
 import com.xelth.eckwms_movfast.ui.viewmodels.HalfButtonState
+import com.xelth.eckwms_movfast.ui.viewmodels.PosViewModel
+import com.xelth.eckwms_movfast.ui.viewmodels.SelectionAreaState
 
 @Composable
 fun SelectionAreaSheet(
@@ -337,4 +344,131 @@ fun IndicatorButton(
             .clip(HexagonShape(HexagonSide.FULL))
             .background(animatedColor.copy(alpha = 0.3f))
     )
+}
+
+/**
+ * POS-specific SelectionAreaSheet overload.
+ * Handles CategoryItem, ProductItem, and POS system actions via PosViewModel.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SelectionAreaSheet(
+    viewModel: PosViewModel,
+    renderCells: List<RenderCell>
+) {
+    val selectionAreaState by viewModel.selectionAreaState.collectAsState()
+    val isLeftHandedMode by viewModel.isLeftHandedMode.collectAsState()
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
+        renderCells.forEach { cell ->
+            val content = cell.content
+            var label = ""
+            var color = "#3a3a3a"
+            var enabled = false
+            val slotType = (cell.geometryMetadata["slotType"] as? SlotType) ?: SlotType.DEAD
+
+            if (slotType == SlotType.DEAD) {
+                return@forEach
+            }
+
+            when {
+                content is CategoryItem -> {
+                    label = content.name
+                    color = "#5A4B35"
+                    enabled = true
+                }
+                content is ProductItem -> {
+                    label = content.name
+                    color = "#4A5D23"
+                    enabled = true
+                }
+                content is Map<*, *> && content["type"] == "placeholder" -> {
+                    label = ""
+                    color = "#404040"
+                    enabled = true
+                }
+                content is Map<*, *> && content["type"] == "system" -> {
+                    val subtype = content["subtype"] as? String ?: ""
+                    label = content["label"] as? String ?: ""
+                    color = when (subtype) {
+                        "button" -> "#4A5D23"
+                        else -> "#2c2c2c"
+                    }
+                    enabled = true
+                }
+            }
+
+            val offsetX = cell.cssPosition.x
+            val offsetY = cell.cssPosition.y
+            val cellWidth = viewModel.gridManager.config.cellWidth
+            val cellHeight = viewModel.gridManager.config.cellHeight
+
+            val buttonSide = when(slotType) {
+                SlotType.FULL -> HexagonSide.FULL
+                SlotType.HALF_LEFT -> HexagonSide.LEFT
+                SlotType.HALF_RIGHT -> HexagonSide.RIGHT
+                else -> HexagonSide.FULL
+            }
+
+            val buttonWidth = if (buttonSide == HexagonSide.FULL) {
+                cellWidth
+            } else {
+                (cellWidth / 2) - 1.dp
+            }
+
+            if (content is Map<*, *> && content["subtype"] == "hand_toggle") {
+                Box(
+                    modifier = Modifier
+                        .size(width = buttonWidth, height = cellHeight)
+                        .offset(x = offsetX, y = offsetY)
+                        .clip(HexagonShape(buttonSide))
+                        .background(Color(android.graphics.Color.parseColor(color)))
+                        .combinedClickable(
+                            enabled = enabled,
+                            onClick = {
+                                val action = content["action"] as? String ?: ""
+                                viewModel.onSystemAction(action)
+                            },
+                            onLongClick = {
+                                viewModel.toggleHandMode()
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    HandIcon(
+                        modifier = Modifier.rotate(if (isLeftHandedMode) 180f else 0f),
+                        color = Color.White
+                    )
+                }
+            } else {
+                HexagonalButton(
+                    modifier = Modifier
+                        .size(width = buttonWidth, height = cellHeight)
+                        .offset(x = offsetX, y = offsetY),
+                    label = label,
+                    colorHex = color,
+                    enabled = enabled,
+                    side = buttonSide,
+                    onClick = {
+                        if (enabled) {
+                            when (content) {
+                                is CategoryItem -> viewModel.onCategoryClick(content)
+                                is ProductItem -> viewModel.onProductClick(content)
+                                is Map<*, *> -> {
+                                    if (content["type"] == "system") {
+                                        val action = content["action"] as? String ?: ""
+                                        if (action == "back" && selectionAreaState is SelectionAreaState.Products) {
+                                            viewModel.onBackToCategories()
+                                        } else {
+                                            viewModel.onSystemAction(action)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
 }

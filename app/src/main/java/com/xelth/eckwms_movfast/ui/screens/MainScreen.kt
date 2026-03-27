@@ -688,6 +688,7 @@ fun MainScreen(
                             "navigate_qc" -> navController.navigate("qcScreen")
                             "navigate_explorer" -> navController.navigate("explorerScreen")
                             "navigate_picking" -> navController.navigate("pickingList")
+                            "navigate_pos" -> navController.navigate("pos")
                         }
                     },
                     onButtonLongClick = { action ->

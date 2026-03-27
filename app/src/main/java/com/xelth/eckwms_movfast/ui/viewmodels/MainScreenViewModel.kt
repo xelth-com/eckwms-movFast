@@ -478,7 +478,8 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT),
             MainMenuButton("picking", "📦\nPicking", "#3F51B5", "navigate_picking", PRIORITIES.DEFAULT),
             MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
-            MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT)
+            MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT),
+            MainMenuButton("pos", "💶\nPOS", "#4CAF50", "navigate_pos", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->

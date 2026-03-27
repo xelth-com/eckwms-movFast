@@ -6,10 +6,16 @@ import android.util.Log
  * Priority constants for content placement.
  */
 object PRIORITIES {
+    const val TABLE_BUTTON = 95
+    const val PAYMENT_BUTTON = 95
+    const val PINPAD_BUTTON = 95
     const val SCAN_BUTTON = 95
     const val RESTOCK_BUTTON = 95
     const val AI_BUTTON = 95
     const val SETTINGS_BUTTON = 95
+    const val NEW_PRODUCTS = 82
+    const val CATEGORY_PRIORITY = 80
+    const val CATEGORY_NAVIGATION = 70
     const val DEFAULT = 50
     const val MIN = 1
 }
@@ -68,6 +74,38 @@ class GridManager(val config: GridConfig, val dimensions: Pair<Int, Int>, val la
         return slot.isEmpty || slot.priority < newPriority
     }
 
+    fun placeSystemElements(systemElements: List<SystemElement>, isLeftHanded: Boolean = false) {
+        systemElements.forEach { element ->
+            val adjustedCol = if (isLeftHanded && (element.type == "payment" || element.type == "table")) {
+                when {
+                    element.col >= contentGrid.cols - 2 -> 0
+                    element.col >= contentGrid.cols - 3 -> 1
+                    else -> element.col
+                }
+            } else {
+                element.col
+            }
+
+            val targetSlot = contentGrid.getSlot(element.row, adjustedCol)
+            if (canPlaceAt(targetSlot, element.priority)) {
+                targetSlot?.setContent(element.content, element.priority)
+            } else {
+                val nearestSlot = findNearestEmptySlot(element.row, adjustedCol)
+                nearestSlot?.setContent(element.content, element.priority)
+            }
+        }
+        markDirty()
+    }
+
+    private fun findNearestEmptySlot(targetRow: Int, targetCol: Int): ContentSlot? {
+        val emptySlots = contentGrid.getUsableEmptySlots()
+        if (emptySlots.isEmpty()) return null
+
+        return emptySlots.minByOrNull {
+            calculateDistance(targetRow, targetCol, it.row, it.col, config)
+        }
+    }
+
     fun getRenderStructure(): List<RenderCell> {
         if (renderCache != null && !isDirty) {
             return renderCache!!
@@ -82,3 +120,11 @@ class GridManager(val config: GridConfig, val dimensions: Pair<Int, Int>, val la
         renderCache = null
     }
 }
+
+data class SystemElement(
+    val row: Int,
+    val col: Int,
+    val content: Any,
+    val priority: Int,
+    val type: String
+)
