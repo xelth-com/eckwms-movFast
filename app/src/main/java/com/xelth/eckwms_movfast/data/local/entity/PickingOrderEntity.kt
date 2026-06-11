@@ -5,15 +5,15 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "picking_orders")
 data class PickingOrderEntity(
-    @PrimaryKey val id: Long,
-    val name: String,               // e.g., "WH/OUT/00001"
-    val state: String,              // assigned, done, cancel
+    @PrimaryKey val id: String,
+    val name: String,
+    val state: String,
     val partnerName: String? = null,
-    val origin: String? = null,     // SO number
-    val priority: String = "0",     // 0=Normal, 1=Urgent
-    val scheduledDate: Long = 0L,   // epoch millis
-    val locationId: Long = 0,
-    val locationDestId: Long = 0,
+    val origin: String? = null,
+    val priority: String = "0",
+    val scheduledDate: Long = 0L,
+    val locationId: String = "",
+    val locationDestId: String = "",
     val lineCount: Int = 0,
     val pickedCount: Int = 0,
     val lastUpdated: Long = System.currentTimeMillis()

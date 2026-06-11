@@ -64,6 +64,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import android.graphics.Bitmap
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -83,6 +87,11 @@ fun MainScreen(
     val isRepairMode by mainViewModel.isRepairMode.observeAsState(false)
     val repairStatus by mainViewModel.repairStatus.observeAsState("")
 
+    // Active slot history and photos
+    val activeSlotHistory by mainViewModel.activeSlotHistory.observeAsState(emptyList())
+    val activeSlotPhotosList by mainViewModel.activeSlotPhotosList.observeAsState(emptyList())
+    var fullScreenPhoto by remember { mutableStateOf<Bitmap?>(null) }
+
     // Receiving mode state
     val isReceivingMode by mainViewModel.isReceivingMode.observeAsState(false)
     val receivingStatus by mainViewModel.receivingStatus.observeAsState("")
@@ -98,6 +107,13 @@ fun MainScreen(
     // Inventory mode state
     val isInventoryMode by mainViewModel.isInventoryMode.observeAsState(false)
 
+    // Multi-user state (collected early for SelectionAreaSheet)
+    val currentUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.collectAsState()
+    val viewingUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.collectAsState()
+
+    // Native half-slot buttons
+    val exitButtonState by mainViewModel.exitButton.observeAsState(null)
+
     // Read shared settings from ScanRecoveryViewModel
     val sharedGridRowCount by viewModel.gridRowCount.observeAsState(7)
     val sharedIsLeftHanded by viewModel.isLeftHanded.observeAsState(false)
@@ -107,6 +123,7 @@ fun MainScreen(
 
     // State for the Intake Bottom Sheet
     var showIntakeSheet by remember { mutableStateOf(false) }
+    var showNetworkPanel by remember { mutableStateOf(false) }
     var intakeConfigJson by remember { mutableStateOf("{}") }
     var intakeLongPressAction by remember { mutableStateOf("") }
     val intakeFormState = remember { mutableStateMapOf<String, Any>() }
@@ -155,6 +172,25 @@ fun MainScreen(
         }
         mainViewModel.onDeleteRepairPhoto = { index ->
             com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
+        }
+        // UUID-based photo persistence (immutable CAS)
+        val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+        val localPhotoDao = db.localPhotoDao()
+        mainViewModel.onSavePhoto = { uuid, slotIndex, bitmap ->
+            val origPath = com.xelth.eckwms_movfast.utils.SettingsManager.savePhotoOriginal(uuid, bitmap)
+            // DB insert is fire-and-forget via ScanRecoveryViewModel's scope
+            viewModel.insertLocalPhoto(uuid, slotIndex, origPath)
+        }
+        mainViewModel.onLoadSlotPhotoUuids = { slotIndex ->
+            localPhotoDao.getBySlotIndex(slotIndex).map { it.uuid }
+        }
+        mainViewModel.onDeleteSlotPhotos = { slotIndex ->
+            val photos = localPhotoDao.getBySlotIndex(slotIndex)
+            photos.forEach { com.xelth.eckwms_movfast.utils.SettingsManager.deletePhoto(it.uuid) }
+            localPhotoDao.deleteBySlotIndex(slotIndex)
+        }
+        mainViewModel.onBindSlotPhotos = { slotIndex, receiverId ->
+            localPhotoDao.bindSlotPhotos(slotIndex, receiverId)
         }
         // Device Check persistence
         mainViewModel.onSaveDeviceCheckSlots = { slots ->
@@ -207,28 +243,11 @@ fun MainScreen(
         mainViewModel.onSaveInventoryRecords = { loc, records -> repo.saveInventoryRecords(loc, records) }
         mainViewModel.onLoadInventoryRecords = { loc -> repo.getInventoryRecords(loc) }
 
-        // Long vibration for unexpected new item needing photo
-        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
-            vm?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-        }
-        mainViewModel.onLongVibrate = {
-            try {
-                vibrator?.let { v ->
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        v.vibrate(longArrayOf(0, 200, 100, 200), -1)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("Vibrate", "Vibration failed: ${e.message}")
-            }
-        }
+        // Wire haptic feedback through SunlightModeManager (replaces raw vibrator)
+        mainViewModel.onLongVibrate = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playAttention() }
+        mainViewModel.onHapticSuccess = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playSuccess() }
+        mainViewModel.onHapticError = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playError() }
+        mainViewModel.onHapticAttention = { com.xelth.eckwms_movfast.utils.SunlightModeManager.playAttention() }
     }
 
     // Load receiving workflow JSON
@@ -251,6 +270,9 @@ fun MainScreen(
     val scannedBarcode by viewModel.scannedBarcode.observeAsState(null)
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
+            // Haptic: confirm scan received (two quick ticks)
+            com.xelth.eckwms_movfast.utils.SunlightModeManager.playSuccess()
+
             // Cross-mode auto-enter: device check takes priority over ALL modes
             if (mainViewModel.checkDeviceCheckAutoEnter(scannedBarcode!!)) {
                 viewModel.consumeScannedBarcode()
@@ -351,19 +373,72 @@ fun MainScreen(
                                 contentDescription = "Device photo",
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .alpha(0.2f),
+                                    .alpha(0.4f),
                                 contentScale = ContentScale.Crop
                             )
                         }
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
+
+                        // Overlay with history, thumbnails, status
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .padding(bottom = overlap),
+                            verticalArrangement = Arrangement.Bottom
                         ) {
+                            // History items (last 3)
+                            activeSlotHistory.takeLast(3).forEach { msg ->
+                                Text(
+                                    text = msg,
+                                    color = Color(0xFFE0E0E0),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .padding(bottom = 4.dp)
+                                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            // Thumbnails row
+                            if (activeSlotPhotosList.isNotEmpty()) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                ) {
+                                    activeSlotPhotosList.take(4).forEach { bmp ->
+                                        Image(
+                                            bitmap = bmp.asImageBitmap(),
+                                            contentDescription = "Thumbnail",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(50.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.Black)
+                                                .clickable { fullScreenPhoto = bmp }
+                                        )
+                                    }
+                                    if (activeSlotPhotosList.size > 4) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(50.dp)
+                                                .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("+${activeSlotPhotosList.size - 4}", color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Current status
                             Text(
                                 text = repairStatus,
                                 color = Color.White,
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .background(Color(0xFF4CAF50).copy(alpha = 0.8f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
                             )
                         }
                     }
@@ -592,6 +667,9 @@ fun MainScreen(
                     buttonGap = gridConfig.buttonGap,
                     networkState = networkHealthState,
                     regStatus = deviceRegistrationStatus,
+                    currentUser = currentUserState,
+                    viewingUser = viewingUserState,
+                    exitButton = exitButtonState,
                     onButtonClick = { action ->
                         val result = mainViewModel.onButtonClick(action)
                         android.util.Log.e("NAV_CAMERA", ">>> onButtonClick action=$action result=$result")
@@ -610,6 +688,7 @@ fun MainScreen(
                             "navigate_qc" -> navController.navigate("qcScreen")
                             "navigate_explorer" -> navController.navigate("explorerScreen")
                             "navigate_picking" -> navController.navigate("pickingList")
+                            "navigate_pos" -> navController.navigate("pos")
                         }
                     },
                     onButtonLongClick = { action ->
@@ -640,11 +719,28 @@ fun MainScreen(
                         }
                     },
                     onNetworkIndicatorClick = {
+                        showNetworkPanel = true
+                    },
+                    onNetworkIndicatorLongClick = {
                         navController.navigate("pairingScreen")
                     }
                 )
             }
         }
+    }
+
+    // Network Status Bottom Sheet
+    if (showNetworkPanel) {
+        NetworkPanelSheet(
+            networkHealthState = networkHealthState,
+            deviceRegistrationStatus = deviceRegistrationStatus,
+            onDismiss = { showNetworkPanel = false },
+            onRefresh = { viewModel.triggerManualHealthCheck() },
+            onRePair = {
+                showNetworkPanel = false
+                navController.navigate("pairingScreen")
+            }
+        )
     }
 
     // Intake ModalBottomSheet
@@ -990,10 +1086,7 @@ fun MainScreen(
     val showUserDialog by mainViewModel.showUserDialog.observeAsState(false)
     val userDialogMode by mainViewModel.userDialogMode.observeAsState("view")
     val showPinDialog by mainViewModel.showPinDialog.observeAsState(false)
-    // Collect StateFlows as Compose state (reactive!)
     val availableUsers by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.availableUsers.collectAsState()
-    val currentUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.collectAsState()
-    val viewingUserState by com.xelth.eckwms_movfast.ui.viewmodels.UserManager.viewingUser.collectAsState()
 
     // User Selection Dialog
     if (showUserDialog) {
@@ -1109,5 +1202,28 @@ fun MainScreen(
                 TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel", color = Color.White) }
             }
         )
+    }
+
+    // Full-screen photo overlay
+    if (fullScreenPhoto != null) {
+        Dialog(
+            onDismissRequest = { fullScreenPhoto = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = true)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.95f))
+                    .clickable { fullScreenPhoto = null },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = fullScreenPhoto!!.asImageBitmap(),
+                    contentDescription = "Full screen",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
     }
 }

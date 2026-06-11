@@ -17,6 +17,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
+import com.xelth.eckwms_movfast.ui.screens.CrmEntityScreen
 import com.xelth.eckwms_movfast.ui.screens.ImageViewerScreen
 import com.xelth.eckwms_movfast.ui.screens.MainScreen
 import com.xelth.eckwms_movfast.ui.screens.PairingScreen
@@ -33,6 +34,7 @@ import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.PickingViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.utils.BitmapCache
+import com.xelth.eckwms_movfast.utils.SunlightModeManager
 
 class MainActivity : ComponentActivity() {
 
@@ -41,6 +43,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private val pickingViewModel: PickingViewModel by viewModels()
+
+    // Graceful RECORD_AUDIO permission request (for AdaptiveAudioManager)
+    private val micPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        android.util.Log.d("MainActivity", "RECORD_AUDIO permission: $granted")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,7 +70,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            EckwmsmovFastTheme {
+            val isSunlightMode by SunlightModeManager.isSunlightMode.collectAsState()
+            EckwmsmovFastTheme(highContrast = isSunlightMode) {
                 val navController = rememberNavController()
 
                 // Global navigation command observer - works on all screens
@@ -90,6 +100,15 @@ class MainActivity : ComponentActivity() {
                             navController.navigate("mainMenu") {
                                 popUpTo("mainMenu") { inclusive = true }
                             }
+                            viewModel.resetNavigationCommand()
+                        }
+                        com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.TO_CRM -> {
+                            val eType = viewModel.pendingCrmEntityType.value ?: ""
+                            val eId = viewModel.pendingCrmEntityId.value ?: ""
+                            if (eType.isNotEmpty() && eId.isNotEmpty()) {
+                                navController.navigate("crmEntity/$eType/$eId")
+                            }
+                            viewModel.consumeCrmNavigation()
                             viewModel.resetNavigationCommand()
                         }
                         else -> {
@@ -358,6 +377,21 @@ class MainActivity : ComponentActivity() {
                             currentStopIndex = currentIndex
                         )
                     }
+
+                    // --- CRM Entity Route ---
+                    composable(
+                        route = "crmEntity/{entityType}/{entityId}",
+                        arguments = listOf(
+                            navArgument("entityType") { type = NavType.StringType },
+                            navArgument("entityId") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        CrmEntityScreen(
+                            entityType = backStackEntry.arguments?.getString("entityType") ?: "",
+                            entityId = backStackEntry.arguments?.getString("entityId") ?: "",
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
                 }
             }
         }
@@ -386,6 +420,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.startStatusMonitoring()
+        SunlightModeManager.startListening()
+        // Request mic permission for adaptive audio (graceful — silently skips if denied)
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     /**
@@ -394,5 +434,6 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         viewModel.stopStatusMonitoring()
+        SunlightModeManager.stopListening()
     }
 }

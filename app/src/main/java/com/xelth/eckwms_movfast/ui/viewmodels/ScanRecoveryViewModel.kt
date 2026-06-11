@@ -34,7 +34,7 @@ import com.xelth.eckwms_movfast.ui.data.Workflow
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 
-enum class NavigationCommand { NONE, TO_PAIRING, BACK, TO_MAIN_REPAIR }
+enum class NavigationCommand { NONE, TO_PAIRING, BACK, TO_MAIN_REPAIR, TO_CRM }
 
 enum class ScanState {
     IDLE, // Waiting for user action
@@ -115,6 +115,17 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     private val _navigationCommand = MutableLiveData(NavigationCommand.NONE)
     val navigationCommand: LiveData<NavigationCommand> = _navigationCommand
+
+    // --- CRM ENTITY NAVIGATION ---
+    private val _pendingCrmEntityType = MutableLiveData<String?>()
+    val pendingCrmEntityType: LiveData<String?> = _pendingCrmEntityType
+    private val _pendingCrmEntityId = MutableLiveData<String?>()
+    val pendingCrmEntityId: LiveData<String?> = _pendingCrmEntityId
+
+    fun consumeCrmNavigation() {
+        _pendingCrmEntityType.value = null
+        _pendingCrmEntityId.value = null
+    }
 
     // --- NETWORK HEALTH MONITORING ---
     // Start with cached state for instant UI, will update after health check
@@ -222,7 +233,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         viewModelScope.launch {
             addLog("Uploading repair photo for $targetDeviceId")
 
-            val imageId = java.util.UUID.randomUUID().toString()
             val quality = SettingsManager.getImageQuality()
             val ts = System.currentTimeMillis()
 
@@ -236,7 +246,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             }
             val imagePath = tempFile.absolutePath
             val imageSize = tempFile.length()
-            addLog("📷 Original: ${bitmapCopy.width}x${bitmapCopy.height}, ${imageSize/1024}KB")
+
+            // Deterministic CAS UUID from file bytes (MurmurHash3 x64_128)
+            val imageId = withContext(Dispatchers.IO) {
+                com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(tempFile.readBytes())
+            }
+            addLog("📷 Original: ${bitmapCopy.width}x${bitmapCopy.height}, ${imageSize/1024}KB, CAS=$imageId")
 
             // 2. Generate Smart Crop AVATAR (224x224) for DB sync
             val croppedBitmap = smartCrop(bitmapCopy, 224)
@@ -287,12 +302,34 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
     }
 
+    /** Insert a local photo record into Room DB (fire-and-forget) */
+    fun insertLocalPhoto(uuid: String, slotIndex: Int, originalPath: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(getApplication())
+                db.localPhotoDao().insert(
+                    com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity(
+                        uuid = uuid,
+                        receiverId = null,
+                        originalPath = originalPath,
+                        avatarPath = null,
+                        syncStatus = com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity.STATUS_PENDING,
+                        slotIndex = slotIndex
+                    )
+                )
+                Log.d(TAG, "LocalPhoto inserted: $uuid (slot=$slotIndex)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to insert local photo: ${e.message}")
+            }
+        }
+    }
+
     // --- MAP STATE ---
     private val _warehouseMap = MutableLiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?>(null)
     val warehouseMap: LiveData<com.xelth.eckwms_movfast.ui.data.WarehouseMapResponse?> = _warehouseMap
     
-    private val _targetRackId = MutableLiveData<Long?>(null)
-    val targetRackId: LiveData<Long?> = _targetRackId
+    private val _targetRackId = MutableLiveData<String?>(null)
+    val targetRackId: LiveData<String?> = _targetRackId
 
     /**
      * Clear the current AI interaction (dismiss dialog/banner)
@@ -310,6 +347,39 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val currentInteraction = _aiInteraction.value
         if (currentInteraction != null) {
             addLog("User responded to AI ${currentInteraction.type}: $response")
+
+            // Intercept collision resolution locally (no server roundtrip needed)
+            if (currentInteraction.id?.startsWith("collision_") == true) {
+                try {
+                    val rawStr = currentInteraction.data?.get("raw_candidates") as? String
+                    if (rawStr != null) {
+                        val rawObj = org.json.JSONObject(rawStr)
+                        val cArray = rawObj.getJSONArray("candidates")
+                        for (i in 0 until cArray.length()) {
+                            val c = cArray.getJSONObject(i)
+                            if (c.optString("title") == response) {
+                                val cType = c.optString("type")
+                                val cId = c.optString("id")
+                                val cBarcode = c.optString("barcode")
+                                if (cType == "order") {
+                                    addLog("Resolved collision → Order: $response")
+                                    _activeOrderId.postValue(cBarcode.ifEmpty { cId })
+                                } else {
+                                    addLog("Resolved collision → Item: $response")
+                                    // Feed exact UUID as SmartTag to hit Trust 100% path
+                                    val smartTag = "i-$cId"
+                                    handleGeneralScanResult(smartTag, "resolved_collision")
+                                }
+                                break
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    addLog("Error resolving collision: ${e.message}")
+                }
+                clearAiInteraction()
+                return
+            }
 
             // Normalize response for backend compatibility (Gemini expects "yes")
             val normalizedResponse = if (
@@ -628,6 +698,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         com.xelth.eckwms_movfast.net.HybridMessageSender.setAiInteractionListener { aiInteraction ->
             addLog("⚡ AI Interaction: ${aiInteraction.type} - ${aiInteraction.message}")
+            // Trigger adaptive audio before AI prompt (worker needs to hear response)
+            com.xelth.eckwms_movfast.utils.AdaptiveAudioManager.triggerSample()
             _aiInteraction.postValue(aiInteraction)
         }
     }
@@ -1320,6 +1392,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     fun handleGeneralScanResult(barcode: String, type: String): Boolean {
         addLog("[Router] handleGeneralScanResult: '$barcode' type='$type'")
+        // Trigger adaptive audio sampling on scan events
+        com.xelth.eckwms_movfast.utils.AdaptiveAudioManager.triggerSample()
 
         // --- DECRYPTION LAYER ---
         // Strip encryption at the edge: decrypt ECK Smart QR → use plaintext everywhere
@@ -1336,6 +1410,24 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             }
         }
 
+        // --- CRM ENTITY ROUTING ---
+        // Intercept CRM entity types locally: company-{uuid}, person-{uuid}, opp-{uuid}
+        val crmMatch = Regex("^(company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
+            .matchEntire(effectiveCode)
+        if (crmMatch != null) {
+            val entityType = crmMatch.groupValues[1].lowercase()
+            val entityId = crmMatch.groupValues[2]
+            android.util.Log.d("SCAN_ROUTER", "CRM entity detected: type=$entityType id=$entityId")
+            addLog("[Router] → CRM: $entityType $entityId")
+            viewModelScope.launch {
+                repository.logRawScan(effectiveCode, type, _activeOrderId.value)
+            }
+            _pendingCrmEntityType.postValue(entityType)
+            _pendingCrmEntityId.postValue(entityId)
+            _navigationCommand.postValue(NavigationCommand.TO_CRM)
+            return true
+        }
+
         // 1. ALWAYS log to audit trail first (using decrypted code)
         viewModelScope.launch {
             val scanId = repository.logRawScan(effectiveCode, type, _activeOrderId.value)
@@ -1343,11 +1435,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             // 2. Routing Logic (uses effectiveCode for all decisions)
 
-            val isLinkBarcode = effectiveCode.startsWith("eck1.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("eck2.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("eck3.com", ignoreCase = true) ||
-                                effectiveCode.startsWith("http://eck", ignoreCase = true) ||
-                                effectiveCode.startsWith("https://eck", ignoreCase = true)
+            val isLinkBarcode = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(effectiveCode)
 
             when {
                 // A. System Codes (Executed Locally) — but NOT Link Barcodes
@@ -1369,8 +1457,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     addLog("[Audit] Scan #$scanId → PROCESSED_LOCALLY")
                 }
 
-                // Order ID session activation
-                effectiveCode.startsWith("CS-DE-") && effectiveCode.length > 10 -> {
+                // Order ID session activation (dynamic prefix from server config)
+                run {
+                    val orderPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
+                    orderPrefix.isNotEmpty() && effectiveCode.startsWith(orderPrefix) && effectiveCode.length > orderPrefix.length
+                } -> {
                     addLog("[Router] → ROUTE A: Order ID activation")
                     _activeOrderId.postValue(effectiveCode)
                     addLog("ACTIVE ORDER SET: $effectiveCode")
@@ -1408,13 +1499,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         // Return value: was this a special command? (for UI)
         // Use original barcode for return check (pairing codes are never encrypted)
-        val isLinkBarcodeCheck = barcode.startsWith("eck1.com", ignoreCase = true) ||
-                                 barcode.startsWith("eck2.com", ignoreCase = true) ||
-                                 barcode.startsWith("eck3.com", ignoreCase = true) ||
-                                 barcode.startsWith("http://eck", ignoreCase = true) ||
-                                 barcode.startsWith("https://eck", ignoreCase = true)
-        return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) ||
-               (barcode.startsWith("CS-DE-") && barcode.length > 10)
+        val isLinkBarcodeCheck = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(barcode)
+        val orderPrefix = com.xelth.eckwms_movfast.utils.SettingsManager.getRepairOrderPrefix()
+        val isOrderSessionCheck = orderPrefix.isNotEmpty() && barcode.startsWith(orderPrefix) && barcode.length > orderPrefix.length
+        return (barcode.startsWith("ECK", ignoreCase = true) && !isLinkBarcodeCheck) || isOrderSessionCheck
     }
 
     /**
@@ -1588,10 +1676,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     private fun performUpload(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null) {
         viewModelScope.launch {
-            // 0. Generate imageId ONCE for deduplication
-            val imageId = java.util.UUID.randomUUID().toString()
-            addLog("Generated imageId: $imageId")
-
             // 1. Save bitmap to temp file for reference
             val tempFile = java.io.File(getApplication<Application>().cacheDir, "upload_${System.currentTimeMillis()}.webp")
             tempFile.outputStream().use { out ->
@@ -1599,6 +1683,12 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             }
             val imagePath = tempFile.absolutePath
             val imageSize = tempFile.length()
+
+            // 0. Deterministic CAS UUID from file bytes (MurmurHash3 x64_128)
+            val imageId = withContext(Dispatchers.IO) {
+                com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(tempFile.readBytes())
+            }
+            addLog("CAS imageId: $imageId")
 
             // 2. Create history item BEFORE upload (with PENDING status)
             val historyId = repository.saveImageUpload(
@@ -1891,7 +1981,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         _pairingStatus.postValue("Testing ${candidates.size} endpoints...")
 
-        val sortedCandidates = candidates.sortedBy { url ->
+        // Filter out link-local 169.254.x.x addresses when real network IPs are available
+        val hasRealIp = candidates.any { url ->
+            url.contains("192.168.") || url.contains("10.") || url.contains("172.")
+        }
+        val filteredCandidates = if (hasRealIp) {
+            val filtered = candidates.filter { !it.contains("169.254.") }
+            if (filtered.isNotEmpty()) {
+                addPairingLog("🔇 Filtered ${candidates.size - filtered.size} link-local (169.254.x.x) addresses")
+                filtered
+            } else candidates
+        } else candidates
+
+        val sortedCandidates = filteredCandidates.sortedBy { url ->
             if (url.contains("192.168.") || url.contains("10.") || url.contains("172.")) 0 else 1
         }
 

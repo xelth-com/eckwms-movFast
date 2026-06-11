@@ -77,7 +77,9 @@ data class RepairSlot(
     var isBound: Boolean = false,
     var isActive: Boolean = false,
     var photo: Bitmap? = null,                          // background photo (first photo sent)
-    val allPhotos: MutableList<Bitmap> = mutableListOf() // all photos for avatar picker (max 20)
+    val allPhotos: MutableList<Bitmap> = mutableListOf(), // all photos for avatar picker (max 20)
+    val photoUuids: MutableList<String> = mutableListOf(), // UUIDs of all photos (for DB + disk)
+    val history: MutableList<String> = mutableListOf()    // Action history for this slot
 )
 
 sealed class RepairAction {
@@ -87,6 +89,15 @@ sealed class RepairAction {
 }
 
 // Tracks the last sent action so it can be undone
+/** State for a native half-slot button (EXIT, etc.) rendered by SelectionAreaSheet. */
+data class HalfButtonState(
+    val label: String,
+    val colorHex: String,
+    val action: String,
+    val textColorHex: String? = null,
+    val enabled: Boolean = true
+)
+
 data class LastRepairAction(
     val targetDeviceId: String,
     val eventType: String, // "photo", "part_scan"
@@ -128,6 +139,10 @@ class MainScreenViewModel : ViewModel() {
     private val _renderCells = MutableLiveData<List<RenderCell>>(emptyList())
     val renderCells: LiveData<List<RenderCell>> = _renderCells
 
+    // Native half-slot: EXIT button (HALF_RIGHT row=1)
+    private val _exitButton = MutableLiveData<HalfButtonState?>(null)
+    val exitButton: LiveData<HalfButtonState?> = _exitButton
+
     private val _consoleLogs = MutableLiveData<List<String>>(emptyList())
     val consoleLogs: LiveData<List<String>> = _consoleLogs
 
@@ -157,13 +172,18 @@ class MainScreenViewModel : ViewModel() {
     var onSaveRepairPhoto: ((Int, Bitmap) -> Unit)? = null
     var onLoadRepairPhoto: ((Int) -> Bitmap?)? = null
     var onDeleteRepairPhoto: ((Int) -> Unit)? = null
+    // UUID-based photo persistence (backed by LocalPhotoDao + SettingsManager)
+    var onSavePhoto: ((uuid: String, slotIndex: Int, bitmap: Bitmap) -> Unit)? = null
+    var onLoadSlotPhotoUuids: (suspend (slotIndex: Int) -> List<String>)? = null
+    var onDeleteSlotPhotos: (suspend (slotIndex: Int) -> Unit)? = null
+    var onBindSlotPhotos: (suspend (slotIndex: Int, receiverId: String) -> Unit)? = null
     // Callback for fetching shipments (set by UI layer, backed by ScanApiService)
     var onFetchShipments: (suspend (limit: Int) -> ScanResult)? = null
     // Fat Client: offline lookup callbacks (set by UI layer, backed by WarehouseRepository)
     var onUpdateProductQty: (suspend (barcode: String, qty: Double) -> Unit)? = null
     var onLookupProduct: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.ProductEntity?)? = null
     var onLookupLocation: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.LocationEntity?)? = null
-    var onFetchLocationContents: (suspend (locationId: Long) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
+    var onFetchLocationContents: (suspend (locationId: String) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
     // Inventory records persistence (PDA = source of truth)
     var onSaveInventoryRecords: (suspend (locationBarcode: String, records: List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>) -> Unit)? = null
     var onLoadInventoryRecords: (suspend (locationBarcode: String) -> List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>)? = null
@@ -191,8 +211,20 @@ class MainScreenViewModel : ViewModel() {
     private val _navigateToCamera = MutableLiveData<Boolean>(false)
     val navigateToCamera: LiveData<Boolean> = _navigateToCamera
 
+    // CRM entity navigation from inventory scan
+    private val _navigateToCrm = MutableLiveData<Pair<String, String>?>()
+    val navigateToCrm: LiveData<Pair<String, String>?> = _navigateToCrm
+    fun consumeNavigateToCrm() { _navigateToCrm.value = null }
+
     private val _activeSlotPhoto = MutableLiveData<Bitmap?>(null)
     val activeSlotPhoto: LiveData<Bitmap?> = _activeSlotPhoto
+
+    // LiveData for the active slot's history and photos to trigger UI recomposition
+    private val _activeSlotHistory = MutableLiveData<List<String>>(emptyList())
+    val activeSlotHistory: LiveData<List<String>> = _activeSlotHistory
+
+    private val _activeSlotPhotosList = MutableLiveData<List<Bitmap>>(emptyList())
+    val activeSlotPhotosList: LiveData<List<Bitmap>> = _activeSlotPhotosList
 
     fun consumeNavigateToCamera() { _navigateToCamera.value = false }
 
@@ -311,6 +343,10 @@ class MainScreenViewModel : ViewModel() {
 
     // Vibration callback (set by UI layer which has Context)
     var onLongVibrate: (() -> Unit)? = null
+    // Haptic feedback callbacks (wired to SunlightModeManager by UI layer)
+    var onHapticSuccess: (() -> Unit)? = null
+    var onHapticError: (() -> Unit)? = null
+    var onHapticAttention: (() -> Unit)? = null
     private val inventoryItems = mutableMapOf<String, InventoryEntry>()
 
     // Expected inventory from server (populated when location is scanned)
@@ -442,7 +478,8 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("inventory", "📊\nInventory", "#795548", "navigate_inventory", PRIORITIES.DEFAULT),
             MainMenuButton("picking", "📦\nPicking", "#3F51B5", "navigate_picking", PRIORITIES.DEFAULT),
             MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
-            MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT)
+            MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT),
+            MainMenuButton("pos", "💶\nPOS", "#4CAF50", "navigate_pos", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -456,35 +493,15 @@ class MainScreenViewModel : ViewModel() {
 
         gridManager.clearAndReset()
         gridManager.placeItems(contentItems, priority = PRIORITIES.SCAN_BUTTON)
+        _exitButton.postValue(null)
         updateRenderCells()
     }
 
     private fun updateRenderCells() {
-        injectUserButton() // Always inject user button at (2,0) in every mode
         viewModelScope.launch {
             val cells = gridManager.getRenderStructure()
             _renderCells.postValue(cells)
         }
-    }
-
-    /**
-     * Inject the user button at grid position (2, 0) — HALF_LEFT slot under network indicator.
-     * Called at the end of every render*Grid() method so it persists across all modes.
-     */
-    private fun injectUserButton() {
-        val label = UserManager.getButtonLabel()
-        val color = UserManager.getButtonColor()
-        val textColor = UserManager.getButtonTextColor()
-        val btnData = mapOf(
-            "type" to "button",
-            "label" to label,
-            "color" to color,
-            "textColor" to textColor,
-            "action" to "act_user_profile"
-        )
-        // Clear first — placeContentAt rejects same-priority updates (200 > 200 = false)
-        gridManager.contentGrid.getSlot(2, 0)?.clearContent()
-        gridManager.contentGrid.placeContentAt(2, 0, btnData, 200)
     }
 
     /** Fetch users from server and populate UserManager. */
@@ -514,8 +531,6 @@ class MainScreenViewModel : ViewModel() {
             UserManager.switchView(user)
             addLog("👁 Viewing as ${user.name}")
             _showUserDialog.value = false
-            injectUserButton()
-            updateRenderCells()
         }
     }
 
@@ -529,10 +544,9 @@ class MainScreenViewModel : ViewModel() {
                 addLog("✅ Logged in as ${user.name}")
                 _showPinDialog.postValue(false)
                 pendingLoginUser = null
-                injectUserButton()
-                updateRenderCells()
             } else {
                 addLog("❌ Wrong PIN for ${user.name}")
+                onHapticError?.invoke()
                 // Keep PIN dialog open for retry
             }
         }
@@ -577,9 +591,12 @@ class MainScreenViewModel : ViewModel() {
                             if (loc != null) {
                                 fetchAndDisplayLocationContents(barcode, loc.id)
                             } else if (barcode.startsWith("p") && barcode.length == 19) {
-                                // Fallback: extract Odoo ID from p-code even without local DB match
-                                val id = barcode.substring(1).trimStart('0').toLongOrNull()
-                                if (id != null) fetchAndDisplayLocationContents(barcode, id)
+                                // Fallback: extract Odoo ID from legacy p-code
+                                val id = barcode.substring(1).trimStart('0')
+                                if (id.isNotEmpty()) fetchAndDisplayLocationContents(barcode, id)
+                            } else if (barcode.startsWith("p-") && barcode.length == 38) {
+                                // SmartTag UUID location — no numeric Odoo ID available
+                                addLog("📍 UUID location: ${barcode.substring(2)}")
                             }
                         }
                         // Box (b...)
@@ -669,7 +686,7 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
-    private fun fetchAndDisplayLocationContents(barcode: String, locationId: Long) {
+    private fun fetchAndDisplayLocationContents(barcode: String, locationId: String) {
         viewModelScope.launch {
             // 1. Local inventory records (green = PDA counted)
             try {
@@ -770,12 +787,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
 
-        // 4. X button (half-height, top-right corner like repair mode)
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_smart_cancel"),
-            200
-        )
+        // 4. X button — native half-slot
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_smart_cancel"))
 
         updateRenderCells()
     }
@@ -894,6 +907,7 @@ class MainScreenViewModel : ViewModel() {
             if (savedBarcode != null) {
                 slot.barcode = savedBarcode
                 slot.isBound = true
+                if (slot.history.isEmpty()) slot.history.add("Restored from DB")
                 // Restore photo from disk if not already in memory
                 if (slot.photo == null) {
                     slot.photo = onLoadRepairPhoto?.invoke(slot.index)
@@ -1016,9 +1030,17 @@ class MainScreenViewModel : ViewModel() {
             slots.forEach { if (it.barcode == barcode) clearSlot(it.index) }
             slots[index].barcode = barcode
             slots[index].isBound = true
+            slots[index].history.add("Device bound: ${barcode.takeLast(8)}")
             slotWaitingForBind = null
             persistSlots()
             activateSlot(index)
+
+            // Bind orphaned photos in DB to this device barcode
+            viewModelScope.launch { onBindSlotPhotos?.invoke(index, barcode) }
+
+            // Trigger device_bound event to auto-create repair order on server
+            onRepairEventSend?.invoke(barcode, "device_bound", "{\"slot\": $index}")
+
             _repairStatus.value = "Bound: $barcode — Take ID photo"
             addLog("Slot #$index bound to $barcode")
             // Auto-trigger camera for identification photo
@@ -1056,15 +1078,25 @@ class MainScreenViewModel : ViewModel() {
             val copy = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
             // Track all photos for avatar picker (limit 20)
             if (active.allPhotos.size < 20) active.allPhotos.add(copy)
+
+            // Save to UUID-based immutable storage
+            val uuid = java.util.UUID.randomUUID().toString()
+            active.photoUuids.add(uuid)
+            onSavePhoto?.invoke(uuid, active.index, copy)
+
             // First photo becomes the background, subsequent don't change it
             if (active.photo == null) {
                 active.photo = copy
-                onSaveRepairPhoto?.invoke(active.index, copy)
+                onSaveRepairPhoto?.invoke(active.index, copy) // legacy slot_N.webp for quick restore
                 _activeSlotPhoto.value = copy
                 Log.d("RepairMode", "First photo → background for slot ${active.index}")
             } else {
                 Log.d("RepairMode", "Photo #${active.allPhotos.size} for slot ${active.index} (background unchanged)")
             }
+            active.history.add("Photo attached")
+            _activeSlotPhotosList.value = active.allPhotos.toList()
+            _activeSlotHistory.value = active.history.toList()
+
             uploadPhoto(active.barcode!!, bitmap)
             _repairStatus.value = "Photo sent -> ${active.barcode} (#${active.allPhotos.size})"
             resetActiveTimer(active.index)
@@ -1083,6 +1115,8 @@ class MainScreenViewModel : ViewModel() {
         val photo = slots[index].photo
         Log.d("RepairMode", "activateSlot($index): photo=${if (photo != null) "exists (recycled=${photo.isRecycled})" else "null"}")
         _activeSlotPhoto.value = photo
+        _activeSlotHistory.value = slots[index].history.toList()
+        _activeSlotPhotosList.value = slots[index].allPhotos.toList()
         renderRepairGrid()
         startActiveTimer(index)
     }
@@ -1128,6 +1162,13 @@ class MainScreenViewModel : ViewModel() {
         addLog("Data scan '$partBarcode' -> device '$deviceBarcode'")
         _repairStatus.value = "Sent: $partBarcode -> $deviceBarcode"
         lastSentAction = LastRepairAction(deviceBarcode, "part_scan", partBarcode)
+
+        val active = slots.find { it.isActive }
+        if (active != null) {
+            active.history.add("Added part: ${partBarcode.takeLast(8)}")
+            _activeSlotHistory.value = active.history.toList()
+        }
+
         onRepairEventSend?.invoke(deviceBarcode, "part_scan", partBarcode)
         renderRepairGrid()
     }
@@ -1155,7 +1196,7 @@ class MainScreenViewModel : ViewModel() {
 
     private fun clearSlot(index: Int) {
         if (index in slots.indices) {
-            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}, allPhotos=${slots[index].allPhotos.size}")
+            Log.d("RepairMode", "clearSlot(#$index): barcode=${slots[index].barcode?.takeLast(6)}, photo=${slots[index].photo != null}, allPhotos=${slots[index].allPhotos.size}, uuids=${slots[index].photoUuids.size}")
             slots[index].isBound = false
             slots[index].isActive = false
             slots[index].barcode = null
@@ -1163,7 +1204,11 @@ class MainScreenViewModel : ViewModel() {
             slots[index].photo = null
             slots[index].allPhotos.forEach { it.recycle() }
             slots[index].allPhotos.clear()
+            slots[index].photoUuids.clear()
+            slots[index].history.clear()
             onDeleteRepairPhoto?.invoke(index)
+            // Delete UUID-based photos from DB + disk
+            viewModelScope.launch { onDeleteSlotPhotos?.invoke(index) }
         }
         persistSlots()
     }
@@ -1258,12 +1303,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT button — HALF_RIGHT at row=1 (first odd row, top-right area)
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        // EXIT button — native half-slot
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -2016,6 +2057,7 @@ class MainScreenViewModel : ViewModel() {
             addLog("Sent workflow_complete event")
         } catch (e: Exception) {
             addLog("Send error: ${e.message}")
+            onHapticError?.invoke()
         }
 
         var photoCount = 0
@@ -2027,6 +2069,7 @@ class MainScreenViewModel : ViewModel() {
                     addLog("Uploaded photo: $key")
                 } catch (e: Exception) {
                     addLog("Photo upload error: ${e.message}")
+                    onHapticError?.invoke()
                 }
             }
         }
@@ -2166,14 +2209,12 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT at HALF_RIGHT row=1 last col
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "\u2715",
-                "color" to if (isContentsStep) "#263238" else "#F44336",
-                "action" to if (isContentsStep) "act_noop" else "act_exit"),
-            200
-        )
+        // EXIT — native half-slot (dimmed during contents step)
+        _exitButton.postValue(HalfButtonState(
+            label = "\u2715",
+            colorHex = if (isContentsStep) "#263238" else "#F44336",
+            action = if (isContentsStep) "act_noop" else "act_exit"
+        ))
 
         updateRenderCells()
     }
@@ -2510,12 +2551,8 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        // EXIT button at HALF_RIGHT
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "✕", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        // EXIT button — native half-slot
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -2700,21 +2737,32 @@ class MainScreenViewModel : ViewModel() {
             }
         }
 
+        // --- CRM ENTITY INTERCEPT ---
+        // If decrypted code is a CRM entity (company/person/opp), navigate to CRM screen
+        val crmPattern = Regex("^(company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
+        val crmMatch = crmPattern.matchEntire(effectiveCode)
+        if (crmMatch != null) {
+            val entityType = crmMatch.groupValues[1].lowercase()
+            val entityId = crmMatch.groupValues[2]
+            android.util.Log.d("INVENTORY", "CRM entity detected: $entityType $entityId")
+            addLog("CRM: $entityType $entityId")
+            _navigateToCrm.postValue(Pair(entityType, entityId))
+            return
+        }
+
         // --- SECURITY FILTER ---
-        // 1. Check for Trusted Link Barcodes (eck1.com, eck2.com, eck3.com)
-        val isLinkBarcode = cleanCode.startsWith("eck1.com", ignoreCase = true) ||
-                            cleanCode.startsWith("eck2.com", ignoreCase = true) ||
-                            cleanCode.startsWith("eck3.com", ignoreCase = true) ||
-                            cleanCode.startsWith("http://eck", ignoreCase = true) ||
-                            cleanCode.startsWith("https://eck", ignoreCase = true)
+        // 1. Check for Trusted Link Barcodes (dynamic prefixes from server + hardcoded fallbacks)
+        val isLinkBarcode = com.xelth.eckwms_movfast.utils.EckSecurityManager.isTrustedLinkBarcode(cleanCode)
 
         // 2. Check for Spoofing Attempts on Internal ID format
         // Raw barcodes (NOT Link Barcodes) that look like internal IDs are rejected
         // Skip if code was already decrypted from encrypted QR (proves authenticity)
+        val isLegacySmartCode = cleanCode.length == 19 &&
+                               cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
+        val isSmartTagCode = cleanCode.matches(Regex("^[a-z]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE))
         val isPotentialSpoof = !wasDecryptedUpstream &&
                                !isLinkBarcode &&
-                               cleanCode.length == 19 &&
-                               cleanCode.matches(Regex("^[ibpl][0-9]{18}$", RegexOption.IGNORE_CASE))
+                               (isLegacySmartCode || isSmartTagCode)
 
         if (isPotentialSpoof) {
             addLog("⛔ SECURITY: Spoofed internal ID rejected")
@@ -3024,8 +3072,8 @@ class MainScreenViewModel : ViewModel() {
     }
 
     private fun fetchExpectedInventory() {
-        val locationId = decryptedLocationId?.substring(1)?.toLongOrNull()
-        if (locationId == null || locationId == 0L) {
+        val locationId = decryptedLocationId?.substring(1)?.trimStart('0')
+        if (locationId.isNullOrEmpty()) {
             android.util.Log.e("INVENTORY", "fetchExpected: no Odoo ID from decryptedLocationId=$decryptedLocationId")
             return
         }
@@ -3340,11 +3388,7 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
 
         updateRenderCells()
     }
@@ -3475,11 +3519,7 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
 
-        val cols = gridManager.contentGrid.cols
-        gridManager.contentGrid.placeContentAt(1, cols - 1,
-            mapOf("type" to "button", "label" to "X", "color" to "#F44336", "action" to "act_exit"),
-            200
-        )
+        _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
 
         updateRenderCells()
     }

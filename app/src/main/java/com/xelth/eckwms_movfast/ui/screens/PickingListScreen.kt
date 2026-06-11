@@ -24,7 +24,7 @@ import java.util.Locale
 @Composable
 fun PickingListScreen(
     viewModel: PickingViewModel,
-    onPickingSelected: (Long) -> Unit,
+    onPickingSelected: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()

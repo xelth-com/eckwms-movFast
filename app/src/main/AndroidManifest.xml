@@ -5,6 +5,15 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Xelixir embedded support agent: foreground screen mirroring + notification indicator -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
@@ -44,5 +53,30 @@
             android:screenOrientation="portrait"
             android:exported="false"
             android:theme="@style/Theme.EckwmsmovFast" />
+
+        <!-- Xelixir embedded support agent (Phase A: view-only screen mirroring) -->
+        <activity
+            android:name=".xelixir.XelixirConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <service
+            android:name=".xelixir.XelixirAgentService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Phase B: input injection (taps/swipes/keys). User enables once in Settings. -->
+        <service
+            android:name=".xelixir.XelixirInputService"
+            android:exported="false"
+            android:label="@string/xelixir_a11y_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/xelixir_accessibility_config" />
+        </service>
     </application>
 </manifest>

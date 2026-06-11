@@ -21,26 +21,26 @@ interface PickingDao {
     suspend fun getActivePickings(): List<PickingOrderEntity>
 
     @Query("SELECT * FROM picking_orders WHERE id = :id")
-    suspend fun getPickingById(id: Long): PickingOrderEntity?
+    suspend fun getPickingById(id: String): PickingOrderEntity?
 
     // --- Pick Lines ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPickLines(lines: List<PickLineEntity>)
 
     @Query("SELECT * FROM pick_lines WHERE pickingId = :pickingId ORDER BY sequence ASC")
-    fun getPickLinesFlow(pickingId: Long): Flow<List<PickLineEntity>>
+    fun getPickLinesFlow(pickingId: String): Flow<List<PickLineEntity>>
 
     @Query("SELECT * FROM pick_lines WHERE pickingId = :pickingId ORDER BY sequence ASC")
-    suspend fun getPickLines(pickingId: Long): List<PickLineEntity>
+    suspend fun getPickLines(pickingId: String): List<PickLineEntity>
 
     @Query("UPDATE pick_lines SET qtyDone = :qtyDone, state = :state, lastUpdated = :timestamp WHERE id = :lineId")
-    suspend fun updatePickLineProgress(lineId: Long, qtyDone: Double, state: String, timestamp: Long = System.currentTimeMillis())
+    suspend fun updatePickLineProgress(lineId: String, qtyDone: Double, state: String, timestamp: Long = System.currentTimeMillis())
 
     @Query("UPDATE picking_orders SET state = :state, pickedCount = :pickedCount, lastUpdated = :timestamp WHERE id = :pickingId")
-    suspend fun updatePickingProgress(pickingId: Long, state: String, pickedCount: Int, timestamp: Long = System.currentTimeMillis())
+    suspend fun updatePickingProgress(pickingId: String, state: String, pickedCount: Int, timestamp: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM pick_lines WHERE pickingId = :pickingId")
-    suspend fun clearPickLines(pickingId: Long)
+    suspend fun clearPickLines(pickingId: String)
 
     @Query("DELETE FROM picking_orders")
     suspend fun clearAll()

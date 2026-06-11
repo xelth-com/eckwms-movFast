@@ -431,6 +431,25 @@ fun RenderComponent(
             }
         }
 
+        "action_proof" -> {
+            val key = json.optString("key", "action_proof_data")
+            val requireGps = json.optBoolean("requireGps", false)
+            val requireSignature = json.optBoolean("requireSignature", false)
+            val requireVoiceName = json.optBoolean("requireVoiceName", false)
+            val legalText = json.optString("legalText", "Mit der Bestätigung stimmen Sie der Erfassung von Zeit und Ort zu.")
+
+            ActionProofView(
+                requireGps = requireGps,
+                requireSignature = requireSignature,
+                requireVoiceName = requireVoiceName,
+                legalText = legalText,
+                onProofComplete = { proofData ->
+                    val jsonString = JSONObject(proofData).toString()
+                    onValueChange(key, jsonString)
+                }
+            )
+        }
+
         "spacing" -> {
             Spacer(modifier = Modifier.height(json.optInt("height", 16).dp))
         }

@@ -3,7 +3,9 @@ package com.xelth.eckwms_movfast.ui.screens.pos.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,11 +23,21 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.draw.rotate
 import com.xelth.eckwms_movfast.ui.data.ConnectionType
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
+import com.xelth.eckwms_movfast.ui.model.CategoryItem
+import com.xelth.eckwms_movfast.ui.model.ProductItem
+import com.xelth.eckwms_movfast.ui.screens.pos.components.icons.HandIcon
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.RenderCell
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.SlotType
+import com.xelth.eckwms_movfast.ui.viewmodels.AppUser
+import com.xelth.eckwms_movfast.ui.viewmodels.HalfButtonState
+import com.xelth.eckwms_movfast.ui.viewmodels.PosViewModel
+import com.xelth.eckwms_movfast.ui.viewmodels.SelectionAreaState
 
 @Composable
 fun SelectionAreaSheet(
@@ -35,9 +47,13 @@ fun SelectionAreaSheet(
     buttonGap: Dp = 6.dp,
     networkState: NetworkHealthState = NetworkHealthState.Checking,
     regStatus: String = "unknown",
+    currentUser: AppUser? = null,
+    viewingUser: AppUser? = null,
+    exitButton: HalfButtonState? = null,
     onButtonClick: (String) -> Unit = {},
     onButtonLongClick: (String) -> Unit = {},
-    onNetworkIndicatorClick: () -> Unit = {}
+    onNetworkIndicatorClick: () -> Unit = {},
+    onNetworkIndicatorLongClick: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -89,12 +105,50 @@ fun SelectionAreaSheet(
                     NetworkIndicatorButton(
                         modifier = Modifier
                             .size(width = buttonWidth, height = cellHeight)
-                            .offset(x = offsetX, y = offsetY)
-                            .clickable { onNetworkIndicatorClick() },
+                            .offset(x = offsetX, y = offsetY),
                         side = buttonSide,
                         networkState = networkState,
-                        regStatus = regStatus
+                        regStatus = regStatus,
+                        onClick = onNetworkIndicatorClick,
+                        onLongClick = onNetworkIndicatorLongClick
                     )
+                    return@forEach
+                }
+
+                // User Profile: HALF_LEFT at row=2 — native reactive component
+                if (slotType == SlotType.HALF_LEFT && row == 2) {
+                    UserIndicatorButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        side = buttonSide,
+                        currentUser = currentUser,
+                        viewingUser = viewingUser,
+                        onClick = { onButtonClick("act_user_profile") },
+                        onLongClick = { onButtonLongClick("act_user_profile") }
+                    )
+                    return@forEach
+                }
+
+                // EXIT button: HALF_RIGHT at row=1 — native reactive component
+                if (slotType == SlotType.HALF_RIGHT && row == 1 && exitButton != null) {
+                    HexagonalButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        label = exitButton.label,
+                        colorHex = exitButton.colorHex,
+                        textColorHex = exitButton.textColorHex,
+                        enabled = exitButton.enabled,
+                        side = buttonSide,
+                        onClick = { onButtonClick(exitButton.action) },
+                        onLongClick = { onButtonLongClick(exitButton.action) }
+                    )
+                    return@forEach
+                }
+
+                // Skip any other unhandled HALF slots
+                if (slotType == SlotType.HALF_LEFT || slotType == SlotType.HALF_RIGHT) {
                     return@forEach
                 }
 
@@ -146,12 +200,15 @@ fun SelectionAreaSheet(
  * Network indicator inside a HALF_LEFT hexagonal button.
  * Shows connection icon, server hash, and latency.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NetworkIndicatorButton(
     modifier: Modifier = Modifier,
     side: HexagonSide,
     networkState: NetworkHealthState,
-    regStatus: String
+    regStatus: String,
+    onClick: () -> Unit = {},
+    onLongClick: () -> Unit = {}
 ) {
     val isApproved = regStatus == "active" || regStatus == "running"
 
@@ -172,7 +229,11 @@ fun NetworkIndicatorButton(
     Box(
         modifier = modifier
             .clip(HexagonShape(side))
-            .background(bgColor),
+            .background(bgColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (networkState.isConnected()) {
@@ -211,6 +272,64 @@ fun NetworkIndicatorButton(
     }
 }
 
+/**
+ * User Profile indicator inside a HALF_LEFT hexagonal button.
+ * Shows current user or Login prompt. Native reactive component.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun UserIndicatorButton(
+    modifier: Modifier = Modifier,
+    side: HexagonSide,
+    currentUser: AppUser?,
+    viewingUser: AppUser?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val isLoggedIn = currentUser != null
+    val isActingAsSelf = isLoggedIn && currentUser?.id == viewingUser?.id
+
+    val bgColor = when {
+        !isLoggedIn -> Color(0xFF8B0000)     // Dark red: not logged in
+        isActingAsSelf -> Color(0xFF1B5E20)  // Dark green: acting as self
+        else -> Color(0xFF5D4037)            // Dark brown: viewing another user
+    }
+
+    val textColor = when {
+        !isLoggedIn -> Color.White
+        isActingAsSelf -> Color(0xFF4CAF50)  // Light green
+        else -> Color(0xFFFFEB3B)            // Yellow
+    }
+
+    val label = (viewingUser ?: currentUser)?.getDisplayLabel() ?: "LOG\nIN"
+
+    Box(
+        modifier = modifier
+            .clip(HexagonShape(side))
+            .background(bgColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            textAlign = TextAlign.Center,
+            fontSize = when {
+                label.contains("\n") -> 14.sp
+                label.length > 7 -> 12.sp
+                label.length > 5 -> 14.sp
+                else -> 16.sp
+            },
+            lineHeight = 16.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
 @Composable
 fun IndicatorButton(
     modifier: Modifier = Modifier,
@@ -225,4 +344,131 @@ fun IndicatorButton(
             .clip(HexagonShape(HexagonSide.FULL))
             .background(animatedColor.copy(alpha = 0.3f))
     )
+}
+
+/**
+ * POS-specific SelectionAreaSheet overload.
+ * Handles CategoryItem, ProductItem, and POS system actions via PosViewModel.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SelectionAreaSheet(
+    viewModel: PosViewModel,
+    renderCells: List<RenderCell>
+) {
+    val selectionAreaState by viewModel.selectionAreaState.collectAsState()
+    val isLeftHandedMode by viewModel.isLeftHandedMode.collectAsState()
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
+        renderCells.forEach { cell ->
+            val content = cell.content
+            var label = ""
+            var color = "#3a3a3a"
+            var enabled = false
+            val slotType = (cell.geometryMetadata["slotType"] as? SlotType) ?: SlotType.DEAD
+
+            if (slotType == SlotType.DEAD) {
+                return@forEach
+            }
+
+            when {
+                content is CategoryItem -> {
+                    label = content.name
+                    color = "#5A4B35"
+                    enabled = true
+                }
+                content is ProductItem -> {
+                    label = content.name
+                    color = "#4A5D23"
+                    enabled = true
+                }
+                content is Map<*, *> && content["type"] == "placeholder" -> {
+                    label = ""
+                    color = "#404040"
+                    enabled = true
+                }
+                content is Map<*, *> && content["type"] == "system" -> {
+                    val subtype = content["subtype"] as? String ?: ""
+                    label = content["label"] as? String ?: ""
+                    color = when (subtype) {
+                        "button" -> "#4A5D23"
+                        else -> "#2c2c2c"
+                    }
+                    enabled = true
+                }
+            }
+
+            val offsetX = cell.cssPosition.x
+            val offsetY = cell.cssPosition.y
+            val cellWidth = viewModel.gridManager.config.cellWidth
+            val cellHeight = viewModel.gridManager.config.cellHeight
+
+            val buttonSide = when(slotType) {
+                SlotType.FULL -> HexagonSide.FULL
+                SlotType.HALF_LEFT -> HexagonSide.LEFT
+                SlotType.HALF_RIGHT -> HexagonSide.RIGHT
+                else -> HexagonSide.FULL
+            }
+
+            val buttonWidth = if (buttonSide == HexagonSide.FULL) {
+                cellWidth
+            } else {
+                (cellWidth / 2) - 1.dp
+            }
+
+            if (content is Map<*, *> && content["subtype"] == "hand_toggle") {
+                Box(
+                    modifier = Modifier
+                        .size(width = buttonWidth, height = cellHeight)
+                        .offset(x = offsetX, y = offsetY)
+                        .clip(HexagonShape(buttonSide))
+                        .background(Color(android.graphics.Color.parseColor(color)))
+                        .combinedClickable(
+                            enabled = enabled,
+                            onClick = {
+                                val action = content["action"] as? String ?: ""
+                                viewModel.onSystemAction(action)
+                            },
+                            onLongClick = {
+                                viewModel.toggleHandMode()
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    HandIcon(
+                        modifier = Modifier.rotate(if (isLeftHandedMode) 180f else 0f),
+                        color = Color.White
+                    )
+                }
+            } else {
+                HexagonalButton(
+                    modifier = Modifier
+                        .size(width = buttonWidth, height = cellHeight)
+                        .offset(x = offsetX, y = offsetY),
+                    label = label,
+                    colorHex = color,
+                    enabled = enabled,
+                    side = buttonSide,
+                    onClick = {
+                        if (enabled) {
+                            when (content) {
+                                is CategoryItem -> viewModel.onCategoryClick(content)
+                                is ProductItem -> viewModel.onProductClick(content)
+                                is Map<*, *> -> {
+                                    if (content["type"] == "system") {
+                                        val action = content["action"] as? String ?: ""
+                                        if (action == "back" && selectionAreaState is SelectionAreaState.Products) {
+                                            viewModel.onBackToCategories()
+                                        } else {
+                                            viewModel.onSystemAction(action)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
 }

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
 }
+
+// Provisioned xelixir license token (the gating secret). Read from the gitignored
+// local.properties (key `xelixir.licenseToken`) so the value is baked into the APK
+// at build time but never committed. Empty when not provisioned.
+val xelixirLicenseToken: String = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}.getProperty("xelixir.licenseToken", "")
 
 android {
     namespace = "com.xelth.eckwms_movfast"
@@ -18,6 +28,8 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "XELIXIR_LICENSE_TOKEN", "\"$xelixirLicenseToken\"")
     }
 
     signingConfigs {
@@ -48,6 +60,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -114,4 +127,7 @@ dependencies {
 
     // WebSocket for hybrid transport
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
+
+    // Kotlinx Collections Immutable (required by POS UI)
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7")
 }

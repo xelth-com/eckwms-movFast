@@ -9,6 +9,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
@@ -33,14 +34,39 @@ private val LightColorScheme = lightColorScheme(
     */
 )
 
+// High-contrast scheme for sunlight/outdoor use — black/yellow for max readability
+val HighContrastColorScheme = darkColorScheme(
+    primary = Color(0xFFFFEB3B),         // Bright yellow
+    onPrimary = Color.Black,
+    primaryContainer = Color(0xFF333300),
+    onPrimaryContainer = Color(0xFFFFEB3B),
+    secondary = Color.White,
+    onSecondary = Color.Black,
+    secondaryContainer = Color(0xFF333333),
+    onSecondaryContainer = Color.White,
+    tertiary = Color(0xFFFF9800),         // Orange for accents
+    onTertiary = Color.Black,
+    background = Color.Black,
+    onBackground = Color(0xFFFFEB3B),
+    surface = Color(0xFF1A1A00),
+    onSurface = Color(0xFFFFEB3B),
+    surfaceVariant = Color(0xFF2A2A00),
+    onSurfaceVariant = Color(0xFFFFEB3B),
+    error = Color(0xFFFF1744),
+    onError = Color.White,
+    outline = Color(0xFFFFEB3B)
+)
+
 @Composable
 fun EckwmsmovFastTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
+    highContrast: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
+        highContrast -> HighContrastColorScheme
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)

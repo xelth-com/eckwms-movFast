@@ -150,6 +150,32 @@ class WarehouseRepository(
         queueId
     }
 
+    /**
+     * Queue a CRM entity update for offline sync.
+     */
+    suspend fun queueCrmUpdate(
+        entityType: String,
+        entityId: String,
+        changes: JSONObject
+    ): Long = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("entity_type", entityType)
+            put("entity_id", entityId)
+            put("changes", changes)
+            put("timestamp", System.currentTimeMillis())
+        }.toString()
+
+        val queueEntity = SyncQueueEntity(
+            type = "crm_update",
+            payload = payload
+        )
+        val queueId = db.syncQueueDao().addToQueue(queueEntity)
+        Log.d(TAG, "Queued crm_update #$queueId: $entityType $entityId")
+
+        SyncManager.scheduleSync(context)
+        queueId
+    }
+
     suspend fun addImageUploadToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
         val scan = db.scanDao().getScanById(scanId)
         if (scan == null || scan.imagePath == null || scan.imageId == null) {
@@ -313,7 +339,7 @@ class WarehouseRepository(
         if (rows == 0) {
             // Product not in local DB yet (smart code or unsynced). Create stub.
             val stub = ProductEntity(
-                id = System.nanoTime(),
+                id = java.util.UUID.randomUUID().toString(),
                 defaultCode = barcode,
                 name = "Item $barcode",
                 barcode = barcode,
@@ -342,8 +368,7 @@ class WarehouseRepository(
             try {
                 val idStr = barcode.substring(1).trimStart('0')
                 if (idStr.isNotEmpty()) {
-                    val id = idStr.toLong()
-                    return@withContext db.referenceDao().getLocationById(id)
+                    return@withContext db.referenceDao().getLocationById(idStr)
                 }
             } catch (_: NumberFormatException) {}
         }

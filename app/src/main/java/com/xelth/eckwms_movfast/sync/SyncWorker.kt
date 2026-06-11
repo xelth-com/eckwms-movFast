@@ -1,6 +1,7 @@
 package com.xelth.eckwms_movfast.sync
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import androidx.work.CoroutineWorker
@@ -10,10 +11,17 @@ import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
+import com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity
 import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.bouncycastle.crypto.engines.AESEngine
+import org.bouncycastle.crypto.modes.GCMBlockCipher
+import org.bouncycastle.crypto.params.AEADParameters
+import org.bouncycastle.crypto.params.KeyParameter
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 class SyncWorker(
     appContext: Context,
@@ -49,6 +57,13 @@ class SyncWorker(
             Log.d(TAG, "Reference data sync: ${if (refSuccess) "OK" else "skipped/failed"}")
         } catch (e: Exception) {
             Log.w(TAG, "Reference sync error (non-fatal): ${e.message}")
+        }
+
+        // 2b. Upload pending local photos (UUID-based pipeline)
+        try {
+            uploadPendingLocalPhotos()
+        } catch (e: Exception) {
+            Log.w(TAG, "Local photo upload failed (non-fatal): ${e.message}")
         }
 
         // 3. Process Outgoing Queue
@@ -88,6 +103,16 @@ class SyncWorker(
                     if (result) {
                         database.syncQueueDao().deleteJob(job)
                         Log.d(TAG, "Repair event job ${job.id} completed successfully")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
+                "transaction" -> {
+                    val result = processTransactionJob(job.payload)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Transaction job ${job.id} synced successfully")
                         Result.success()
                     } else {
                         handleRetry(job)
@@ -304,6 +329,161 @@ class SyncWorker(
         if (result != null) {
             Log.d(TAG, "Heartbeat OK: ${result.status}")
         }
+    }
+
+    private suspend fun uploadPendingLocalPhotos() = withContext(Dispatchers.IO) {
+        val localPhotoDao = database.localPhotoDao()
+        val pending = localPhotoDao.getPendingUploads()
+        if (pending.isEmpty()) return@withContext
+
+        Log.d(TAG, "📸 ${pending.size} local photos pending upload")
+        val deviceId = SettingsManager.getDeviceId(applicationContext)
+
+        for (photo in pending) {
+            val file = java.io.File(photo.originalPath)
+            if (!file.exists()) {
+                Log.w(TAG, "Photo file missing, marking ERROR: ${photo.uuid}")
+                localPhotoDao.updateSyncStatus(photo.uuid, LocalPhotoEntity.STATUS_ERROR)
+                continue
+            }
+
+            // Generate avatar if not yet created
+            var avatarPath = photo.avatarPath
+            if (avatarPath == null) {
+                avatarPath = SettingsManager.getPhotoAvatarPath(photo.uuid)
+                if (avatarPath == null) {
+                    // Generate smart crop avatar from original
+                    try {
+                        val bmp = android.graphics.BitmapFactory.decodeFile(photo.originalPath)
+                        if (bmp != null) {
+                            val cropped = smartCropForSync(bmp, 224)
+                            avatarPath = SettingsManager.savePhotoAvatar(photo.uuid, cropped)
+                            if (!cropped.isRecycled) cropped.recycle()
+                            if (!bmp.isRecycled) bmp.recycle()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Avatar generation failed for ${photo.uuid}: ${e.message}")
+                    }
+                }
+            }
+
+            Log.d(TAG, "🚀 Uploading local photo ${photo.uuid} → ${photo.receiverId}")
+            val result = apiService.uploadImageFile(
+                photo.originalPath, deviceId, "repair_photo",
+                photo.receiverId, null, photo.uuid, avatarPath
+            )
+
+            when (result) {
+                is ScanResult.Success -> {
+                    localPhotoDao.updateSyncStatus(photo.uuid, LocalPhotoEntity.STATUS_SYNCED)
+                    Log.d(TAG, "✅ Local photo synced: ${photo.uuid}")
+                }
+                is ScanResult.Error -> {
+                    Log.e(TAG, "❌ Local photo upload failed: ${result.message}")
+                    // Don't mark as ERROR — will retry next cycle
+                }
+            }
+        }
+    }
+
+    /**
+     * Processes a completed POS transaction: encrypts the payload with the mesh network key
+     * and pushes it to the first available peer (WMS server) via the Relay.
+     */
+    private suspend fun processTransactionJob(payload: String): Boolean {
+        return try {
+            val networkKey = SettingsManager.getSyncNetworkKey()
+            if (networkKey.isNullOrEmpty()) {
+                Log.e(TAG, "Cannot sync transaction: SYNC_NETWORK_KEY not configured")
+                return false
+            }
+
+            val meshId = SettingsManager.getMeshId()
+            val instanceId = SettingsManager.getInstanceId()
+            val relayUrl = SettingsManager.getRelayUrl()
+
+            if (meshId.isNullOrEmpty()) {
+                Log.e(TAG, "Cannot sync transaction: mesh_id not configured")
+                return false
+            }
+
+            val relay = RelayClient(relayUrl, instanceId, meshId)
+
+            // Find target: first peer in the mesh that isn't us
+            val meshStatus = relay.getMeshStatus().getOrNull()
+            val targetNode = meshStatus?.firstOrNull { it.instanceId != instanceId }
+
+            if (targetNode == null) {
+                Log.w(TAG, "No mesh peer found to deliver transaction, will retry")
+                return false
+            }
+
+            // Wrap payload with metadata
+            val wrappedPayload = JSONObject().apply {
+                put("type", "pos_transaction")
+                put("sender", instanceId)
+                put("timestamp", System.currentTimeMillis())
+                put("data", JSONObject(payload))
+            }.toString()
+
+            // Encrypt with AES-256-GCM derived from network key
+            val (ciphertext, nonce) = encryptPayload(wrappedPayload.toByteArray(), networkKey)
+
+            // Push to relay
+            val pushResult = relay.pushPacket(
+                targetInstanceId = targetNode.instanceId,
+                payloadCipher = ciphertext,
+                nonce = nonce,
+                ttlSeconds = 86400 // 24h TTL
+            )
+
+            if (pushResult.isSuccess) {
+                Log.d(TAG, "✅ Transaction synced to ${targetNode.instanceId} (packet: ${pushResult.getOrNull()})")
+                true
+            } else {
+                Log.e(TAG, "❌ Transaction push failed: ${pushResult.exceptionOrNull()?.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing transaction sync job: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Encrypts a payload using AES-256-GCM with a key derived from the network key via SHA-256.
+     * Returns Pair(ciphertext, nonce).
+     */
+    private fun encryptPayload(plaintext: ByteArray, networkKey: String): Pair<ByteArray, ByteArray> {
+        // Derive AES-256 key from network key via SHA-256
+        val keyBytes = MessageDigest.getInstance("SHA-256").digest(networkKey.toByteArray())
+
+        // Generate 12-byte random nonce (standard for AES-GCM)
+        val nonce = ByteArray(12)
+        SecureRandom().nextBytes(nonce)
+
+        val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
+        val params = AEADParameters(KeyParameter(keyBytes), 128, nonce)
+        cipher.init(true, params)
+
+        val output = ByteArray(cipher.getOutputSize(plaintext.size))
+        val len = cipher.processBytes(plaintext, 0, plaintext.size, output, 0)
+        cipher.doFinal(output, len)
+
+        return Pair(output, nonce)
+    }
+
+    /** Center-focused smart crop for avatar generation (sync worker context) */
+    private fun smartCropForSync(source: Bitmap, targetSize: Int): Bitmap {
+        val size = minOf(source.width, source.height)
+        val x = (source.width - size) / 2
+        val y = (source.height - size) / 2
+        val cropped = Bitmap.createBitmap(source, x, y, size, size)
+        return if (size != targetSize) {
+            Bitmap.createScaledBitmap(cropped, targetSize, targetSize, true).also {
+                if (cropped != it) cropped.recycle()
+            }
+        } else cropped
     }
 
     private suspend fun handleRetry(job: com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity): Result {

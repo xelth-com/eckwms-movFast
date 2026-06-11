@@ -9,24 +9,24 @@ import androidx.room.PrimaryKey
     indices = [Index("pickingId")]
 )
 data class PickLineEntity(
-    @PrimaryKey val id: Long,
-    val pickingId: Long,
-    val productId: Long,
+    @PrimaryKey val id: String,
+    val pickingId: String,
+    val productId: String,
     val productName: String,
     val productBarcode: String? = null,
     val productCode: String? = null,
     val qtyDemand: Double,
     val qtyDone: Double = 0.0,
-    val locationId: Long,
+    val locationId: String,
     val locationName: String,
     val locationBarcode: String? = null,
-    val rackId: Long? = null,
+    val rackId: String? = null,
     val rackName: String? = null,
     val rackX: Int = 0,
     val rackY: Int = 0,
     val rackWidth: Int = 0,
     val rackHeight: Int = 0,
     val state: String = "assigned",
-    val sequence: Int = 0,          // Route order (from TSP)
+    val sequence: Int = 0,
     val lastUpdated: Long = System.currentTimeMillis()
 )

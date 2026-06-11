@@ -5,12 +5,12 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "locations")
 data class LocationEntity(
-    @PrimaryKey val id: Long,
+    @PrimaryKey val id: String,
     val name: String,
-    val completeName: String,   // full path (complete_name in Odoo)
-    val barcode: String?,       // 'p' code, nullable
-    val usage: String = "",     // internal, view, supplier, etc.
-    val parentId: Long? = null,
+    val completeName: String,
+    val barcode: String?,
+    val usage: String = "",
+    val parentId: String? = null,
     val active: Boolean = true,
     val lastUpdated: Long = System.currentTimeMillis()
 )

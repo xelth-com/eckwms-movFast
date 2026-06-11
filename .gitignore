@@ -7,6 +7,7 @@ local.properties
 
 # Log/OS Files
 *.log
+nul
 
 # Android Studio generated files and folders
 captures/
@@ -37,3 +38,4 @@ snapshots/
 
 # Added by eck-snapshot to ignore metadata directory
 .eck/
+.mcp.json

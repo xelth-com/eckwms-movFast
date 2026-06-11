@@ -5,6 +5,7 @@ import android.util.Log
 import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.utils.SettingsManager
+import com.xelth.eckwms_movfast.xelixir.XelixirManager
 import kotlinx.coroutines.*
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
@@ -20,6 +21,7 @@ object HybridMessageSender {
     private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var deviceId: String = "unknown"
+    private var appContext: Context? = null
     private var statusListener: ((String) -> Unit)? = null
     private var layoutListener: ((String) -> Unit)? = null
     private var aiInteractionListener: ((com.xelth.eckwms_movfast.ui.data.AiInteraction) -> Unit)? = null
@@ -35,6 +37,7 @@ object HybridMessageSender {
     }
 
     fun init(context: Context) {
+        appContext = context.applicationContext
         deviceId = SettingsManager.getDeviceId(context)
         Log.d(TAG, "Initializing with deviceId: $deviceId")
         connectWebSocket()
@@ -146,6 +149,15 @@ object HybridMessageSender {
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to parse AI_INTERACTION message", e)
                 }
+            } else if (type == "XELIXIR_START") {
+                // Wake the embedded xelixir support agent (dormant by default).
+                // requestStart() launches the MediaProjection consent flow = on-screen
+                // consent; on a managed/device-owner PDA the MDM can auto-confirm it.
+                Log.i(TAG, "⚡ Received XELIXIR_START — waking support agent")
+                appContext?.let { XelixirManager.requestStart(it) }
+            } else if (type == "XELIXIR_STOP") {
+                Log.i(TAG, "⚡ Received XELIXIR_STOP — stopping support agent")
+                appContext?.let { XelixirManager.stop(it) }
             }
 
         } catch (e: Exception) {

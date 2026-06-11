@@ -2,6 +2,7 @@ package com.xelth.eckwms_movfast.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.xelth.eckwms_movfast.BuildConfig
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
@@ -13,7 +14,7 @@ object SettingsManager {
     private const val KEY_RESOLUTION = "image_resolution"
     private const val KEY_QUALITY = "image_quality"
     private const val KEY_SERVER_URL = "server_url"
-    private const val DEFAULT_SERVER_URL = "https://pda.repair/E"
+    private const val DEFAULT_SERVER_URL = ""  // Empty until paired via relay
     private lateinit var prefs: SharedPreferences
 
     private lateinit var appContext: Context
@@ -30,24 +31,25 @@ object SettingsManager {
      * causing API calls to hit the frontend instead of the Go backend.
      */
     private fun migrateServerUrls() {
-        val migrated = prefs.getBoolean("url_e_prefix_migrated", false)
+        val migrated = prefs.getBoolean("url_e_prefix_migrated_v2", false)
         if (migrated) return
 
+        // Remove hardcoded pda.repair defaults from legacy installs
         val serverUrl = prefs.getString(KEY_SERVER_URL, null)
-        if (serverUrl != null && serverUrl == "https://pda.repair") {
-            prefs.edit().putString(KEY_SERVER_URL, "https://pda.repair/E").apply()
+        if (serverUrl != null && serverUrl.contains("pda.repair")) {
+            prefs.edit().remove(KEY_SERVER_URL).apply()
         }
         val globalUrl = prefs.getString(KEY_GLOBAL_SERVER_URL, null)
-        if (globalUrl != null && globalUrl == "https://pda.repair") {
-            prefs.edit().putString(KEY_GLOBAL_SERVER_URL, "https://pda.repair/E").apply()
+        if (globalUrl != null && globalUrl.contains("pda.repair")) {
+            prefs.edit().remove(KEY_GLOBAL_SERVER_URL).apply()
         }
-        // Also clean connection history entries without /E
+        // Clean connection history of hardcoded URLs
         val history = prefs.getString("connection_history", "") ?: ""
-        if (history.contains("https://pda.repair") && !history.contains("https://pda.repair/E")) {
-            val fixed = history.replace("https://pda.repair", "https://pda.repair/E")
-            prefs.edit().putString("connection_history", fixed).apply()
+        if (history.contains("pda.repair")) {
+            val cleaned = history.split(",").filter { !it.contains("pda.repair") }.joinToString(",")
+            prefs.edit().putString("connection_history", cleaned).apply()
         }
-        prefs.edit().putBoolean("url_e_prefix_migrated", true).apply()
+        prefs.edit().putBoolean("url_e_prefix_migrated_v2", true).apply()
     }
 
     fun saveImageResolution(resolution: Int) = prefs.edit().putInt(KEY_RESOLUTION, resolution).apply()
@@ -73,7 +75,7 @@ object SettingsManager {
     }
 
     private const val KEY_GLOBAL_SERVER_URL = "global_server_url"
-    private const val DEFAULT_GLOBAL_SERVER_URL = "https://pda.repair/E"
+    private const val DEFAULT_GLOBAL_SERVER_URL = ""  // Empty until paired via relay
 
     // Critical: Use commit() for immediate disk persistence
     fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).commit()
@@ -83,6 +85,37 @@ object SettingsManager {
 
     fun saveServerPublicKey(keyHex: String) = prefs.edit().putString(KEY_SERVER_PUBLIC_KEY, keyHex.trim()).commit()
     fun getServerPublicKey(): String? = prefs.getString(KEY_SERVER_PUBLIC_KEY, null)
+
+    // ── Xelixir embedded support agent ─────────────────────────────────────
+    // The agent dials the xelixir C2 server directly. Default targets the
+    // direct rustls listener on :3221 (nginx :443 301-redirects /X/ws and raw
+    // WS clients don't follow the redirect). agent_id reuses getInstanceId().
+    private const val KEY_XELIXIR_WS_URL = "xelixir_ws_url"
+    private const val DEFAULT_XELIXIR_WS_URL = "wss://xelth.com:3221/X/ws"
+    private const val KEY_XELIXIR_TOKEN = "xelixir_ws_token"
+
+    fun saveXelixirWsUrl(url: String) = prefs.edit().putString(KEY_XELIXIR_WS_URL, url.trim()).commit()
+    fun getXelixirWsUrl(): String =
+        prefs.getString(KEY_XELIXIR_WS_URL, DEFAULT_XELIXIR_WS_URL) ?: DEFAULT_XELIXIR_WS_URL
+
+    // WS auth token the agent connects with. Either a master WS_AUTH_TOKEN dropped
+    // in for bring-up, or the access_token cached from a successful license claim
+    // (see XelixirTokenProvider). Empty until set/claimed.
+    fun saveXelixirToken(token: String) = prefs.edit().putString(KEY_XELIXIR_TOKEN, token.trim()).commit()
+    fun getXelixirToken(): String = prefs.getString(KEY_XELIXIR_TOKEN, "") ?: ""
+
+    // Provisioned license token (the gating secret) — POSTed to /api/licensing/claim
+    // to obtain the WS access_token, exactly like dno2 devices / the kiosk. Issued by
+    // an admin per customer batch. Empty until provisioned.
+    private const val KEY_XELIXIR_LICENSE = "xelixir_license_token"
+    fun saveXelixirLicenseToken(token: String) = prefs.edit().putString(KEY_XELIXIR_LICENSE, token.trim()).commit()
+    // Prefer an explicitly provisioned override; otherwise fall back to the token
+    // baked into the APK at build time (BuildConfig.XELIXIR_LICENSE_TOKEN, from the
+    // gitignored local.properties). Empty only on unprovisioned dev builds.
+    fun getXelixirLicenseToken(): String {
+        val override = prefs.getString(KEY_XELIXIR_LICENSE, "") ?: ""
+        return if (override.isNotEmpty()) override else BuildConfig.XELIXIR_LICENSE_TOKEN
+    }
 
     // Network health and connectivity persistence
     private const val KEY_LAST_WORKING_LOCAL_URL = "last_working_local_url"
@@ -138,6 +171,38 @@ object SettingsManager {
 
     fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
     fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
+
+    // Dynamic repair order prefix (fetched from server /api/status)
+    private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
+    private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"
+    fun getRepairOrderPrefix(): String = prefs.getString(KEY_REPAIR_ORDER_PREFIX, DEFAULT_REPAIR_ORDER_PREFIX) ?: DEFAULT_REPAIR_ORDER_PREFIX
+    fun saveRepairOrderPrefix(prefix: String) = prefs.edit().putString(KEY_REPAIR_ORDER_PREFIX, prefix.trim()).commit()
+
+    // Dynamic QR prefixes + tenant suffix (fetched from server /api/status)
+    // Hardcoded fallbacks: 9eck.com/ and xelth.com/ (relay domains, always valid)
+    private const val KEY_QR_PREFIXES = "qr_prefixes"
+    private const val KEY_QR_TENANT_SUFFIX = "qr_tenant_suffix"
+    private const val DEFAULT_QR_TENANT_SUFFIX = "IB"
+    private val HARDCODED_FALLBACK_PREFIXES = listOf("9eck.com/", "xelth.com/")
+
+    fun saveQrPrefixes(prefixes: List<String>) {
+        val joined = prefixes.joinToString(",") { it.trim() }
+        prefs.edit().putString(KEY_QR_PREFIXES, joined).commit()
+    }
+
+    /** Returns merged list: server-configured prefixes + hardcoded fallbacks (deduplicated). */
+    fun getQrPrefixes(): List<String> {
+        val saved = prefs.getString(KEY_QR_PREFIXES, null)
+        val serverPrefixes = if (!saved.isNullOrEmpty()) {
+            saved.split(",").filter { it.isNotBlank() }
+        } else {
+            emptyList()
+        }
+        return (serverPrefixes + HARDCODED_FALLBACK_PREFIXES).distinct()
+    }
+
+    fun saveQrTenantSuffix(suffix: String) = prefs.edit().putString(KEY_QR_TENANT_SUFFIX, suffix.trim()).commit()
+    fun getQrTenantSuffix(): String = prefs.getString(KEY_QR_TENANT_SUFFIX, DEFAULT_QR_TENANT_SUFFIX) ?: DEFAULT_QR_TENANT_SUFFIX
 
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
@@ -305,6 +370,66 @@ object SettingsManager {
     fun deleteRepairPhoto(slotIndex: Int) {
         File(repairPhotoDir(), "slot_$slotIndex.webp").delete()
         File(repairPhotoDir(), "slot_$slotIndex.jpg").delete() // cleanup old format
+    }
+
+    // --- UUID-Based Photo Storage (CAS-like, immutable) ---
+
+    private fun photosDir(): File {
+        val dir = File(appContext.filesDir, "photos")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /** Save original bitmap to photos/orig_{uuid}.webp, return file path */
+    fun savePhotoOriginal(uuid: String, bitmap: Bitmap): String {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+        }
+        Log.d("SettingsManager", "Saved photo orig_$uuid (${file.length() / 1024}KB)")
+        return file.absolutePath
+    }
+
+    /** Save smart-crop avatar to photos/avatar_{uuid}.webp, return file path */
+    fun savePhotoAvatar(uuid: String, bitmap: Bitmap): String {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+        }
+        Log.d("SettingsManager", "Saved avatar avatar_$uuid (${file.length() / 1024}KB)")
+        return file.absolutePath
+    }
+
+    /** Load original photo by UUID */
+    fun loadPhotoOriginal(uuid: String): Bitmap? {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        if (!file.exists()) return null
+        return try { BitmapFactory.decodeFile(file.absolutePath) } catch (e: Exception) { null }
+    }
+
+    /** Load avatar by UUID */
+    fun loadPhotoAvatar(uuid: String): Bitmap? {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        if (!file.exists()) return null
+        return try { BitmapFactory.decodeFile(file.absolutePath) } catch (e: Exception) { null }
+    }
+
+    /** Delete both original and avatar for a UUID */
+    fun deletePhoto(uuid: String) {
+        File(photosDir(), "orig_$uuid.webp").delete()
+        File(photosDir(), "avatar_$uuid.webp").delete()
+    }
+
+    /** Get original file path (for upload) without loading bitmap */
+    fun getPhotoOriginalPath(uuid: String): String? {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        return if (file.exists()) file.absolutePath else null
+    }
+
+    /** Get avatar file path (for upload) without loading bitmap */
+    fun getPhotoAvatarPath(uuid: String): String? {
+        val file = File(photosDir(), "avatar_$uuid.webp")
+        return if (file.exists()) file.absolutePath else null
     }
 
     // --- Item Photos (global, by internal ID) ---

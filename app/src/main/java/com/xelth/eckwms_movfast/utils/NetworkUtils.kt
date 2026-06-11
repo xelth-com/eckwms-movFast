@@ -19,7 +19,7 @@ object NetworkUtils {
                 val addresses = networkInterface.inetAddresses
                 while (addresses.hasMoreElements()) {
                     val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is java.net.Inet4Address) {
+                    if (!address.isLoopbackAddress && !address.isLinkLocalAddress && address is java.net.Inet4Address) {
                         val ip = address.hostAddress
                         Log.d(TAG, "Found IP via NetworkInterface: $ip")
                         return ip
