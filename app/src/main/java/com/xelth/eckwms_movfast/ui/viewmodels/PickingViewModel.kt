@@ -8,6 +8,9 @@ import com.xelth.eckwms_movfast.api.ScanApiService
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.PickLineEntity
 import com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity
+import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
+import com.xelth.eckwms_movfast.sync.SyncManager
+import org.json.JSONObject
 import com.xelth.eckwms_movfast.ui.data.PathPoint
 import com.xelth.eckwms_movfast.ui.data.RouteStop
 import com.xelth.eckwms_movfast.utils.EckSecurityManager
@@ -129,15 +132,28 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
             // Update local DB
             pickingDao.updatePickLineProgress(currentLine.id, newQtyDone, newState)
 
-            // Send to server
-            try {
+            // Send to server; on failure queue for SyncWorker so the
+            // confirmation survives offline periods and app restarts
+            val confirmed = try {
                 apiService.confirmPickLine(
                     currentLine.pickingId, currentLine.id,
                     newQtyDone, barcode, currentLine.locationBarcode ?: ""
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to confirm pick line on server", e)
-                // Local update already done, will sync later
+                false
+            }
+            if (!confirmed) {
+                queuePickingJob(
+                    "picking_confirm",
+                    JSONObject().apply {
+                        put("picking_id", currentLine.pickingId)
+                        put("line_id", currentLine.id)
+                        put("qty_done", newQtyDone)
+                        put("scanned_product_barcode", barcode)
+                        put("scanned_location_barcode", currentLine.locationBarcode ?: "")
+                    }
+                )
             }
 
             // Refresh lines
@@ -238,18 +254,30 @@ class PickingViewModel(application: Application) : AndroidViewModel(application)
     fun validateAndComplete() {
         val picking = _selectedPicking.value ?: return
         viewModelScope.launch {
-            try {
-                val success = apiService.validatePicking(picking.id)
-                if (success) {
-                    pickingDao.updatePickingProgress(picking.id, "done", _pickLines.value.size)
-                    _uiState.value = PickingUiState.COMPLETED
-                } else {
-                    _errorMessage.value = "Server rejected validation — not all lines complete"
-                }
+            val success = try {
+                apiService.validatePicking(picking.id)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to validate picking", e)
-                _errorMessage.value = "Validation failed: ${e.message}"
+                false
             }
+            if (!success) {
+                // Offline-first: complete locally and let SyncWorker deliver
+                // the validation when the server is reachable again
+                queuePickingJob("picking_validate", JSONObject().put("picking_id", picking.id))
+                _errorMessage.value = "Server unreachable — validation queued for sync"
+            }
+            pickingDao.updatePickingProgress(picking.id, "done", _pickLines.value.size)
+            _uiState.value = PickingUiState.COMPLETED
+        }
+    }
+
+    private suspend fun queuePickingJob(type: String, payload: JSONObject) {
+        try {
+            db.syncQueueDao().addToQueue(SyncQueueEntity(type = type, payload = payload.toString()))
+            SyncManager.scheduleSync(getApplication())
+            Log.d(TAG, "Queued $type for offline sync: $payload")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to queue $type: ${e.message}", e)
         }
     }
 

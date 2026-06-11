@@ -11,10 +11,12 @@ import com.xelth.eckwms_movfast.data.local.dao.ReferenceDao
 import com.xelth.eckwms_movfast.data.local.dao.ScanDao
 import com.xelth.eckwms_movfast.data.local.dao.LocalPhotoDao
 import com.xelth.eckwms_movfast.data.local.dao.ActiveTransactionDao
+import com.xelth.eckwms_movfast.data.local.dao.CrmEntityDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionEntity
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionItemEntity
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
+import com.xelth.eckwms_movfast.data.local.entity.CrmEntityEntity
 import com.xelth.eckwms_movfast.data.local.entity.FileResourceEntity
 import com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity
 import com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity
@@ -38,9 +40,10 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         PickLineEntity::class,
         LocalPhotoEntity::class,
         ActiveTransactionEntity::class,
-        ActiveTransactionItemEntity::class
+        ActiveTransactionItemEntity::class,
+        CrmEntityEntity::class
     ],
-    version = 11,  // POS: added active_transactions + active_transaction_items
+    version = 12,  // CRM: added crm_entities offline cache
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -52,6 +55,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pickingDao(): PickingDao
     abstract fun localPhotoDao(): LocalPhotoDao
     abstract fun activeTransactionDao(): ActiveTransactionDao
+    abstract fun crmEntityDao(): CrmEntityDao
 
     companion object {
         @Volatile

@@ -40,6 +40,30 @@ fun CrmEntityScreen(
     var isSaving by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
 
+    // Server/cache entity data (network-first, Room cache fallback)
+    var entityName by remember { mutableStateOf("") }
+    var entityFetchedAt by remember { mutableStateOf(0L) }
+    var isLoadingEntity by remember { mutableStateOf(true) }
+
+    LaunchedEffect(entityType, entityId) {
+        isLoadingEntity = true
+        try {
+            val app = context.applicationContext as com.xelth.eckwms_movfast.EckwmsApp
+            val entity = app.repository.getCrmEntity(entityType, entityId)
+            if (entity != null) {
+                entityName = entity.name
+                entityFetchedAt = entity.fetchedAt
+                if (status.isBlank() && entity.status.isNotBlank()) {
+                    status = entity.status
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("CrmEntity", "Entity fetch failed: ${e.message}")
+        } finally {
+            isLoadingEntity = false
+        }
+    }
+
     val displayType = when (entityType) {
         "company" -> "Company"
         "person" -> "Person"
@@ -102,12 +126,35 @@ fun CrmEntityScreen(
                     Text("Type", fontSize = 12.sp, color = Color.Gray)
                     Text(displayType, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(Modifier.height(8.dp))
+                    if (isLoadingEntity) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Loading entity…", fontSize = 13.sp, color = Color.Gray)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    } else if (entityName.isNotBlank()) {
+                        Text("Name", fontSize = 12.sp, color = Color.Gray)
+                        Text(entityName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(8.dp))
+                    }
                     Text("Entity ID", fontSize = 12.sp, color = Color.Gray)
                     Text(
                         entityId,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp
                     )
+                    if (!isLoadingEntity && entityName.isBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "No server data — entity will be created on sync",
+                            fontSize = 12.sp,
+                            color = Color(0xFF9E9E9E)
+                        )
+                    }
                 }
             }
 

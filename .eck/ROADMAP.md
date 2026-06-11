@@ -24,7 +24,7 @@
 - [x] **Map Route Overlay**: Path lines (dashed orange), numbered sequence circles, color coding (green=current, grey=done, yellow=upcoming)
 - [x] **Navigation**: pickingList, pickingExecute, pickingMap routes in MainActivity
 - [x] **Wire hardware scanner**: Connect ScannerManager to PickingExecuteScreen for barcode events
-- [ ] **Offline confirm queue**: Store confirmations in SyncQueue when offline
+- [x] **Offline confirm queue**: `picking_confirm`/`picking_validate` jobs in SyncQueue, queued on failure, retried by SyncWorker (2026-06-11)
 
 ## Phase 6: CRM Ecosystem Integration
 **Architecture**: Rust backend acts as high-performance middleware between warehouse hardware (PDAs) and external CRM/ERP systems.
@@ -40,8 +40,8 @@
 - [x] **Dynamic QR Prefixes**: Server exposes `qr_prefixes` + `qr_tenant_suffix` in `/api/status`; Android fetches and merges with hardcoded fallbacks (`9eck.com/`, `xelth.com/`). Zero hardcoded ECK domain references.
 - [x] **CRM Entity Screen**: `CrmEntityScreen.kt` — offline view/edit for Company, Person, Opportunity with status chips and notes
 - [x] **Offline CRM Queue**: `crm_update` entries saved to `SyncQueueEntity` via `WarehouseRepository.queueCrmUpdate()`, scheduled for sync on connectivity restore
-- [ ] **CRM Entity Fetch**: Read existing entity data from server to populate CrmEntityScreen (currently write-only)
-- [ ] **SyncWorker CRM Handler**: Implement `crm_update` type processing in SyncWorker to POST queued changes to Rust server
+- [x] **CRM Entity Fetch**: `GET /api/crm/:type/:id` on the 9eck WMS + `WarehouseRepository.getCrmEntity()` (network-first, Room cache fallback) populates CrmEntityScreen (2026-06-11)
+- [x] **SyncWorker CRM Handler**: `crm_update` jobs POST to `POST /api/crm/update` (UPSERT + `crm_update_log` audit on server) (2026-06-11)
 - [ ] **OAuth2 Connectors**: Per-CRM OAuth2 auth flows in Rust (Salesforce, HubSpot); API-key flows (Twenty, Odoo)
 - [ ] **Data Sync Workers**: Async Rust workers for contact, deal, and inventory event propagation
 - [ ] **Webhook Receiver**: Inbound CRM webhooks → internal event queue
@@ -66,7 +66,7 @@
 
 - [x] **DynamicUiRenderer**: Renders JSON-defined layouts (text, buttons, toggles, inputs, dropdowns, cards, sections)
 - [x] **ActionProof Component**: Legal Proof of Action — voice-to-text name, signature canvas, GPS coordinates. Packaged as JSON for WorkflowEngine
-- [ ] **Signature-to-Image**: Render Compose Path → Bitmap → Base64 for actual signature storage
-- [ ] **Fresh GPS Fix**: Request single location update with timeout instead of relying on getLastKnownLocation
+- [x] **Signature-to-Image**: Strokes rasterized to Bitmap → WebP lossy 75 → Base64 (`signature_image` + `signature_mime`) (2026-06-11)
+- [x] **Fresh GPS Fix**: Two-stage location — instant last-known + `getCurrentLocation()` fresh fix, source recorded in proof (2026-06-11)
 - [ ] **Photo Capture Component**: Server-driven photo capture with annotation overlay
 - [ ] **Multi-Step Wizard**: Sequential form pages with back/forward navigation driven by server JSON

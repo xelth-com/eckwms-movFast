@@ -176,6 +176,40 @@ class WarehouseRepository(
         queueId
     }
 
+    /**
+     * Fetch a CRM entity for display: network-first with Room cache fallback.
+     * Successful fetches refresh the cache so the entity stays browsable offline.
+     */
+    suspend fun getCrmEntity(
+        entityType: String,
+        entityId: String
+    ): com.xelth.eckwms_movfast.data.local.entity.CrmEntityEntity? = withContext(Dispatchers.IO) {
+        val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
+        val fetched = try {
+            api.fetchCrmEntity(entityType, entityId)
+        } catch (e: Exception) {
+            Log.w(TAG, "CRM fetch failed: ${e.message}")
+            null
+        }
+
+        if (fetched != null) {
+            val entity = com.xelth.eckwms_movfast.data.local.entity.CrmEntityEntity(
+                id = entityId,
+                entityType = entityType,
+                name = fetched.optString("name", ""),
+                status = fetched.optString("status", ""),
+                dataJson = fetched.toString(),
+                fetchedAt = System.currentTimeMillis()
+            )
+            db.crmEntityDao().upsert(entity)
+            Log.d(TAG, "CRM entity cached: $entityType $entityId (${entity.name})")
+            return@withContext entity
+        }
+
+        // Offline / not found — serve the last cached copy if we have one
+        db.crmEntityDao().getById(entityId)
+    }
+
     suspend fun addImageUploadToSyncQueue(scanId: Long) = withContext(Dispatchers.IO) {
         val scan = db.scanDao().getScanById(scanId)
         if (scan == null || scan.imagePath == null || scan.imageId == null) {

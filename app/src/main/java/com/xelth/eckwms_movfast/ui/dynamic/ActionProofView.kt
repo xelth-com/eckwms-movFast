@@ -4,9 +4,12 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Paint
 import android.location.Location
 import android.location.LocationManager
 import android.speech.RecognizerIntent
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -17,12 +20,16 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import java.io.ByteArrayOutputStream
 
 @Composable
 fun ActionProofView(
@@ -35,8 +42,13 @@ fun ActionProofView(
     val context = LocalContext.current
     var recognizedName by remember { mutableStateOf("") }
     var signaturePath by remember { mutableStateOf(Path()) }
+    // Raw strokes mirror the Compose Path so the signature can be rendered
+    // to a Bitmap on confirm (Compose Path itself can't be rasterized off-screen)
+    val signatureStrokes = remember { mutableStateListOf<MutableList<Offset>>() }
+    var signatureBoxSize by remember { mutableStateOf(IntSize.Zero) }
     var isSigned by remember { mutableStateOf(false) }
     var location by remember { mutableStateOf<Location?>(null) }
+    var locationIsFresh by remember { mutableStateOf(false) }
 
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -47,7 +59,13 @@ fun ActionProofView(
 
     val requestPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         if (requireGps && permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            fetchLocation(context) { loc -> location = loc }
+            fetchLocation(context) { loc, fresh ->
+                // Prefer a fresh fix over any last-known fallback
+                if (fresh || location == null) {
+                    location = loc
+                    locationIsFresh = fresh
+                }
+            }
         }
     }
 
@@ -79,7 +97,7 @@ fun ActionProofView(
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
                         }
                         speechLauncher.launch(intent)
-                    }) { Text("\uD83C\uDFA4") }
+                    }) { Text("🎤") }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
@@ -96,11 +114,16 @@ fun ActionProofView(
                     .height(150.dp)
                     .background(Color.White)
                     .border(1.dp, Color.Gray)
+                    .onSizeChanged { signatureBoxSize = it }
                     .pointerInput(Unit) {
                         detectDragGestures(
-                            onDragStart = { offset -> signaturePath.moveTo(offset.x, offset.y) },
+                            onDragStart = { offset ->
+                                signaturePath.moveTo(offset.x, offset.y)
+                                signatureStrokes.add(mutableListOf(offset))
+                            },
                             onDrag = { change, _ ->
                                 signaturePath.lineTo(change.position.x, change.position.y)
+                                signatureStrokes.lastOrNull()?.add(change.position)
                                 isSigned = true
                             }
                         )
@@ -111,7 +134,11 @@ fun ActionProofView(
                 }
             }
             Button(
-                onClick = { signaturePath = Path(); isSigned = false },
+                onClick = {
+                    signaturePath = Path()
+                    signatureStrokes.clear()
+                    isSigned = false
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
             ) {
                 Text("Clear Signature")
@@ -132,12 +159,20 @@ fun ActionProofView(
                     proofMap["location"] = mapOf(
                         "lat" to location!!.latitude,
                         "lng" to location!!.longitude,
-                        "accuracy" to location!!.accuracy
+                        "accuracy" to location!!.accuracy,
+                        "source" to if (locationIsFresh) "fresh_fix" else "last_known",
+                        "fix_time" to location!!.time
                     )
                 }
 
                 if (isSigned) {
-                    proofMap["signature_image"] = "captured"
+                    val b64 = renderSignatureToBase64(signatureStrokes, signatureBoxSize)
+                    if (b64 != null) {
+                        proofMap["signature_image"] = b64
+                        proofMap["signature_mime"] = "image/webp"
+                    } else {
+                        proofMap["signature_image"] = "capture_failed"
+                    }
                 }
 
                 onProofComplete(proofMap)
@@ -148,20 +183,85 @@ fun ActionProofView(
     }
 }
 
-private fun fetchLocation(context: Context, onLocationResult: (Location?) -> Unit) {
+/**
+ * Rasterize the captured strokes to a white-background Bitmap and encode as
+ * Base64 WebP (lossy 75 — project-wide image convention).
+ */
+private fun renderSignatureToBase64(
+    strokes: List<List<Offset>>,
+    size: IntSize
+): String? {
+    if (strokes.isEmpty() || size.width <= 0 || size.height <= 0) return null
+    return try {
+        val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        canvas.drawColor(android.graphics.Color.WHITE)
+
+        val paint = Paint().apply {
+            color = android.graphics.Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+            isAntiAlias = true
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.ROUND
+        }
+
+        val path = android.graphics.Path()
+        for (stroke in strokes) {
+            if (stroke.isEmpty()) continue
+            path.moveTo(stroke[0].x, stroke[0].y)
+            for (i in 1 until stroke.size) {
+                path.lineTo(stroke[i].x, stroke[i].y)
+            }
+        }
+        canvas.drawPath(path, paint)
+
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+        bitmap.recycle()
+        Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    } catch (e: Exception) {
+        android.util.Log.e("ActionProof", "Signature render failed: ${e.message}", e)
+        null
+    }
+}
+
+/**
+ * Two-stage location: deliver the best last-known fix immediately (may be
+ * stale/null), then request a single fresh fix and deliver it when it lands.
+ * The callback's `fresh` flag tells the caller which stage produced the value.
+ */
+private fun fetchLocation(context: Context, onLocationResult: (Location?, Boolean) -> Unit) {
     try {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val providers = locationManager.getProviders(true)
+
+        // Stage 1: best last-known across providers (instant, possibly stale)
         var bestLocation: Location? = null
-        for (provider in providers) {
+        for (provider in locationManager.getProviders(true)) {
             @Suppress("MissingPermission")
             val l = locationManager.getLastKnownLocation(provider) ?: continue
             if (bestLocation == null || l.accuracy < bestLocation.accuracy) {
                 bestLocation = l
             }
         }
-        onLocationResult(bestLocation)
+        if (bestLocation != null) {
+            onLocationResult(bestLocation, false)
+        }
+
+        // Stage 2: single fresh fix (GPS preferred, network fallback).
+        // getCurrentLocation handles its own timeout and returns null on failure.
+        val provider = when {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            else -> return
+        }
+        @Suppress("MissingPermission")
+        locationManager.getCurrentLocation(provider, null, context.mainExecutor) { fresh ->
+            if (fresh != null) {
+                onLocationResult(fresh, true)
+            }
+        }
     } catch (e: SecurityException) {
-        onLocationResult(null)
+        onLocationResult(null, false)
     }
 }

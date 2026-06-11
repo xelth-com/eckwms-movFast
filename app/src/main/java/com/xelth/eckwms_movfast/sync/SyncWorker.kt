@@ -108,6 +108,44 @@ class SyncWorker(
                         handleRetry(job)
                     }
                 }
+                "crm_update" -> {
+                    val result = apiService.pushCrmUpdate(job.payload)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "CRM update job ${job.id} pushed successfully")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
+                "picking_confirm" -> {
+                    val p = JSONObject(job.payload)
+                    val result = apiService.confirmPickLine(
+                        p.getString("picking_id"),
+                        p.getString("line_id"),
+                        p.getDouble("qty_done"),
+                        p.optString("scanned_product_barcode"),
+                        p.optString("scanned_location_barcode")
+                    )
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Picking confirm job ${job.id} delivered")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
+                "picking_validate" -> {
+                    val p = JSONObject(job.payload)
+                    val result = apiService.validatePicking(p.getString("picking_id"))
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Picking validate job ${job.id} delivered")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
                 "transaction" -> {
                     val result = processTransactionJob(job.payload)
                     if (result) {

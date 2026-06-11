@@ -1884,6 +1884,88 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    private suspend fun authenticatedPostWithFailover(apiPath: String, jsonBody: String): ScanResult {
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        var result = authenticatedPost("$activeUrl$apiPath", jsonBody)
+
+        // Auto-retry on 401 (token expired)
+        if (result is ScanResult.Error && result.message.contains("401")) {
+            Log.w(TAG, "🔑 API POST 401 — attempting silent re-auth...")
+            val newToken = performSilentAuth()
+            if (newToken != null) {
+                result = authenticatedPost("$activeUrl$apiPath", jsonBody)
+            }
+        }
+
+        if (result is ScanResult.Error && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ API POST to $activeUrl failed, failover to $globalUrl")
+            result = authenticatedPost("$globalUrl$apiPath", jsonBody)
+        }
+        return result
+    }
+
+    private fun authenticatedPost(urlStr: String, jsonBody: String): ScanResult {
+        return try {
+            Log.d(TAG, "authenticatedPost: $urlStr")
+            val url = URL(urlStr)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+            connection.outputStream.bufferedWriter().use { it.write(jsonBody) }
+            val code = connection.responseCode
+            if (code in 200..299) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                ScanResult.Success(type = "api", message = "OK", data = response)
+            } else {
+                val errBody = try { connection.errorStream?.bufferedReader()?.use { it.readText() }?.take(200) } catch (_: Exception) { null }
+                Log.w(TAG, "authenticatedPost $code: $urlStr → $errBody")
+                ScanResult.Error("HTTP $code")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "authenticatedPost error: $urlStr → ${e.message}")
+            ScanResult.Error(e.message ?: "Network error")
+        }
+    }
+
+    // ============ CRM API ============
+
+    /**
+     * Fetch current CRM entity data (company/person/opp) for CrmEntityScreen.
+     * Returns the parsed JSON object or null when unreachable/not found.
+     */
+    suspend fun fetchCrmEntity(entityType: String, entityId: String): JSONObject? = withContext(Dispatchers.IO) {
+        val result = authenticatedGetWithFailover("/api/crm/$entityType/$entityId")
+        if (result is ScanResult.Success) {
+            try {
+                return@withContext JSONObject(result.data)
+            } catch (e: Exception) {
+                Log.e(TAG, "fetchCrmEntity: bad JSON: ${e.message}")
+            }
+        }
+        return@withContext null
+    }
+
+    /**
+     * Push a queued offline CRM edit to the server.
+     * Payload is the queueCrmUpdate() JSON: {entity_type, entity_id, changes, timestamp}.
+     */
+    suspend fun pushCrmUpdate(payload: String): Boolean = withContext(Dispatchers.IO) {
+        // Attach deviceId so the server can audit + enforce device status
+        val body = try {
+            JSONObject(payload).apply { put("deviceId", deviceId) }.toString()
+        } catch (e: Exception) {
+            payload
+        }
+        val result = authenticatedPostWithFailover("/api/crm/update", body)
+        return@withContext result is ScanResult.Success
+    }
+
     private fun authenticatedPut(urlStr: String, jsonBody: String): ScanResult {
         return try {
             val url = URL(urlStr)

@@ -1,48 +1,49 @@
 # Handover: Current State
 
-**Date:** 2026-03-27
+**Date:** 2026-06-11
 
 ## Architecture Overview
-- **Backend:** Rust (Axum + Sea-ORM + PostgreSQL) at `eckwmsr/`, port 3210
+- **Backend:** Rust (Axum + SurrealDB) — the `9eck.com` monorepo WMS, port 3210.
+  The legacy `eckwmsr` (Sea-ORM/PostgreSQL) repo is GONE from disk; its data was
+  migrated to SurrealDB and its scraper moved into `9eck.com/scraper`.
 - **Android:** Kotlin/Jetpack Compose PDA client at `eckwms-movFast/`
 - **Mesh:** Peer-to-peer sync via relay at `9eck.com`, push-on-write replication
 
-## Recently Completed
+## Backend contract (restored 2026-06-11 in 9eck.com WMS)
+The new WMS serves the full PDA surface under BOTH `/api/*` and `/E/api/*`
+(legacy pairing QRs produce base URLs ending in `/E`). Implemented in
+`wms/src/handlers/pda.rs`:
+- `GET /api/status` — heartbeat: device status, `enc_key`, `repair_order_prefix`
+  (env `REPAIR_ORDER_PREFIX`), `qr_prefixes` (env `QR_PREFIXES`), `qr_tenant_suffix`
+- `POST /api/scan` — msgId dedup, device gate, `{prefix}-{uuid}` SmartTag routing,
+  raw barcode resolution (product/order/location), ambiguous→candidates, stub-create
+- `POST /api/internal/register-device` — alias of `/api/public/devices/register`
+- `POST /api/repair/event` — audit row + `device_bound` auto-creates `REP-…` order
+- `POST /api/upload/image` — files::upload (CAS); repair photos auto-attach to the
+  open order by serial
+- `GET /api/users/active`, `POST /api/users/verify-pin` — PIN user switching
+- `GET /api/pickings/active`, `GET /api/pickings/:id/route`,
+  `POST /api/pickings/:id/lines/:lineId/confirm`, `POST /api/pickings/:id/validate`
+- `GET /api/explorer/locations[/:id/contents]`, `GET /api/explorer/products[/:id/locations]`
+- `POST /api/sync/pull` — file_resources + attachments metadata for Room cache
+- `GET /api/crm/:type/:id`, `POST /api/crm/update` — CRM fetch + offline edit apply
 
-### Offline-First SmartTag Decryption
-- `EckSecurityManager.kt` decrypts V1 (legacy text) and V2 (binary SmartTag) QR codes locally
-- AES-192-GCM with custom Base32, SHA-256 nonce derivation
-- No network dependency — works immediately after QR pairing provides `enc_key`
-
-### Dynamic QR Prefix Routing
-- Server exposes `qr_prefixes` and `qr_tenant_suffix` in `/api/status`
-- Android stores dynamic prefixes, merges with hardcoded fallbacks (`9eck.com/`, `xelth.com/`)
-- `isTrustedLinkBarcode()` replaces all hardcoded `eck1/2/3.com` checks
-- Zero hardcoded ECK domain references remain in Kotlin code
-
-### CRM Entity Screen & Offline Updates
-- `CrmEntityScreen.kt` — view/edit companies, persons, opportunities from SmartTag scans
-- Status chips (contextual per entity type) + notes field
-- Saves as `crm_update` in `SyncQueueEntity` for offline-first sync
-- `WarehouseRepository.queueCrmUpdate()` handles persistence + sync scheduling
-
-### ActionProof Component (Server-Driven UI)
-- `ActionProofView.kt` — legal Proof of Action for delivery handovers / caregiver confirmations
-- Voice-to-text (RecognizerIntent), signature drawing (Compose Canvas), GPS capture (LocationManager)
-- Integrated into `DynamicUiRenderer` as `action_proof` component type
-- Permissions: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` added to manifest
-
-### Repair Auto-Order
-- Slot bind → `device_bound` event → Rust creates pending order (`REP-YYYYMMDD-XXXX`)
-- Photos uploaded as CAS files, attached to serial number
-
-## Current Context
-- **Server:** Rust backend on `:3210`, Nginx proxy on prod (`ssh antigravity`)
-- **DB:** PostgreSQL, all entity IDs migrated from Long to String (UUID)
-- **Sync:** 5-min heartbeat, push-on-write (Direct HTTP → WS signal → Relay fallback)
+## Recently Completed (Android, 2026-06-11)
+- **CRM sync loop closed:** SyncWorker handles `crm_update`; CrmEntityScreen fetches
+  entity (name/status) network-first with Room cache (`crm_entities`, DB v12)
+- **Picking offline queue:** `picking_confirm`/`picking_validate` SyncQueue jobs
+- **ActionProof:** real signature image (strokes → Bitmap → WebP 75 → Base64),
+  fresh GPS fix via `getCurrentLocation()` with last-known fallback + source flag
+- **Xelixir embedded support agent (PR #1, 5c72ccd):** Phase A (MediaProjection
+  view), B (AccessibilityService input), C (push triggers + license claim).
+  Dormant by default. License token baked from `local.properties`
+  (`xelixir.licenseToken`) or provisioned at runtime.
 
 ## Known Gaps
-- SyncWorker doesn't handle `crm_update` queue type yet (queued but not pushed)
-- CRM screen is write-only (no entity data fetch/display from server)
-- No offline confirm queue for pickings
-- Android doesn't participate in relay-based mesh sync directly
+- ExplorerScreen still parses ids as Long (server now returns String ids)
+- WMS `/E/ws` exists but the PDA push-channel protocol compatibility is unverified
+  (HybridMessageSender falls back to HTTP, so non-blocking)
+- Xelixir agent not yet live-tested: needs an admin-issued license token
+  (`saveXelixirLicenseToken`) or master `WS_AUTH_TOKEN` for bring-up
+- `POST /api/documents` (submitDocument, X-API-Key only) not ported — PDA sends
+  no JWT there; endpoint absent in new WMS
