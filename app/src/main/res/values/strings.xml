@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">eckwms-movFast</string>
+    <string name="xelixir_a11y_label">Xelixir Remote Control</string>
+    <string name="xelixir_a11y_desc">Allows xelixir remote support to tap, swipe and type on this device during a support session. Active only while a session is running.</string>
 </resources>

@@ -2,6 +2,7 @@ package com.xelth.eckwms_movfast.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.xelth.eckwms_movfast.BuildConfig
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
@@ -84,6 +85,37 @@ object SettingsManager {
 
     fun saveServerPublicKey(keyHex: String) = prefs.edit().putString(KEY_SERVER_PUBLIC_KEY, keyHex.trim()).commit()
     fun getServerPublicKey(): String? = prefs.getString(KEY_SERVER_PUBLIC_KEY, null)
+
+    // ── Xelixir embedded support agent ─────────────────────────────────────
+    // The agent dials the xelixir C2 server directly. Default targets the
+    // direct rustls listener on :3221 (nginx :443 301-redirects /X/ws and raw
+    // WS clients don't follow the redirect). agent_id reuses getInstanceId().
+    private const val KEY_XELIXIR_WS_URL = "xelixir_ws_url"
+    private const val DEFAULT_XELIXIR_WS_URL = "wss://xelth.com:3221/X/ws"
+    private const val KEY_XELIXIR_TOKEN = "xelixir_ws_token"
+
+    fun saveXelixirWsUrl(url: String) = prefs.edit().putString(KEY_XELIXIR_WS_URL, url.trim()).commit()
+    fun getXelixirWsUrl(): String =
+        prefs.getString(KEY_XELIXIR_WS_URL, DEFAULT_XELIXIR_WS_URL) ?: DEFAULT_XELIXIR_WS_URL
+
+    // WS auth token the agent connects with. Either a master WS_AUTH_TOKEN dropped
+    // in for bring-up, or the access_token cached from a successful license claim
+    // (see XelixirTokenProvider). Empty until set/claimed.
+    fun saveXelixirToken(token: String) = prefs.edit().putString(KEY_XELIXIR_TOKEN, token.trim()).commit()
+    fun getXelixirToken(): String = prefs.getString(KEY_XELIXIR_TOKEN, "") ?: ""
+
+    // Provisioned license token (the gating secret) — POSTed to /api/licensing/claim
+    // to obtain the WS access_token, exactly like dno2 devices / the kiosk. Issued by
+    // an admin per customer batch. Empty until provisioned.
+    private const val KEY_XELIXIR_LICENSE = "xelixir_license_token"
+    fun saveXelixirLicenseToken(token: String) = prefs.edit().putString(KEY_XELIXIR_LICENSE, token.trim()).commit()
+    // Prefer an explicitly provisioned override; otherwise fall back to the token
+    // baked into the APK at build time (BuildConfig.XELIXIR_LICENSE_TOKEN, from the
+    // gitignored local.properties). Empty only on unprovisioned dev builds.
+    fun getXelixirLicenseToken(): String {
+        val override = prefs.getString(KEY_XELIXIR_LICENSE, "") ?: ""
+        return if (override.isNotEmpty()) override else BuildConfig.XELIXIR_LICENSE_TOKEN
+    }
 
     // Network health and connectivity persistence
     private const val KEY_LAST_WORKING_LOCAL_URL = "last_working_local_url"
