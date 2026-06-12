@@ -2,4 +2,8 @@
     <string name="app_name">eckwms-movFast</string>
     <string name="xelixir_a11y_label">Xelixir Remote Control</string>
     <string name="xelixir_a11y_desc">Allows xelixir remote support to tap, swipe and type on this device during a support session. Active only while a session is running.</string>
+    <string name="trip_channel_name">Fahrt-Aufzeichnung</string>
+    <string name="trip_notification_title">Fahrt wird aufgezeichnet</string>
+    <string name="trip_notification_text">Position über Mobilfunkzellen (ohne GPS)</string>
+    <string name="trip_notification_stop">Stopp</string>
 </resources>

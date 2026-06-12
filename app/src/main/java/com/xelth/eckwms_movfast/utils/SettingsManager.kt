@@ -172,6 +172,11 @@ object SettingsManager {
     fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
     fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
 
+    // ── Trip recording (Fahrtenbuch) ────────────────────────────────────────
+    private const val KEY_TRIP_AUTO_DETECT = "trip_auto_detect"
+    fun saveTripAutoDetect(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit() }
+    fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, false)
+
     // Dynamic repair order prefix (fetched from server /api/status)
     private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
     private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"

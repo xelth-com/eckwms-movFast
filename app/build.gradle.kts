@@ -101,6 +101,12 @@ dependencies {
     // ML Kit Barcode Scanning
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
+    // ML Kit Text Recognition (odometer OCR for the Fahrtenbuch)
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    // Fused low-power location + Activity Recognition (trip auto-detect)
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
     // CameraX dependencies
     implementation(libs.camerax.core)
     implementation(libs.camerax.camera2)

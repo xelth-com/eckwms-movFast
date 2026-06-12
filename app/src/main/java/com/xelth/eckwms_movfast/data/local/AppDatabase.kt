@@ -13,6 +13,7 @@ import com.xelth.eckwms_movfast.data.local.dao.LocalPhotoDao
 import com.xelth.eckwms_movfast.data.local.dao.ActiveTransactionDao
 import com.xelth.eckwms_movfast.data.local.dao.CrmEntityDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
+import com.xelth.eckwms_movfast.data.local.dao.TripDao
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionEntity
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionItemEntity
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
@@ -26,6 +27,8 @@ import com.xelth.eckwms_movfast.data.local.entity.PickingOrderEntity
 import com.xelth.eckwms_movfast.data.local.entity.ProductEntity
 import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
+import com.xelth.eckwms_movfast.data.local.entity.TripEntity
+import com.xelth.eckwms_movfast.data.local.entity.TripPointEntity
 
 @Database(
     entities = [
@@ -41,9 +44,11 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
         LocalPhotoEntity::class,
         ActiveTransactionEntity::class,
         ActiveTransactionItemEntity::class,
-        CrmEntityEntity::class
+        CrmEntityEntity::class,
+        TripEntity::class,
+        TripPointEntity::class
     ],
-    version = 12,  // CRM: added crm_entities offline cache
+    version = 13,  // Trips: trips + trip_points (Fahrtenbuch)
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -56,6 +61,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun localPhotoDao(): LocalPhotoDao
     abstract fun activeTransactionDao(): ActiveTransactionDao
     abstract fun crmEntityDao(): CrmEntityDao
+    abstract fun tripDao(): TripDao
 
     companion object {
         @Volatile

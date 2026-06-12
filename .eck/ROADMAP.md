@@ -70,3 +70,21 @@
 - [x] **Fresh GPS Fix**: Two-stage location — instant last-known + `getCurrentLocation()` fresh fix, source recorded in proof (2026-06-11)
 - [ ] **Photo Capture Component**: Server-driven photo capture with annotation overlay
 - [ ] **Multi-Step Wizard**: Sequential form pages with back/forward navigation driven by server JSON
+
+## Phase 9: Trips / Fahrtenbuch (2026-06-12)
+**Context**: Passive trip recording via cell towers (no GPS), odometer log with
+photo+OCR, server-side cell geocoding (OpenCelliD) and estimated distances.
+Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
+(unveränderlich via the existing Hedera sealing).
+
+- [x] **Trip recording core**: `TripRecordingService` (FGS location) samples registered cells (MCC/MNC/TAC/CID) + fused balanced-power locations every 30s; Room `trips`/`trip_points` (DB v13)
+- [x] **Auto-detect**: Activity Recognition IN_VEHICLE enter/exit → start / graceful stop (3-min debounce for traffic lights/fuel stops); manual 🚗 toggle too
+- [x] **Odometer (Kilometerstand)**: dialog with manual entry + 📷 TakePicturePreview → ML Kit text-recognition OCR prefill; photo uploaded via CAS pipeline; source recorded (photo/manual)
+- [x] **Sync**: `trip_sync` SyncQueue job → `POST /api/trips` (idempotent by trip_uuid)
+- [x] **Server**: trip upsert/list/get endpoints; `cell_resolver` worker — cell_tower cache + OpenCelliD lookups, accuracy-aware distance (jitter + cell-bounce filters, ×1.25 road factor, `distance_is_estimate`)
+- [ ] **Visit-tasks (Phase 2)**: geo targets from orders, auto-mark visited when track passes near, morning plan + end-of-day reminders
+- [ ] **Fahrtenbuch report (Phase 3)**: business/private classification UI, monthly PDF/CSV export, Hedera sealing of closed trips, odometer chain validation
+- [ ] **Navigation assist (Phase 4)**: Maps intent to target, arrival detection with GPS, ActionProof on arrival
+- [ ] Trips overlay on the WMS dashboard Leaflet map
+- [ ] Open-trip checkpoint upload (currently uploads only on finalize)
+- [ ] OPENCELLID_API_KEY provisioning on the server (without it only cached towers resolve)

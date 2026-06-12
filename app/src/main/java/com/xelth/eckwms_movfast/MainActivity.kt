@@ -261,6 +261,12 @@ class MainActivity : ComponentActivity() {
                         ExplorerScreen(onBack = { navController.popBackStack() })
                     }
 
+                    composable("tripsScreen") {
+                        com.xelth.eckwms_movfast.ui.screens.TripsScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+
                     composable("imageViewer") {
                         ImageViewerScreen(onBack = { navController.popBackStack() })
                     }

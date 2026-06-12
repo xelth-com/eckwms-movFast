@@ -1933,6 +1933,17 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    // ============ Trips API (Fahrtenbuch) ============
+
+    /**
+     * Upload a recorded trip (cell-tower track + odometer readings).
+     * Payload built by TripManager.buildUploadJson(), idempotent by trip_uuid.
+     */
+    suspend fun uploadTrip(payload: String): Boolean = withContext(Dispatchers.IO) {
+        val result = authenticatedPostWithFailover("/api/trips", payload)
+        return@withContext result is ScanResult.Success
+    }
+
     // ============ CRM API ============
 
     /**

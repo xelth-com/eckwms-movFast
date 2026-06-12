@@ -146,6 +146,23 @@ class SyncWorker(
                         handleRetry(job)
                     }
                 }
+                "trip_sync" -> {
+                    val tripId = JSONObject(job.payload).getString("trip_id")
+                    val payload = com.xelth.eckwms_movfast.trips.TripManager
+                        .buildUploadJson(applicationContext, tripId)
+                    if (payload == null) {
+                        Log.w(TAG, "Trip $tripId vanished locally — dropping job")
+                        database.syncQueueDao().deleteJob(job)
+                        Result.success()
+                    } else if (apiService.uploadTrip(payload)) {
+                        database.tripDao().markSynced(tripId, System.currentTimeMillis())
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Trip $tripId uploaded")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
                 "transaction" -> {
                     val result = processTransactionJob(job.payload)
                     if (result) {
