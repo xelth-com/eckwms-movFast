@@ -50,6 +50,8 @@ fun TripsScreen(onBack: () -> Unit) {
     val trips by db.tripDao().observeTrips(50).collectAsState(initial = emptyList())
     val activeTrip by TripManager.activeTrip.observeAsState(null)
     var autoDetect by remember { mutableStateOf(SettingsManager.getTripAutoDetect()) }
+    var consent by remember { mutableStateOf(SettingsManager.getTripConsent()) }
+    var privateMode by remember { mutableStateOf(false) }
 
     // Odometer dialog state: which end of the trip it is for
     var odometerFor by remember { mutableStateOf<String?>(null) } // "start" | "end"
@@ -65,8 +67,13 @@ fun TripsScreen(onBack: () -> Unit) {
     val recordingPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            TripManager.startTrip(context, manual = true)
+        val locationOk = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        // Privatfahrt needs no location at all — it records only the km frame
+        if (locationOk || privateMode) {
+            TripManager.startTrip(
+                context, manual = true,
+                purpose = if (privateMode) "private" else "business"
+            )
             odometerFor = "start"
         }
     }
@@ -103,8 +110,41 @@ fun TripsScreen(onBack: () -> Unit) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // ── DSGVO consent gate (Einwilligung, revocable any time) ──
+            if (!consent) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF263238))
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Einwilligung erforderlich", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Die Fahrt-Aufzeichnung erfasst während GESCHÄFTLICHER Fahrten " +
+                            "ungefähre Positionen über Mobilfunkzellen (kein GPS). Privatfahrten " +
+                            "werden nie geortet — nur der Kilometerstand. Rohdaten werden nach " +
+                            "14 Tagen automatisch gelöscht; alle Einträge sind kryptografisch " +
+                            "versiegelt und auch für den Arbeitgeber nicht nachträglich änderbar. " +
+                            "Diese Einwilligung kann jederzeit ohne Nachteile widerrufen werden.",
+                            color = Color(0xFFB0BEC5), fontSize = 12.sp
+                        )
+                        Button(
+                            onClick = { SettingsManager.saveTripConsent(true); consent = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Einverstanden — Aufzeichnung aktivieren") }
+                    }
+                }
+            } else if (activeTrip == null) {
+                TextButton(onClick = {
+                    SettingsManager.saveTripConsent(false)
+                    TripManager.disableAutoDetect(context)
+                    autoDetect = false
+                    consent = false
+                }) { Text("Einwilligung widerrufen", color = Color(0xFF90A4AE), fontSize = 12.sp) }
+            }
+
             // ── Active trip / start control ──
-            Card(
+            if (consent) Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = if (activeTrip != null) Color(0xFF1B5E20) else Color(0xFF1E1E1E)
@@ -112,7 +152,11 @@ fun TripsScreen(onBack: () -> Unit) {
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (activeTrip != null) {
-                        Text("🚗 Fahrt läuft", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (activeTrip!!.purpose == "private") "🔒 Privatfahrt läuft (keine Ortung)"
+                            else "🚗 Fahrt läuft",
+                            color = Color.White, fontWeight = FontWeight.Bold
+                        )
                         Text(
                             "seit ${timeFmt.format(Date(activeTrip!!.startedAt))}" +
                                 (activeTrip!!.startOdometerKm?.let { " · ab ${it.toInt()} km" } ?: ""),
@@ -128,6 +172,19 @@ fun TripsScreen(onBack: () -> Unit) {
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("⏹ Fahrt beenden") }
                     } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(
+                                selected = !privateMode,
+                                onClick = { privateMode = false },
+                                label = { Text("Geschäftlich", fontSize = 12.sp) }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            FilterChip(
+                                selected = privateMode,
+                                onClick = { privateMode = true },
+                                label = { Text("🔒 Privat", fontSize = 12.sp) }
+                            )
+                        }
                         Button(
                             onClick = {
                                 recordingPermissions.launch(
@@ -139,7 +196,7 @@ fun TripsScreen(onBack: () -> Unit) {
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("🚗 Fahrt starten") }
+                        ) { Text(if (privateMode) "🔒 Privatfahrt starten" else "🚗 Fahrt starten") }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -224,6 +281,7 @@ private fun TripRow(trip: TripEntity) {
             val dist = if (odo.size == 2) "${odo[1] - odo[0]} km" else null
             Text(
                 listOfNotNull(
+                    if (trip.purpose == "private") "🔒 privat" else null,
                     dur?.let { "$it min" },
                     dist,
                     if (trip.manualStart) "manuell" else "auto"

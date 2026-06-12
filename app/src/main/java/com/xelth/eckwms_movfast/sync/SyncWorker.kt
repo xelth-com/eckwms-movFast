@@ -66,6 +66,15 @@ class SyncWorker(
             Log.w(TAG, "Local photo upload failed (non-fatal): ${e.message}")
         }
 
+        // 2c. DSGVO retention: drop raw track points of synced trips after 14 days
+        // (trip aggregates stay; matches the server-side TRIP_RAW_RETENTION_DAYS)
+        try {
+            val cutoff = System.currentTimeMillis() - 14L * 24 * 60 * 60 * 1000
+            database.tripDao().prunePointsOfOldSyncedTrips(cutoff)
+        } catch (e: Exception) {
+            Log.w(TAG, "Trip point retention failed (non-fatal): ${e.message}")
+        }
+
         // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()

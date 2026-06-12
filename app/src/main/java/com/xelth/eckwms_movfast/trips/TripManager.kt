@@ -42,11 +42,18 @@ object TripManager {
         _activeTrip.postValue(trip)
     }
 
-    /** Start recording (idempotent — reuses an already-open trip). */
-    fun startTrip(context: Context, manual: Boolean) {
+    /** Start recording (idempotent — reuses an already-open trip).
+     *  No-op without DSGVO consent. `purpose = "private"` → Privatfahrt:
+     *  the service records NO positions, only the trip frame for km-delta. */
+    fun startTrip(context: Context, manual: Boolean, purpose: String = "business") {
+        if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
+            Log.w(TAG, "startTrip blocked: no recording consent")
+            return
+        }
         val intent = Intent(context, TripRecordingService::class.java).apply {
             action = TripRecordingService.ACTION_START
             putExtra(TripRecordingService.EXTRA_MANUAL, manual)
+            putExtra(TripRecordingService.EXTRA_PURPOSE, purpose)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -153,21 +160,24 @@ object TripManager {
         fun iso(ms: Long): String =
             java.time.Instant.ofEpochMilli(ms).toString()
 
+        // Privatfahrt: coordinates never leave the device — km delta only
         val pointsJson = JSONArray()
-        points.forEach { p ->
-            pointsJson.put(JSONObject().apply {
-                put("seq", p.seq)
-                put("ts", iso(p.ts))
-                put("source", p.source)
-                p.lat?.let { put("lat", it) }
-                p.lng?.let { put("lng", it) }
-                p.accuracyM?.let { put("accuracy_m", it) }
-                p.mcc?.let { put("mcc", it) }
-                p.mnc?.let { put("mnc", it) }
-                p.tac?.let { put("tac", it) }
-                p.cid?.let { put("cid", it) }
-                p.signalDbm?.let { put("signal_dbm", it) }
-            })
+        if (trip.purpose != "private") {
+            points.forEach { p ->
+                pointsJson.put(JSONObject().apply {
+                    put("seq", p.seq)
+                    put("ts", iso(p.ts))
+                    put("source", p.source)
+                    p.lat?.let { put("lat", it) }
+                    p.lng?.let { put("lng", it) }
+                    p.accuracyM?.let { put("accuracy_m", it) }
+                    p.mcc?.let { put("mcc", it) }
+                    p.mnc?.let { put("mnc", it) }
+                    p.tac?.let { put("tac", it) }
+                    p.cid?.let { put("cid", it) }
+                    p.signalDbm?.let { put("signal_dbm", it) }
+                })
+            }
         }
 
         return JSONObject().apply {

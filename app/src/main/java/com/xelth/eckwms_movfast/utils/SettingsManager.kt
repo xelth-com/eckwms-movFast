@@ -177,6 +177,12 @@ object SettingsManager {
     fun saveTripAutoDetect(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit() }
     fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, false)
 
+    // DSGVO consent (Einwilligung): trip recording is strictly opt-in and
+    // revocable at any time. No recording happens while this is false.
+    private const val KEY_TRIP_CONSENT = "trip_recording_consent"
+    fun saveTripConsent(granted: Boolean) { prefs.edit().putBoolean(KEY_TRIP_CONSENT, granted).commit() }
+    fun getTripConsent(): Boolean = prefs.getBoolean(KEY_TRIP_CONSENT, false)
+
     // Dynamic repair order prefix (fetched from server /api/status)
     private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
     private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"

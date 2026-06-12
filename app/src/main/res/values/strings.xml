@@ -5,5 +5,7 @@
     <string name="trip_channel_name">Fahrt-Aufzeichnung</string>
     <string name="trip_notification_title">Fahrt wird aufgezeichnet</string>
     <string name="trip_notification_text">Position über Mobilfunkzellen (ohne GPS)</string>
+    <string name="trip_notification_private_title">Privatfahrt</string>
+    <string name="trip_notification_private_text">Keine Ortung — nur Kilometerstand</string>
     <string name="trip_notification_stop">Stopp</string>
 </resources>

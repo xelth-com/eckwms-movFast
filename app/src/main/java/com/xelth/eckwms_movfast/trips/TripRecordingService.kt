@@ -58,6 +58,7 @@ class TripRecordingService : Service() {
         const val ACTION_STOP = "trip_stop"
         const val ACTION_STOP_GRACEFUL = "trip_stop_graceful"
         const val EXTRA_MANUAL = "manual"
+        const val EXTRA_PURPOSE = "purpose"
 
         private const val TAG = "TripRecordingService"
         private const val CHANNEL_ID = "trip_recording"
@@ -80,12 +81,22 @@ class TripRecordingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                // DSGVO: consent is checked at every entry point — also here,
+                // because the auto-detect receiver can outlive a revocation
+                if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
+                    Log.w(TAG, "START ignored: recording consent not granted")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 // A new START cancels any pending graceful stop (auto-detector
                 // re-entered the vehicle at a traffic light / fuel stop)
                 gracefulStopJob?.cancel()
                 gracefulStopJob = null
                 if (tripId == null) {
-                    startRecording(intent.getBooleanExtra(EXTRA_MANUAL, false))
+                    startRecording(
+                        intent.getBooleanExtra(EXTRA_MANUAL, false),
+                        intent.getStringExtra(EXTRA_PURPOSE) ?: "business"
+                    )
                 }
             }
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
@@ -94,8 +105,9 @@ class TripRecordingService : Service() {
         return START_STICKY
     }
 
-    private fun startRecording(manual: Boolean) {
-        startForegroundWithNotification()
+    private fun startRecording(manual: Boolean, purpose: String) {
+        val isPrivate = purpose == "private"
+        startForegroundWithNotification(isPrivate)
 
         scope.launch {
             val db = AppDatabase.getInstance(applicationContext)
@@ -104,16 +116,21 @@ class TripRecordingService : Service() {
             val trip = existing ?: TripEntity(
                 id = TripManager.newTripId(),
                 startedAt = System.currentTimeMillis(),
-                manualStart = manual
+                manualStart = manual,
+                purpose = purpose
             ).also { db.tripDao().upsertTrip(it) }
 
             tripId = trip.id
             seq.set(db.tripDao().pointCount(trip.id))
             TripManager.publishActiveTrip(trip)
-            Log.i(TAG, "Recording trip ${trip.id} (resumed=${existing != null}, manual=$manual)")
+            Log.i(TAG, "Recording trip ${trip.id} (resumed=${existing != null}, manual=$manual, purpose=${trip.purpose})")
 
-            startCellSampling()
-            startFusedUpdates()
+            // Privatfahrt: NO positions are sampled at all — the trip exists
+            // only as a time frame for the odometer delta (1%-Regelung)
+            if (trip.purpose != "private") {
+                startCellSampling()
+                startFusedUpdates()
+            }
         }
     }
 
@@ -278,7 +295,7 @@ class TripRecordingService : Service() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun startForegroundWithNotification() {
+    private fun startForegroundWithNotification(isPrivate: Boolean = false) {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(
@@ -299,8 +316,14 @@ class TripRecordingService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle(getString(R.string.trip_notification_title))
-            .setContentText(getString(R.string.trip_notification_text))
+            .setContentTitle(
+                if (isPrivate) getString(R.string.trip_notification_private_title)
+                else getString(R.string.trip_notification_title)
+            )
+            .setContentText(
+                if (isPrivate) getString(R.string.trip_notification_private_text)
+                else getString(R.string.trip_notification_text)
+            )
             .setOngoing(true)
             .setContentIntent(contentIntent)
             .addAction(0, getString(R.string.trip_notification_stop), stopIntent)
