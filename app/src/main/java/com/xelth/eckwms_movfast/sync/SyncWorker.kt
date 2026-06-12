@@ -75,6 +75,19 @@ class SyncWorker(
             Log.w(TAG, "Trip point retention failed (non-fatal): ${e.message}")
         }
 
+        // 2d. Visit plan: pull open visits, prune stale done ones, and fire the
+        // end-of-day reminder for unfinished visits (status-based, NOT location-based)
+        try {
+            val visits = apiService.fetchVisits()
+            if (visits != null) {
+                database.visitDao().upsertAll(visits)
+            }
+            database.visitDao().pruneDone(System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000)
+            com.xelth.eckwms_movfast.trips.VisitReminder.maybeRemind(applicationContext, database)
+        } catch (e: Exception) {
+            Log.w(TAG, "Visit sync failed (non-fatal): ${e.message}")
+        }
+
         // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()
@@ -150,6 +163,16 @@ class SyncWorker(
                     if (result) {
                         database.syncQueueDao().deleteJob(job)
                         Log.d(TAG, "Picking validate job ${job.id} delivered")
+                        Result.success()
+                    } else {
+                        handleRetry(job)
+                    }
+                }
+                "visit_event" -> {
+                    val result = apiService.pushVisitEvent(job.payload)
+                    if (result) {
+                        database.syncQueueDao().deleteJob(job)
+                        Log.d(TAG, "Visit event job ${job.id} delivered")
                         Result.success()
                     } else {
                         handleRetry(job)

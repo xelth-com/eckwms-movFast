@@ -1944,6 +1944,60 @@ class ScanApiService(private val context: Context) {
         return@withContext result is ScanResult.Success
     }
 
+    // ============ Visits API (check-in/check-out model) ============
+
+    /** Pull open visit tasks for the daily plan (due today or overdue). */
+    suspend fun fetchVisits(): List<com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity>? = withContext(Dispatchers.IO) {
+        val result = authenticatedGetWithFailover("/api/visits?device_id=$deviceId")
+        if (result !is ScanResult.Success) return@withContext null
+        try {
+            val arr = JSONArray(result.data)
+            val list = mutableListOf<com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity(
+                        id = o.getString("id"),
+                        title = o.optString("title", ""),
+                        address = o.optString("address", null),
+                        lat = if (o.isNull("lat")) null else o.optDouble("lat"),
+                        lng = if (o.isNull("lng")) null else o.optDouble("lng"),
+                        dueDate = o.optString("due_date", ""),
+                        status = o.optString("status", "open"),
+                        note = o.optString("note", null)
+                    )
+                )
+            }
+            list
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchVisits parse error: ${e.message}")
+            null
+        }
+    }
+
+    /** Send a confirmed check-in/check-out event. Payload is the queued JSON
+     *  {visit_id, kind, ts, lat?, lng?, accuracy_m?}. */
+    suspend fun pushVisitEvent(payload: String): Boolean = withContext(Dispatchers.IO) {
+        return@withContext try {
+            val p = JSONObject(payload)
+            val visitId = p.getString("visit_id")
+            val kind = p.getString("kind") // checkin | checkout
+            val body = JSONObject().apply {
+                put("device_id", deviceId)
+                put("ts", p.optString("ts"))
+                if (p.has("lat")) put("lat", p.getDouble("lat"))
+                if (p.has("lng")) put("lng", p.getDouble("lng"))
+                if (p.has("accuracy_m")) put("accuracy_m", p.getDouble("accuracy_m"))
+                val userId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
+                if (!userId.isNullOrEmpty()) put("user_id", userId)
+            }
+            authenticatedPostWithFailover("/api/visits/$visitId/$kind", body.toString()) is ScanResult.Success
+        } catch (e: Exception) {
+            Log.e(TAG, "pushVisitEvent error: ${e.message}")
+            false
+        }
+    }
+
     // ============ CRM API ============
 
     /**

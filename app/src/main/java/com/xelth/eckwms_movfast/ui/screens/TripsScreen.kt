@@ -217,9 +217,62 @@ fun TripsScreen(onBack: () -> Unit) {
                 }
             }
 
+            // ── Today's visits (check-in/check-out, never auto-confirmed) ──
+            val visits by db.visitDao().observeOpenVisits().collectAsState(initial = emptyList())
+            if (visits.isNotEmpty()) {
+                Text("Besuche heute", color = Color.Gray, fontSize = 13.sp)
+            }
+
             // ── Trip history ──
             Text("Verlauf", color = Color.Gray, fontSize = 13.sp)
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(visits, key = { "v-" + it.id }) { visit ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A237E).copy(alpha = 0.35f))
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(visit.title, color = Color.White, fontWeight = FontWeight.SemiBold)
+                            if (!visit.address.isNullOrBlank()) {
+                                Text(visit.address!!, color = Color(0xFF90A4AE), fontSize = 12.sp)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (visit.status == "open") {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                com.xelth.eckwms_movfast.trips.VisitManager.queueCheckEvent(
+                                                    context, visit.id, "checkin",
+                                                    oneShotLocation(context)
+                                                )
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                    ) { Text("✓ Check-in", fontSize = 13.sp) }
+                                } else {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                com.xelth.eckwms_movfast.trips.VisitManager.queueCheckEvent(
+                                                    context, visit.id, "checkout",
+                                                    oneShotLocation(context)
+                                                )
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
+                                    ) { Text("⏏ Check-out", fontSize = 13.sp) }
+                                }
+                                if (visit.status == "checked_in") {
+                                    Text(
+                                        "vor Ort seit ${visit.checkedInAt?.let { timeFmt.format(Date(it)) } ?: "?"}",
+                                        color = Color(0xFF81C784), fontSize = 12.sp,
+                                        modifier = Modifier.align(Alignment.CenterVertically)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 items(trips.filter { it.status != TripEntity.STATUS_RECORDING }, key = { it.id }) { trip ->
                     TripRow(trip)
                 }
@@ -254,6 +307,39 @@ fun TripsScreen(onBack: () -> Unit) {
 
 private val timeFmt = SimpleDateFormat("HH:mm", Locale.GERMANY)
 private val dateFmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY)
+
+/**
+ * One-shot position for a user-initiated check event (legally fine: the
+ * worker taps, one fix is taken, nothing is tracked). Returns null fast
+ * when permission is missing or no provider answers.
+ */
+private suspend fun oneShotLocation(context: android.content.Context): android.location.Location? {
+    if (androidx.core.content.ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+    ) return null
+    return try {
+        kotlinx.coroutines.withTimeoutOrNull(5000) {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE)
+                    as android.location.LocationManager
+                val provider = when {
+                    lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER) ->
+                        android.location.LocationManager.NETWORK_PROVIDER
+                    lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ->
+                        android.location.LocationManager.GPS_PROVIDER
+                    else -> { cont.resume(null, null); return@suspendCancellableCoroutine }
+                }
+                @Suppress("MissingPermission")
+                lm.getCurrentLocation(provider, null, context.mainExecutor) { loc ->
+                    if (cont.isActive) cont.resume(loc, null)
+                }
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
 
 @Composable
 private fun TripRow(trip: TripEntity) {

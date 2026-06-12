@@ -14,6 +14,7 @@ import com.xelth.eckwms_movfast.data.local.dao.ActiveTransactionDao
 import com.xelth.eckwms_movfast.data.local.dao.CrmEntityDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
 import com.xelth.eckwms_movfast.data.local.dao.TripDao
+import com.xelth.eckwms_movfast.data.local.dao.VisitDao
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionEntity
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionItemEntity
 import com.xelth.eckwms_movfast.data.local.entity.AttachmentEntity
@@ -29,6 +30,7 @@ import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripPointEntity
+import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
 
 @Database(
     entities = [
@@ -46,9 +48,10 @@ import com.xelth.eckwms_movfast.data.local.entity.TripPointEntity
         ActiveTransactionItemEntity::class,
         CrmEntityEntity::class,
         TripEntity::class,
-        TripPointEntity::class
+        TripPointEntity::class,
+        VisitTaskEntity::class
     ],
-    version = 13,  // Trips: trips + trip_points (Fahrtenbuch)
+    version = 14,  // Visits: visit_tasks (check-in/out model)
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -62,6 +65,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun activeTransactionDao(): ActiveTransactionDao
     abstract fun crmEntityDao(): CrmEntityDao
     abstract fun tripDao(): TripDao
+    abstract fun visitDao(): VisitDao
 
     companion object {
         @Volatile

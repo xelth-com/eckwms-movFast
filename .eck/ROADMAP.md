@@ -82,9 +82,12 @@ Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
 - [x] **Odometer (Kilometerstand)**: dialog with manual entry + 📷 TakePicturePreview → ML Kit text-recognition OCR prefill; photo uploaded via CAS pipeline; source recorded (photo/manual)
 - [x] **Sync**: `trip_sync` SyncQueue job → `POST /api/trips` (idempotent by trip_uuid)
 - [x] **Server**: trip upsert/list/get endpoints; `cell_resolver` worker — cell_tower cache + OpenCelliD lookups, accuracy-aware distance (jitter + cell-bounce filters, ×1.25 road factor, `distance_is_estimate`)
-- [ ] **Visit-tasks (Phase 2)**: geo targets from orders, auto-mark visited when track passes near, morning plan + end-of-day reminders
+- [x] **DSGVO privacy retrofit (Phase 1.5, 2026-06-12)**: Privatfahrt mode (zero position sampling, km-delta only), consent gate (opt-in, revocable, enforced at every entry point), 14-day raw-point retention on device AND server. See 9eck.com/.eck/PRIVACY_BY_DESIGN.md
+- [x] **Visit-tasks (Phase 2, 2026-06-12)**: check-in/check-out model (VG Lüneburg) — NOT silent track-matching. visit_task table + /api/visits endpoints; PDA pulls daily plan, geofences LOCALLY during business trips → prompt notification, worker confirms; one-shot position only at the moment of the tap; status-based end-of-day reminder (16-20h, once/day)
 - [ ] **Fahrtenbuch report (Phase 3)**: business/private classification UI, monthly PDF/CSV export, Hedera sealing of closed trips, odometer chain validation
 - [ ] **Navigation assist (Phase 4)**: Maps intent to target, arrival detection with GPS, ActionProof on arrival
 - [ ] Trips overlay on the WMS dashboard Leaflet map
 - [ ] Open-trip checkpoint upload (currently uploads only on finalize)
 - [ ] OPENCELLID_API_KEY provisioning on the server (without it only cached towers resolve)
+- [ ] On-device cell resolution (offline OpenCelliD DACH extract) — end-state where coordinates never leave the phone
+- [ ] Visit creation UI on the dashboard (orders already geocoded; currently visits are created via POST /api/visits)

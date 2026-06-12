@@ -235,6 +235,10 @@ class TripRecordingService : Service() {
                                 accuracyM = loc.accuracy.toDouble()
                             )
                         )
+                        // Local geofence: prompt (never auto-confirm) near open visits
+                        VisitManager.onTripLocation(
+                            applicationContext, loc.latitude, loc.longitude, loc.accuracy.toDouble()
+                        )
                     }
                 }
             }
