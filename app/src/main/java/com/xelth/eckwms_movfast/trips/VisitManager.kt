@@ -15,7 +15,9 @@ import com.xelth.eckwms_movfast.MainActivity
 import com.xelth.eckwms_movfast.data.local.AppDatabase
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 import com.xelth.eckwms_movfast.sync.SyncManager
-import com.xelth.eckwms_movfast.utils.SettingsManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -35,6 +37,11 @@ object VisitManager {
     private const val TAG = "VisitManager"
     private const val CHANNEL_ID = "visit_prompts"
     private const val PROMPT_COOLDOWN_MS = 30 * 60_000L
+    private const val PRECISE_FIX_RADIUS_M = 1000.0
+    private const val PRECISE_FIX_COOLDOWN_MS = 5 * 60_000L
+
+    /** Per-visit cooldown for the one-shot GPS refinement near a target */
+    private val preciseFixAt = mutableMapOf<String, Long>()
 
     /** Queue a confirmed check-in/check-out (offline-first). One-shot position
      *  is attached only when provided by the UI at the moment of the tap. */
@@ -84,10 +91,48 @@ object VisitManager {
                 if (dist <= radius) {
                     db.visitDao().markPrompted(visit.id, now)
                     showPrompt(context, visit.id, visit.title)
+                } else if (dist <= PRECISE_FIX_RADIUS_M) {
+                    // Phase 4: plausibly близко, но грубая позиция не дотягивает —
+                    // one-shot GPS fix to confirm arrival precisely. Rare and
+                    // purposeful (per-visit cooldown), not continuous GPS.
+                    if (now - (preciseFixAt[visit.id] ?: 0) > PRECISE_FIX_COOLDOWN_MS) {
+                        preciseFixAt[visit.id] = now
+                        requestPreciseArrivalCheck(context, visit.id, visit.title, vLat, vLng)
+                    }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "onTripLocation: ${e.message}")
+        }
+    }
+
+    private fun requestPreciseArrivalCheck(
+        context: Context,
+        visitId: String,
+        title: String,
+        targetLat: Double,
+        targetLng: Double
+    ) {
+        try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            if (!lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) return
+            @Suppress("MissingPermission")
+            lm.getCurrentLocation(
+                android.location.LocationManager.GPS_PROVIDER, null, context.mainExecutor
+            ) { fix ->
+                if (fix == null) return@getCurrentLocation
+                val d = haversineM(fix.latitude, fix.longitude, targetLat, targetLng)
+                Log.d(TAG, "Precise arrival check for $visitId: ${d.toInt()} m")
+                if (d <= maxOf(2 * fix.accuracy.toDouble(), 150.0)) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        AppDatabase.getInstance(context).visitDao()
+                            .markPrompted(visitId, System.currentTimeMillis())
+                        showPrompt(context, visitId, title)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "precise fix failed: ${e.message}")
         }
     }
 

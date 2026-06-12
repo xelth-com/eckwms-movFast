@@ -237,6 +237,34 @@ fun TripsScreen(onBack: () -> Unit) {
                                 Text(visit.address!!, color = Color(0xFF90A4AE), fontSize = 12.sp)
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // Navigation: coordinates go only to the maps app
+                                // on this device — nothing is reported anywhere
+                                if (visit.lat != null && visit.lng != null) {
+                                    OutlinedButton(onClick = {
+                                        try {
+                                            val uri = android.net.Uri.parse(
+                                                "google.navigation:q=${visit.lat},${visit.lng}"
+                                            )
+                                            context.startActivity(
+                                                android.content.Intent(
+                                                    android.content.Intent.ACTION_VIEW, uri
+                                                )
+                                            )
+                                        } catch (e: Exception) {
+                                            // No Google Maps — generic geo: fallback
+                                            try {
+                                                context.startActivity(
+                                                    android.content.Intent(
+                                                        android.content.Intent.ACTION_VIEW,
+                                                        android.net.Uri.parse(
+                                                            "geo:${visit.lat},${visit.lng}?q=${visit.lat},${visit.lng}"
+                                                        )
+                                                    )
+                                                )
+                                            } catch (_: Exception) {}
+                                        }
+                                    }) { Text("🧭", fontSize = 13.sp) }
+                                }
                                 if (visit.status == "open") {
                                     Button(
                                         onClick = {
