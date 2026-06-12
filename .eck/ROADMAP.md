@@ -84,8 +84,8 @@ Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
 - [x] **Server**: trip upsert/list/get endpoints; `cell_resolver` worker — cell_tower cache + OpenCelliD lookups, accuracy-aware distance (jitter + cell-bounce filters, ×1.25 road factor, `distance_is_estimate`)
 - [x] **DSGVO privacy retrofit (Phase 1.5, 2026-06-12)**: Privatfahrt mode (zero position sampling, km-delta only), consent gate (opt-in, revocable, enforced at every entry point), 14-day raw-point retention on device AND server. See 9eck.com/.eck/PRIVACY_BY_DESIGN.md
 - [x] **Visit-tasks (Phase 2, 2026-06-12)**: check-in/check-out model (VG Lüneburg) — NOT silent track-matching. visit_task table + /api/visits endpoints; PDA pulls daily plan, geofences LOCALLY during business trips → prompt notification, worker confirms; one-shot position only at the moment of the tap; status-based end-of-day reminder (16-20h, once/day)
-- [ ] **Fahrtenbuch report (Phase 3)**: business/private classification UI, monthly PDF/CSV export, Hedera sealing of closed trips, odometer chain validation
-- [ ] **Navigation assist (Phase 4)**: Maps intent to target, arrival detection with GPS, ActionProof on arrival
+- [x] **Fahrtenbuch report (Phase 3, 2026-06-12)**: server seals every resolved trip (SHA-256 canonical aggregate → Hedera HCS when configured, seal survives point pruning, re-resolution appends a new seal version), odometer chain validation per device (gap flagged, e.g. +25 km unaccounted), monthly export GET /api/trips/export?month=&format=csv|pdf (German Finanzamt columns incl. GoBD-Siegel)
+- [x] **Navigation assist (Phase 4, 2026-06-12)**: 🧭 google.navigation intent on visit cards (coords stay on device), one-shot GPS precise-arrival check within 1 km of open targets (5-min per-visit cooldown). ActionProof-on-arrival deferred (check-in events already carry position)
 - [ ] Trips overlay on the WMS dashboard Leaflet map
 - [ ] Open-trip checkpoint upload (currently uploads only on finalize)
 - [ ] OPENCELLID_API_KEY provisioning on the server (without it only cached towers resolve)
