@@ -13,6 +13,7 @@ import com.xelth.eckwms_movfast.data.local.dao.LocalPhotoDao
 import com.xelth.eckwms_movfast.data.local.dao.ActiveTransactionDao
 import com.xelth.eckwms_movfast.data.local.dao.CrmEntityDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
+import com.xelth.eckwms_movfast.data.local.dao.CellTowerDao
 import com.xelth.eckwms_movfast.data.local.dao.TripDao
 import com.xelth.eckwms_movfast.data.local.dao.VisitDao
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionEntity
@@ -30,6 +31,7 @@ import com.xelth.eckwms_movfast.data.local.entity.ScanEntity
 import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripPointEntity
+import com.xelth.eckwms_movfast.data.local.entity.CellTowerEntity
 import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
 
 @Database(
@@ -49,9 +51,10 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         CrmEntityEntity::class,
         TripEntity::class,
         TripPointEntity::class,
-        VisitTaskEntity::class
+        VisitTaskEntity::class,
+        CellTowerEntity::class
     ],
-    version = 14,  // Visits: visit_tasks (check-in/out model)
+    version = 15,  // On-device cell resolution: cell_towers cache
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -66,6 +69,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun crmEntityDao(): CrmEntityDao
     abstract fun tripDao(): TripDao
     abstract fun visitDao(): VisitDao
+    abstract fun cellTowerDao(): CellTowerDao
 
     companion object {
         @Volatile

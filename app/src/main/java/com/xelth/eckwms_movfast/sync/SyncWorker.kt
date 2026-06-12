@@ -88,6 +88,26 @@ class SyncWorker(
             Log.w(TAG, "Visit sync failed (non-fatal): ${e.message}")
         }
 
+        // 2e. Cell-tower cache refresh (on-device resolution). Refresh only when
+        // empty or roughly once a day — towers are static, so this is cheap.
+        try {
+            val have = database.cellTowerDao().count()
+            val prefs = applicationContext.getSharedPreferences("cell_cache", Context.MODE_PRIVATE)
+            val lastDay = prefs.getString("last_pull_day", "")
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date())
+            if (have == 0 || lastDay != today) {
+                val towers = apiService.fetchCellCache()
+                if (!towers.isNullOrEmpty()) {
+                    database.cellTowerDao().upsertAll(towers)
+                    prefs.edit().putString("last_pull_day", today).apply()
+                    Log.i(TAG, "Cell cache refreshed: ${towers.size} towers")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Cell cache refresh failed (non-fatal): ${e.message}")
+        }
+
         // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()

@@ -1944,6 +1944,37 @@ class ScanApiService(private val context: Context) {
         return@withContext result is ScanResult.Success
     }
 
+    /**
+     * Download the resolved cell-tower cache for on-device resolution.
+     * Mast positions, not personal data. Returns parsed rows or null.
+     */
+    suspend fun fetchCellCache(limit: Int = 5000): List<com.xelth.eckwms_movfast.data.local.entity.CellTowerEntity>? =
+        withContext(Dispatchers.IO) {
+            val result = authenticatedGetWithFailover("/api/cells/cache?limit=$limit")
+            if (result !is ScanResult.Success) return@withContext null
+            try {
+                val arr = JSONArray(result.data)
+                val list = mutableListOf<com.xelth.eckwms_movfast.data.local.entity.CellTowerEntity>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val key = o.optString("key", "")
+                    if (key.isEmpty() || o.isNull("lat") || o.isNull("lng")) continue
+                    list.add(
+                        com.xelth.eckwms_movfast.data.local.entity.CellTowerEntity(
+                            key = key,
+                            lat = o.getDouble("lat"),
+                            lng = o.getDouble("lng"),
+                            rangeM = o.optDouble("range_m", 1500.0)
+                        )
+                    )
+                }
+                list
+            } catch (e: Exception) {
+                Log.e(TAG, "fetchCellCache parse error: ${e.message}")
+                null
+            }
+        }
+
     // ============ Visits API (check-in/check-out model) ============
 
     /** Pull open visit tasks for the daily plan (due today or overdue). */

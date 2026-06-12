@@ -163,20 +163,40 @@ object TripManager {
         // Privatfahrt: coordinates never leave the device — km delta only
         val pointsJson = JSONArray()
         if (trip.purpose != "private") {
+            val cellDao = db.cellTowerDao()
             points.forEach { p ->
-                pointsJson.put(JSONObject().apply {
+                val obj = JSONObject().apply {
                     put("seq", p.seq)
                     put("ts", iso(p.ts))
                     put("source", p.source)
-                    p.lat?.let { put("lat", it) }
-                    p.lng?.let { put("lng", it) }
-                    p.accuracyM?.let { put("accuracy_m", it) }
-                    p.mcc?.let { put("mcc", it) }
-                    p.mnc?.let { put("mnc", it) }
-                    p.tac?.let { put("tac", it) }
-                    p.cid?.let { put("cid", it) }
-                    p.signalDbm?.let { put("signal_dbm", it) }
-                })
+                }
+                // On-device resolution: if this cell is in the local tower cache,
+                // attach coordinates HERE and DROP the raw cell identity — the
+                // cell's position never leaves the phone. Only cells unknown to
+                // the cache go up raw for server-side OpenCelliD resolution.
+                var resolved = false
+                if (p.source == "cell" && p.cid != null && p.mcc != null) {
+                    val key = "${p.mcc}-${p.mnc}-${p.tac}-${p.cid}"
+                    val tower = cellDao.get(key)
+                    if (tower != null) {
+                        obj.put("lat", tower.lat)
+                        obj.put("lng", tower.lng)
+                        obj.put("accuracy_m", tower.rangeM)
+                        obj.put("resolved_by", "device_cache")
+                        resolved = true
+                    }
+                }
+                if (!resolved) {
+                    p.lat?.let { obj.put("lat", it) }
+                    p.lng?.let { obj.put("lng", it) }
+                    p.accuracyM?.let { obj.put("accuracy_m", it) }
+                    p.mcc?.let { obj.put("mcc", it) }
+                    p.mnc?.let { obj.put("mnc", it) }
+                    p.tac?.let { obj.put("tac", it) }
+                    p.cid?.let { obj.put("cid", it) }
+                    p.signalDbm?.let { obj.put("signal_dbm", it) }
+                }
+                pointsJson.put(obj)
             }
         }
 
