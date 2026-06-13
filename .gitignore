@@ -39,3 +39,7 @@ snapshots/
 # Added by eck-snapshot to ignore metadata directory
 .eck/
 .mcp.json
+
+# scratch / debug pulls
+tmp_*
+*.db
