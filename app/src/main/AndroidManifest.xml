@@ -17,6 +17,8 @@
     <!-- Trip recording (Fahrtenbuch): cell-tower tracking FGS + auto vehicle detection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- Re-arm trip auto-detect after reboot (normal permission, Play-safe) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
          flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
          the `free` (Play) build must not carry it. -->
@@ -96,5 +98,13 @@
         <receiver
             android:name=".trips.VehicleTransitionReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".trips.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

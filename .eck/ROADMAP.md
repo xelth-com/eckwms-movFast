@@ -88,6 +88,9 @@ Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
 - [x] **Navigation assist (Phase 4, 2026-06-12)**: 🧭 google.navigation intent on visit cards (coords stay on device), one-shot GPS precise-arrival check within 1 km of open targets (5-min per-visit cooldown). ActionProof-on-arrival deferred (check-in events already carry position)
 - [ ] Trips overlay on the WMS dashboard Leaflet map
 - [ ] Open-trip checkpoint upload (currently uploads only on finalize)
-- [ ] OPENCELLID_API_KEY provisioning on the server (without it only cached towers resolve)
+- [x] OPENCELLID_API_KEY provisioned on pda.repair + eck1/2/3 (2026-06-13); cells resolve to coords, cell_tower cache fills (resolve-once)
+- [x] **paid/free product-flavor split (2026-06-13)**: paid = sideload/MDM (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS in src/paid/, battery-exemption dialog, BuildConfig.ENTERPRISE=true); free = Google Play (no restricted permission, .free app id, battery-settings deep-link). Build `assemblePaidDebug` / `assembleFreeDebug`. aapt-verified.
+- [x] **Trip-recording OS-kill hardening (2026-06-13)**: finalizeAndStop DB-fallback (Fahrt beenden survives an OS-killed FGS); battery/background-restriction detection + guard UI; per-paid-PDA provisioning via adb (`dumpsys deviceidle whitelist +pkg` + `appops set pkg RUN_ANY_IN_BACKGROUND allow`) or device-owner
+- [ ] FULL Play-ready free flavor also needs the xelixir agent (AccessibilityService + MediaProjection FGS) flavor-gated out — only the battery permission is split so far
 - [ ] On-device cell resolution (offline OpenCelliD DACH extract) — end-state where coordinates never leave the phone
 - [ ] Visit creation UI on the dashboard (orders already geocoded; currently visits are created via POST /api/visits)
