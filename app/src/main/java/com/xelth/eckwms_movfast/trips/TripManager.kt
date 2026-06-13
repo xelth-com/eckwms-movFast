@@ -221,4 +221,42 @@ object TripManager {
 
     /** Generate the id for a new trip. */
     fun newTripId(): String = UUID.randomUUID().toString()
+
+    // ── Battery / background-restriction guards ──────────────────────────────
+    // The OS kills the recording FGS mid-trip ("Stopping service due to app
+    // idle" / "background restricted") unless the app is exempt from battery
+    // optimization AND not background-restricted. These let the UI detect and
+    // fix that before a trip silently dies.
+
+    fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        return pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    fun isBackgroundRestricted(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
+            am.isBackgroundRestricted else false
+    }
+
+    /** PAID flavor only — direct "ignore battery optimization for THIS app?"
+     *  dialog (one tap). Needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which is
+     *  Play-restricted, so never call this in the free flavor. */
+    @android.annotation.SuppressLint("BatteryLife")
+    fun batteryExemptionIntent(context: Context): Intent =
+        Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = android.net.Uri.parse("package:${context.packageName}")
+        }
+
+    /** Play-safe (free flavor) — opens the general battery-optimization list;
+     *  the user finds the app and switches it to "not optimized" manually.
+     *  No restricted permission required. */
+    fun batteryListSettingsIntent(): Intent =
+        Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+
+    /** Intent to the app's detail settings (to lift "background restricted"). */
+    fun appSettingsIntent(context: Context): Intent =
+        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.parse("package:${context.packageName}")
+        }
 }

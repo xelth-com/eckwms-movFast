@@ -17,6 +17,10 @@
     <!-- Trip recording (Fahrtenbuch): cell-tower tracking FGS + auto vehicle detection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
+         flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
+         the `free` (Play) build must not carry it. -->
+
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />

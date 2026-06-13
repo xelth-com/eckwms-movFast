@@ -262,29 +262,34 @@ class TripRecordingService : Service() {
     }
 
     private fun finalizeAndStop() {
-        val id = tripId
+        val memberId = tripId
         samplingJob?.cancel()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        tripId = null
 
-        if (id != null) {
-            // Finalize synchronously-ish before the service dies
-            scope.launch {
-                try {
-                    val db = AppDatabase.getInstance(applicationContext)
+        // Always resolve through the DB: if the OS killed the FGS mid-trip and
+        // sticky-restarted it with no intent, `tripId` is null even though an
+        // open trip still exists — fall back to it so "Fahrt beenden" actually
+        // closes the trip instead of silently doing nothing.
+        scope.launch {
+            try {
+                val db = AppDatabase.getInstance(applicationContext)
+                val id = memberId ?: db.tripDao().getOpenTrip()?.id
+                if (id != null) {
                     db.tripDao().endTrip(id, System.currentTimeMillis())
                     TripManager.publishActiveTrip(null)
                     TripManager.queueTripSync(applicationContext, id)
-                    Log.i(TAG, "Trip $id finalized (${db.tripDao().pointCount(id)} points)")
-                } catch (e: Exception) {
-                    Log.e(TAG, "finalize failed: ${e.message}", e)
-                } finally {
-                    stopSelf()
+                    Log.i(TAG, "Trip $id finalized (${db.tripDao().pointCount(id)} points, resumed=${memberId == null})")
+                } else {
+                    Log.w(TAG, "finalizeAndStop: no open trip to finalize")
+                    TripManager.publishActiveTrip(null)
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "finalize failed: ${e.message}", e)
+            } finally {
+                stopSelf()
             }
-        } else {
-            stopSelf()
         }
-        tripId = null
     }
 
     override fun onDestroy() {

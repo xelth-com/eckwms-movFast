@@ -53,6 +53,18 @@ fun TripsScreen(onBack: () -> Unit) {
     var consent by remember { mutableStateOf(SettingsManager.getTripConsent()) }
     var privateMode by remember { mutableStateOf(false) }
 
+    // Battery / background-restriction guards — re-checked on every recomposition
+    // (e.g. after returning from the system dialog). The OS kills the recording
+    // FGS mid-trip unless the app is battery-exempt and not background-restricted.
+    var batteryOk by remember { mutableStateOf(TripManager.isIgnoringBatteryOptimizations(context)) }
+    var bgRestricted by remember { mutableStateOf(TripManager.isBackgroundRestricted(context)) }
+    val systemDialog = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        batteryOk = TripManager.isIgnoringBatteryOptimizations(context)
+        bgRestricted = TripManager.isBackgroundRestricted(context)
+    }
+
     // Odometer dialog state: which end of the trip it is for
     var odometerFor by remember { mutableStateOf<String?>(null) } // "start" | "end"
     var pendingTripId by remember { mutableStateOf<String?>(null) }
@@ -141,6 +153,50 @@ fun TripsScreen(onBack: () -> Unit) {
                     autoDetect = false
                     consent = false
                 }) { Text("Einwilligung widerrufen", color = Color(0xFF90A4AE), fontSize = 12.sp) }
+            }
+
+            // ── Battery / background-restriction warning ──
+            // Without these the OS kills the recording service mid-trip
+            // ("Stopping service due to app idle / background restricted").
+            if (consent && (!batteryOk || bgRestricted)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF4E2A00))
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("⚠️ Aufzeichnung kann unterbrochen werden", color = Color(0xFFFFB74D), fontWeight = FontWeight.Bold)
+                        Text(
+                            "Das System beendet die Fahrt-Aufzeichnung im Hintergrund, solange die " +
+                            "App nicht von der Akku-Optimierung ausgenommen und nicht „eingeschränkt“ ist.",
+                            color = Color(0xFFE0E0E0), fontSize = 12.sp
+                        )
+                        if (!batteryOk) {
+                            Button(
+                                onClick = {
+                                    // paid: direct one-tap exemption dialog (restricted permission).
+                                    // free/Play: open the general battery-opt list (Play-safe).
+                                    val intent = if (com.xelth.eckwms_movfast.BuildConfig.ENTERPRISE)
+                                        TripManager.batteryExemptionIntent(context)
+                                    else TripManager.batteryListSettingsIntent()
+                                    systemDialog.launch(intent)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (com.xelth.eckwms_movfast.BuildConfig.ENTERPRISE) "Akku-Optimierung ausnehmen"
+                                    else "Akku-Einstellungen öffnen"
+                                )
+                            }
+                        }
+                        if (bgRestricted) {
+                            OutlinedButton(
+                                onClick = { systemDialog.launch(TripManager.appSettingsIntent(context)) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("App-Einstellungen öffnen (Einschränkung aufheben)") }
+                        }
+                    }
+                }
             }
 
             // ── Active trip / start control ──

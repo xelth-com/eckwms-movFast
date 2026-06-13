@@ -51,6 +51,28 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    // Distribution split (see 9eck.com/.eck/PRIVACY_BY_DESIGN.md + owner decision):
+    //   paid — we install on managed PDAs (sideload/MDM). May carry the
+    //          REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission (in src/paid/
+    //          AndroidManifest.xml) and request the battery-exemption dialog,
+    //          so trip recording survives aggressive OEM ROMs.
+    //   free — users download from Google Play. That restricted permission is
+    //          NOT present; the app only deep-links to system settings.
+    // Shared code branches on BuildConfig.ENTERPRISE.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("paid") {
+            dimension = "distribution"
+            buildConfigField("Boolean", "ENTERPRISE", "true")
+        }
+        create("free") {
+            dimension = "distribution"
+            buildConfigField("Boolean", "ENTERPRISE", "false")
+            // Distinct id so a Play build can coexist / be published separately.
+            applicationIdSuffix = ".free"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

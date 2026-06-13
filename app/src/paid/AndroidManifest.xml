@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- PAID flavor only (we install on managed PDAs, not Google Play).
+         Lets the app request battery-optimization exemption so the trip
+         recording foreground service survives aggressive OEM ROMs / Doze.
+         Google Play restricts this permission, so it must NOT appear in the
+         free flavor / main manifest. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+</manifest>
