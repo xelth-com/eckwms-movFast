@@ -59,6 +59,9 @@ class TripRecordingService : Service() {
         const val ACTION_STOP_GRACEFUL = "trip_stop_graceful"
         const val EXTRA_MANUAL = "manual"
         const val EXTRA_PURPOSE = "purpose"
+        const val EXTRA_PURPOSE_REF = "purpose_ref"
+        const val EXTRA_PURPOSE_LABEL = "purpose_label"
+        const val EXTRA_PURPOSE_SOURCE = "purpose_source"
 
         private const val TAG = "TripRecordingService"
         private const val CHANNEL_ID = "trip_recording"
@@ -95,7 +98,10 @@ class TripRecordingService : Service() {
                 if (tripId == null) {
                     startRecording(
                         intent.getBooleanExtra(EXTRA_MANUAL, false),
-                        intent.getStringExtra(EXTRA_PURPOSE) ?: "business"
+                        intent.getStringExtra(EXTRA_PURPOSE) ?: "business",
+                        intent.getStringExtra(EXTRA_PURPOSE_REF),
+                        intent.getStringExtra(EXTRA_PURPOSE_LABEL),
+                        intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
                     )
                 }
             }
@@ -105,7 +111,13 @@ class TripRecordingService : Service() {
         return START_STICKY
     }
 
-    private fun startRecording(manual: Boolean, purpose: String) {
+    private fun startRecording(
+        manual: Boolean,
+        purpose: String,
+        purposeRef: String? = null,
+        purposeLabel: String? = null,
+        purposeSource: String? = null
+    ) {
         val isPrivate = purpose == "private"
         startForegroundWithNotification(isPrivate)
 
@@ -113,11 +125,17 @@ class TripRecordingService : Service() {
             val db = AppDatabase.getInstance(applicationContext)
             // Reuse an open trip after process death
             val existing = db.tripDao().getOpenTrip()
+            val now = System.currentTimeMillis()
             val trip = existing ?: TripEntity(
                 id = TripManager.newTripId(),
-                startedAt = System.currentTimeMillis(),
+                startedAt = now,
                 manualStart = manual,
-                purpose = purpose
+                purpose = purpose,
+                // private trips carry no destination; declared_at = start moment
+                purposeRef = if (isPrivate) null else purposeRef,
+                purposeLabel = if (isPrivate) null else purposeLabel,
+                purposeDeclaredAt = if (isPrivate) null else now,
+                purposeSource = if (isPrivate) null else purposeSource
             ).also { db.tripDao().upsertTrip(it) }
 
             tripId = trip.id

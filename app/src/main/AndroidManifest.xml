@@ -65,9 +65,12 @@
             android:theme="@style/Theme.EckwmsmovFast" />
 
         <!-- Xelixir embedded support agent (Phase A: view-only screen mirroring) -->
+        <!-- DEBUG bring-up: exported=true so `adb shell am start` can trigger the agent for
+             testing. PROD trigger is the server XELIXIR_START WS push (HybridMessageSender) —
+             revert to exported="false" (or debug-guard) before release. -->
         <activity
             android:name=".xelixir.XelixirConsentActivity"
-            android:exported="false"
+            android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service

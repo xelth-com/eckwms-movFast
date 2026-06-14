@@ -1921,14 +1921,34 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
 
         val version = parts[1]
-        if (version != "2") {
-            throw Exception("Unsupported protocol version: $version. This app only supports ECK v2.")
+        if (version != "2" && version != "3") {
+            throw Exception("Unsupported protocol version: $version. This app supports ECK v2/v3.")
         }
 
         val instanceIdCompact = parts[2]
         val serverPublicKeyHex = parts[3]
-        val urlField = parts[4]
-        val inviteToken = if (parts.size == 6) parts[5] else null
+
+        // v2:        ECK$2$UUID$KEY$URLS[$TOKEN]
+        // v3 (paid): ECK$3$UUID$KEY$MESH$OWN_URLS[$TOKEN] — eckN are app defaults,
+        //            ordered by mod3(mesh); only the customer's OWN nodes are in QR.
+        val urlField: String
+        val inviteToken: String?
+        if (version == "3") {
+            if (parts.size < 6) throw Exception("Invalid ECK v3 format. Too few parts.")
+            val meshCompact = parts[4]
+            val ownField = parts[5]
+            inviteToken = if (parts.size >= 7 && parts[6].isNotBlank()) parts[6] else null
+            val meshId = if (meshCompact.matches(Regex("^[0-9A-Fa-f]{32}$")))
+                "${meshCompact.substring(0,8)}-${meshCompact.substring(8,12)}-${meshCompact.substring(12,16)}-${meshCompact.substring(16,20)}-${meshCompact.substring(20,32)}".lowercase()
+            else meshCompact.lowercase()
+            val ownUrls = ownField.split(",").filter { it.isNotBlank() }
+            val eckN = SettingsManager.orderedEckNodes(meshId)
+            urlField = (ownUrls + eckN).joinToString(",")
+            addPairingLog("✅ Paid mesh ${meshId.take(8)}… — eckN defaults (mod3 primary first)")
+        } else {
+            urlField = parts[4]
+            inviteToken = if (parts.size == 6) parts[5] else null
+        }
 
         if (instanceIdCompact.isBlank()) {
             throw Exception("Instance ID is empty")
@@ -2034,9 +2054,30 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 addPairingLog("ℹ️ No global server URL provided (local-only setup)")
             }
         } else {
-            // Domain-based URL - use as both local and global
-            SettingsManager.saveGlobalServerUrl(reachableUrl)
-            addPairingLog("✅ Using domain-based server as global: $reachableUrl")
+            // Domain-based active. For failover pick a DIFFERENT candidate (a
+            // sibling mesh node) as global — NOT the active itself (that was a
+            // no-op failover and, with no candidates, fell back to the free node).
+            val activeKey = reachableUrl.trimEnd('/').replace(Regex("(?i)https?://"), "").lowercase()
+            val sibling = candidates.firstOrNull {
+                it.trimEnd('/').replace(Regex("(?i)https?://"), "").lowercase() != activeKey
+            }
+            if (sibling != null) {
+                SettingsManager.saveGlobalServerUrl(sibling)
+                addPairingLog("✅ Failover sibling (global): $sibling")
+            } else {
+                SettingsManager.saveGlobalServerUrl(reachableUrl)
+                addPairingLog("ℹ️ Single endpoint — no failover sibling")
+            }
+        }
+
+        // Save the full ordered failover list (active first, then the siblings)
+        run {
+            val activeKey = reachableUrl.trimEnd('/').replace(Regex("(?i)https?://"), "").lowercase()
+            val siblings = candidates.filter {
+                it.trimEnd('/').replace(Regex("(?i)https?://"), "").lowercase() != activeKey
+            }
+            SettingsManager.saveServerUrlList(listOf(reachableUrl) + siblings)
+            addPairingLog("✅ Failover list: ${(listOf(reachableUrl) + siblings).size} node(s)")
         }
 
         performSecureRegistration(reachableUrl, instanceId, inviteToken)

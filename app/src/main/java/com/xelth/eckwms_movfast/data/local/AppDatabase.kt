@@ -54,7 +54,7 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         VisitTaskEntity::class,
         CellTowerEntity::class
     ],
-    version = 15,  // On-device cell resolution: cell_towers cache
+    version = 16,  // Trip purpose Level A: purpose_ref/label/declared_at/source on trips
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

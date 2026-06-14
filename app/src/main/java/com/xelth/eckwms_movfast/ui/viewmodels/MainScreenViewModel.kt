@@ -243,6 +243,31 @@ class MainScreenViewModel : ViewModel() {
         private const val MAX_SLOT_TIMEOUT_MS = 15 * 60_000L // 15 min cap
     }
 
+    // --- TRIP MODE STATE (Fahrtenbuch) ---
+
+    private val _isTripMode = MutableLiveData<Boolean>(false)
+    val isTripMode: LiveData<Boolean> = _isTripMode
+
+    private val _tripStatus = MutableLiveData<String>("")
+    val tripStatus: LiveData<String> = _tripStatus
+
+    private val _tripAutoDetect = MutableLiveData<Boolean>(false)
+    val tripAutoDetect: LiveData<Boolean> = _tripAutoDetect
+
+    private val _tripRecording = MutableLiveData<Boolean>(false)
+    val tripRecording: LiveData<Boolean> = _tripRecording
+
+    // Trip-mode console data (cities + ticket list)
+    private val _tripCities = MutableLiveData<List<com.xelth.eckwms_movfast.api.CityCount>>(emptyList())
+    val tripCities: LiveData<List<com.xelth.eckwms_movfast.api.CityCount>> = _tripCities
+
+    private val _tripDestinations = MutableLiveData<List<com.xelth.eckwms_movfast.api.Destination>>(emptyList())
+    val tripDestinations: LiveData<List<com.xelth.eckwms_movfast.api.Destination>> = _tripDestinations
+
+    private var tripSelectedCity: String? = null
+    /** Wired from MainScreen → ScanApiService.fetchDestinations(query, city, ai). */
+    var onFetchDestinations: (suspend (String?, String?, Boolean) -> com.xelth.eckwms_movfast.api.DestinationsResult?)? = null
+
     // --- RECEIVING MODE STATE ---
 
     private val _isReceivingMode = MutableLiveData<Boolean>(false)
@@ -459,6 +484,8 @@ class MainScreenViewModel : ViewModel() {
             renderInventoryGrid()
         } else if (_isReceivingMode.value == true) {
             renderReceivingGrid()
+        } else if (_isTripMode.value == true) {
+            renderTripGrid()
         } else if (_isDeviceCheckMode.value == true) {
             renderDeviceCheckGrid()
         } else {
@@ -824,6 +851,10 @@ class MainScreenViewModel : ViewModel() {
             return handleReceivingButtonClick(action)
         }
 
+        if (_isTripMode.value == true) {
+            return handleTripButtonClick(action)
+        }
+
         if (_isDeviceCheckMode.value == true) {
             return handleDeviceCheckButtonClick(action)
         }
@@ -868,6 +899,11 @@ class MainScreenViewModel : ViewModel() {
 
         if (action == "navigate_inventory") {
             enterInventoryMode()
+            return "handled"
+        }
+
+        if (action == "navigate_trips") {
+            enterTripMode()
             return "handled"
         }
 
@@ -1308,6 +1344,153 @@ class MainScreenViewModel : ViewModel() {
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
 
         updateRenderCells()
+    }
+
+    // --- TRIP MODE LOGIC (Fahrtenbuch) ---
+
+    fun enterTripMode() {
+        _isTripMode.value = true
+        _tripAutoDetect.value = com.xelth.eckwms_movfast.utils.SettingsManager.getTripAutoDetect()
+        _tripStatus.value = "Fahrten — Stadt wählen oder tippen/🎤"
+        tripSelectedCity = null
+        addLog("Entered Trip Mode")
+        renderTripGrid()
+        refreshTripDestinations() // load the city chips
+    }
+
+    /** Live text/voice search over ALL tickets — updates ONLY the console list
+     *  (no grid re-render on each keystroke). Blank query → back to city view. */
+    fun searchTripDestinations(query: String) {
+        viewModelScope.launch {
+            val res = onFetchDestinations?.invoke(query.ifBlank { null }, null, false) ?: return@launch
+            if (query.isBlank()) {
+                tripSelectedCity = null
+                _tripCities.value = res.cities
+                _tripDestinations.value = emptyList()
+                _tripStatus.value = "Fahrten — Stadt wählen oder tippen/🎤"
+                if (_isTripMode.value == true) renderTripGrid()
+            } else {
+                _tripDestinations.value = res.results
+                _tripStatus.value = "Suche „$query\" — ${res.results.size} Treffer"
+            }
+        }
+    }
+
+    /** Smart Gemini fallback — ONLY on explicit user tap (cost-controlled).
+     *  Corrects mis-heard/typo queries ("treutlingen" → "Reutlingen"). */
+    fun aiSearchTripDestinations(query: String) {
+        if (query.isBlank()) return
+        viewModelScope.launch {
+            _tripStatus.value = "🤖 KI sucht „$query\"…"
+            val res = onFetchDestinations?.invoke(query, null, true)
+            when {
+                res == null -> _tripStatus.value = "🤖 KI nicht verfügbar"
+                res.results.isEmpty() -> _tripStatus.value = "🤖 keine Treffer für „$query\""
+                else -> {
+                    _tripDestinations.value = res.results
+                    _tripStatus.value = "🤖 ${res.results.size} Treffer für „$query\""
+                }
+            }
+        }
+    }
+
+    /** Load the trip-mode console data: cities (chips) + the ticket list for a
+     *  typed query (fuzzy over ALL tickets) or a selected city. */
+    fun refreshTripDestinations(query: String? = null, city: String? = null) {
+        tripSelectedCity = city
+        viewModelScope.launch {
+            val res = onFetchDestinations?.invoke(query, city, false) ?: return@launch
+            _tripCities.value = res.cities
+            _tripDestinations.value = res.results
+            _tripStatus.value = when {
+                !query.isNullOrBlank() -> "Suche: \"$query\" — ${res.results.size} Treffer"
+                city != null -> "$city — ${res.results.size} Tickets"
+                else -> "Fahrten — Stadt wählen oder tippen/🎤"
+            }
+            if (_isTripMode.value == true) renderTripGrid()
+        }
+    }
+
+    fun exitTripMode() {
+        _isTripMode.value = false
+        addLog("Exited Trip Mode")
+        initializeGrid()
+    }
+
+    /** Live recording state — set from MainScreen observing TripManager.activeTrip. */
+    fun setTripRecording(recording: Boolean) {
+        if (_tripRecording.value != recording) {
+            _tripRecording.value = recording
+            _tripStatus.value = if (recording) "🚗 Fahrt läuft" else "Fahrten"
+            if (_isTripMode.value == true) renderTripGrid()
+        }
+    }
+
+    /** Auto-detect toggle reflection — set from MainScreen after the permission. */
+    fun setTripAutoDetect(enabled: Boolean) {
+        _tripAutoDetect.value = enabled
+        if (_isTripMode.value == true) renderTripGrid()
+    }
+
+    private fun renderTripGrid() {
+        val auto = _tripAutoDetect.value == true
+        val recording = _tripRecording.value == true
+        val uiItems = mutableListOf<Map<String, Any>>()
+        // LEFTMOST: auto-detect trigger — deliberately the leftmost key so a
+        // right-hander does not hit it by accident.
+        uiItems.add(mapOf(
+            "type" to "button",
+            "label" to if (auto) "🟢\nAuto" else "⚪\nAuto",
+            "color" to if (auto) "#2E7D32" else "#37474F",
+            "action" to "trip_toggle_autodetect"
+        ))
+        uiItems.add(mapOf("type" to "button", "label" to "📷\nPhoto", "color" to "#9C27B0", "action" to "act_photo"))
+        uiItems.add(mapOf("type" to "button", "label" to "🔍\nScan", "color" to "#00BCD4", "action" to "act_scan"))
+        // 🎤 under Photo/Scan — PUSH-TO-TALK (hold to talk). Handled via
+        // onMicPress/onMicRelease in MainScreen (not a normal click action).
+        uiItems.add(mapOf("type" to "button", "label" to "🎤\nHalten", "color" to "#37474F", "action" to "trip_mic"))
+        // Start/Stop flow stays in TripsScreen for now ("start as is")
+        uiItems.add(mapOf(
+            "type" to "button",
+            "label" to if (recording) "🚗\nFahrt●" else "🚗\nFahrt",
+            "color" to if (recording) "#1B5E20" else "#2E7D32",
+            "action" to "trip_open_start"
+        ))
+        // City buttons (cities with waiting tickets). Tap → console shows that
+        // city's tickets. "All" clears the filter.
+        if (tripSelectedCity != null) {
+            uiItems.add(mapOf("type" to "button", "label" to "⬅\nAlle", "color" to "#455A64", "action" to "trip_city_all"))
+        }
+        _tripCities.value?.forEach { c ->
+            val selected = c.city == tripSelectedCity
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to "${c.city}\n(${c.count})",
+                "color" to if (selected) "#1565C0" else "#37474F",
+                "action" to "trip_city:${c.city}"
+            ))
+        }
+        gridManager.clearAndReset()
+        gridManager.placeItems(uiItems, priority = 100)
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
+        updateRenderCells()
+    }
+
+    private fun handleTripButtonClick(action: String): String {
+        return when {
+            action == "act_exit" -> { exitTripMode(); "handled" }
+            action == "act_photo" -> "capture_photo"
+            action == "act_scan" -> "capture_barcode"
+            action == "trip_city_all" -> { refreshTripDestinations(); "handled" }
+            action.startsWith("trip_city:") -> {
+                refreshTripDestinations(city = action.removePrefix("trip_city:"))
+                "handled"
+            }
+            // context-bound — handled in MainScreen (TripManager / navigation)
+            action == "trip_toggle_autodetect" -> "trip_toggle_autodetect"
+            action == "trip_open_start" -> "trip_open_start"
+            else -> "handled"
+        }
     }
 
     // --- RECEIVING MODE LOGIC ---

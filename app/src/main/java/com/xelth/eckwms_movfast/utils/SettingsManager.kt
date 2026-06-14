@@ -81,6 +81,30 @@ object SettingsManager {
     fun saveGlobalServerUrl(url: String) = prefs.edit().putString(KEY_GLOBAL_SERVER_URL, url.trim()).commit()
     fun getGlobalServerUrl(): String = prefs.getString(KEY_GLOBAL_SERVER_URL, DEFAULT_GLOBAL_SERVER_URL) ?: DEFAULT_GLOBAL_SERVER_URL
 
+    // ── Paid mesh: the eckN service nodes are baked-in DEFAULTS (kept OUT of the
+    // pairing QR to keep it short). The device orders them by mod3(mesh_id) so no
+    // single node is everyone's default, and fails over across them. ──
+    val ECK_DEFAULT_NODES = listOf("https://eck1.com/E", "https://eck2.com/E", "https://eck3.com/E")
+
+    /** eckN defaults rotated so this mesh's mod3 primary comes first. Matches the
+     *  server `compute_primary_index`: u32 BE of sha256(mesh)[..4] % n. */
+    fun orderedEckNodes(meshId: String): List<String> {
+        val n = ECK_DEFAULT_NODES.size
+        if (n == 0) return emptyList()
+        val h = java.security.MessageDigest.getInstance("SHA-256").digest(meshId.toByteArray(Charsets.UTF_8))
+        val v = ((h[0].toLong() and 0xFF) shl 24) or ((h[1].toLong() and 0xFF) shl 16) or
+                ((h[2].toLong() and 0xFF) shl 8) or (h[3].toLong() and 0xFF)
+        val primary = (v % n).toInt()
+        return (0 until n).map { ECK_DEFAULT_NODES[(primary + it) % n] }
+    }
+
+    // Full ordered failover list (active first, then siblings) for the mesh.
+    private const val KEY_SERVER_URL_LIST = "server_url_list"
+    fun saveServerUrlList(urls: List<String>) =
+        prefs.edit().putString(KEY_SERVER_URL_LIST, urls.joinToString(",")).commit()
+    fun getServerUrlList(): List<String> =
+        (prefs.getString(KEY_SERVER_URL_LIST, "") ?: "").split(",").filter { it.isNotBlank() }
+
     private const val KEY_SERVER_PUBLIC_KEY = "server_public_key_hex"
 
     fun saveServerPublicKey(keyHex: String) = prefs.edit().putString(KEY_SERVER_PUBLIC_KEY, keyHex.trim()).commit()

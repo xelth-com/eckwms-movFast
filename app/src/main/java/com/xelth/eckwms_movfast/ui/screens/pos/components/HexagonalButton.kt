@@ -3,8 +3,10 @@ package com.xelth.eckwms_movfast.ui.screens.pos.components
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -28,7 +30,11 @@ fun HexagonalButton(
     enabled: Boolean = true,
     side: HexagonSide = HexagonSide.FULL,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    // PUSH-TO-TALK: when provided, the button fires onPress on touch-down and
+    // onRelease on lift (used by the 🎤 mic button) instead of click.
+    onPress: (() -> Unit)? = null,
+    onRelease: (() -> Unit)? = null
 ) {
     val backgroundColor = try {
         Color(android.graphics.Color.parseColor(colorHex))
@@ -63,10 +69,22 @@ fun HexagonalButton(
             .clip(HexagonShape(side))
             .alpha(if (enabled) 1f else 0.6f)
             .background(backgroundColor)
-            .combinedClickable(
-                enabled = enabled,
-                onClick = onClick,
-                onLongClick = onLongClick
+            .then(
+                if (onPress != null) {
+                    Modifier.pointerInput(Unit) {
+                        detectTapGestures(onPress = {
+                            onPress()
+                            tryAwaitRelease()
+                            onRelease?.invoke()
+                        })
+                    }
+                } else {
+                    Modifier.combinedClickable(
+                        enabled = enabled,
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                }
             ),
         contentAlignment = Alignment.Center
     ) {

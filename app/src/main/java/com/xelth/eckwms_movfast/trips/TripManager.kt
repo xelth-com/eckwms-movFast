@@ -45,7 +45,14 @@ object TripManager {
     /** Start recording (idempotent — reuses an already-open trip).
      *  No-op without DSGVO consent. `purpose = "private"` → Privatfahrt:
      *  the service records NO positions, only the trip frame for km-delta. */
-    fun startTrip(context: Context, manual: Boolean, purpose: String = "business") {
+    fun startTrip(
+        context: Context,
+        manual: Boolean,
+        purpose: String = "business",
+        purposeRef: String? = null,
+        purposeLabel: String? = null,
+        purposeSource: String? = null
+    ) {
         if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
             Log.w(TAG, "startTrip blocked: no recording consent")
             return
@@ -54,6 +61,9 @@ object TripManager {
             action = TripRecordingService.ACTION_START
             putExtra(TripRecordingService.EXTRA_MANUAL, manual)
             putExtra(TripRecordingService.EXTRA_PURPOSE, purpose)
+            putExtra(TripRecordingService.EXTRA_PURPOSE_REF, purposeRef)
+            putExtra(TripRecordingService.EXTRA_PURPOSE_LABEL, purposeLabel)
+            putExtra(TripRecordingService.EXTRA_PURPOSE_SOURCE, purposeSource)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -212,6 +222,10 @@ object TripManager {
             trip.endOdometerSource?.let { put("end_odometer_source", it) }
             trip.endOdometerPhotoId?.let { put("end_odometer_photo", it) }
             put("purpose", trip.purpose)
+            trip.purposeRef?.let { put("purpose_ref", it) }
+            trip.purposeLabel?.let { put("purpose_label", it) }
+            trip.purposeDeclaredAt?.let { put("purpose_declared_at", iso(it)) }
+            trip.purposeSource?.let { put("purpose_source", it) }
             trip.note?.let { put("note", it) }
             val userId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
             if (!userId.isNullOrEmpty()) put("driver_user_id", userId)

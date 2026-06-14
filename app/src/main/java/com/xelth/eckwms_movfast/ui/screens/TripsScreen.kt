@@ -51,7 +51,19 @@ fun TripsScreen(onBack: () -> Unit) {
     val activeTrip by TripManager.activeTrip.observeAsState(null)
     var autoDetect by remember { mutableStateOf(SettingsManager.getTripAutoDetect()) }
     var consent by remember { mutableStateOf(SettingsManager.getTripConsent()) }
-    var privateMode by remember { mutableStateOf(false) }
+    var chosenPurpose by remember { mutableStateOf("business") } // business | private (set in the dialog)
+
+    // Level A: declare the purpose at trip start (planned candidate). Chosen
+    // values are carried into startTrip and sealed (GoBD anti-fabrication).
+    var showPurposePicker by remember { mutableStateOf(false) }
+    var purposeCandidates by remember {
+        mutableStateOf<List<com.xelth.eckwms_movfast.api.PurposeCandidate>>(emptyList())
+    }
+    var loadingCandidates by remember { mutableStateOf(false) }
+    var chosenRef by remember { mutableStateOf<String?>(null) }
+    var chosenLabel by remember { mutableStateOf<String?>(null) }
+    var chosenSource by remember { mutableStateOf<String?>(null) }
+    var purposeText by remember { mutableStateOf("") } // Level B: free destination (type or 🎤 dictate)
 
     // Battery / background-restriction guards — re-checked on every recomposition
     // (e.g. after returning from the system dialog). The OS kills the recording
@@ -80,11 +92,15 @@ fun TripsScreen(onBack: () -> Unit) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         val locationOk = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        val isPrivate = chosenPurpose == "private"
         // Privatfahrt needs no location at all — it records only the km frame
-        if (locationOk || privateMode) {
+        if (locationOk || isPrivate) {
             TripManager.startTrip(
                 context, manual = true,
-                purpose = if (privateMode) "private" else "business"
+                purpose = chosenPurpose,
+                purposeRef = if (isPrivate) null else chosenRef,
+                purposeLabel = if (isPrivate) null else chosenLabel,
+                purposeSource = if (isPrivate) null else chosenSource
             )
             odometerFor = "start"
         }
@@ -228,31 +244,25 @@ fun TripsScreen(onBack: () -> Unit) {
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("⏹ Fahrt beenden") }
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            FilterChip(
-                                selected = !privateMode,
-                                onClick = { privateMode = false },
-                                label = { Text("Geschäftlich", fontSize = 12.sp) }
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            FilterChip(
-                                selected = privateMode,
-                                onClick = { privateMode = true },
-                                label = { Text("🔒 Privat", fontSize = 12.sp) }
-                            )
-                        }
+                        // Single entry point: the dialog is where purpose
+                        // (planned / free text / general / private) is chosen.
                         Button(
                             onClick = {
-                                recordingPermissions.launch(
-                                    arrayOf(
-                                        Manifest.permission.ACCESS_FINE_LOCATION,
-                                        Manifest.permission.POST_NOTIFICATIONS
-                                    )
-                                )
+                                purposeText = ""
+                                showPurposePicker = true
+                                loadingCandidates = true
+                                scope.launch {
+                                    val cands = withContext(Dispatchers.IO) {
+                                        com.xelth.eckwms_movfast.api.ScanApiService(context)
+                                            .fetchPurposeCandidates()
+                                    }
+                                    purposeCandidates = cands ?: emptyList()
+                                    loadingCandidates = false
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (privateMode) "🔒 Privatfahrt starten" else "🚗 Fahrt starten") }
+                        ) { Text("🚗 Fahrt starten") }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -384,6 +394,95 @@ fun TripsScreen(onBack: () -> Unit) {
                 }
                 odometerFor = null
                 pendingTripId = null
+            }
+        )
+    }
+
+    // ── Purpose picker: the single decision point for a new trip ──
+    if (showPurposePicker) {
+        val launchStart: () -> Unit = {
+            showPurposePicker = false
+            // Privat needs NO location — only the notification permission for the FGS
+            recordingPermissions.launch(
+                if (chosenPurpose == "private")
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS)
+                else
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    )
+            )
+        }
+        val startBusiness: (String?, String?, String?) -> Unit = { ref, label, src ->
+            chosenPurpose = "business"; chosenRef = ref; chosenLabel = label; chosenSource = src
+            launchStart()
+        }
+        AlertDialog(
+            onDismissRequest = { showPurposePicker = false },
+            title = { Text("Fahrt starten — Zweck?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when {
+                        loadingCandidates -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Geplante Ziele laden…", fontSize = 13.sp)
+                        }
+                        purposeCandidates.isEmpty() -> Text(
+                            "Kein geplantes Ziel — Ziel eingeben oder allgemein/privat starten.",
+                            fontSize = 12.sp, color = Color.Gray
+                        )
+                        else -> {
+                            Text("Geplantes Ziel:", fontSize = 12.sp, color = Color.Gray)
+                            purposeCandidates.forEach { c ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = Color(0xFF1A237E).copy(alpha = 0.25f)
+                                    ),
+                                    onClick = { startBusiness(c.purposeRef, c.label, "planned") }
+                                ) {
+                                    Column(Modifier.padding(10.dp)) {
+                                        Text(c.label, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color.White)
+                                        val sub = listOfNotNull(
+                                            c.address?.takeIf { it.isNotBlank() },
+                                            c.distanceKm?.let { "≈ %.1f km".format(it) },
+                                            if (c.overdue) "überfällig" else null
+                                        ).joinToString(" · ")
+                                        if (sub.isNotEmpty()) Text(sub, fontSize = 12.sp, color = Color(0xFF90A4AE))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Free destination — type or 🎤 dictate (the keyboard's mic)
+                    OutlinedTextField(
+                        value = purposeText,
+                        onValueChange = { purposeText = it },
+                        label = { Text("Eigenes Ziel (tippen / 🎤 diktieren)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    // Privat alternative — no destination, no tracking
+                    TextButton(
+                        onClick = {
+                            chosenPurpose = "private"; chosenRef = null; chosenLabel = null; chosenSource = null
+                            launchStart()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("🔒 Stattdessen Privatfahrt", color = Color(0xFF90A4AE), fontSize = 13.sp) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (purposeText.isNotBlank()) startBusiness(null, purposeText.trim(), "text")
+                    else startBusiness(null, null, null)
+                }) {
+                    Text(if (purposeText.isNotBlank()) "🚗 Mit Ziel starten" else "🚗 Allgemein geschäftlich")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPurposePicker = false }) { Text("Abbrechen") }
             }
         )
     }

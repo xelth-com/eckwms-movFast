@@ -22,6 +22,30 @@ import com.xelth.eckwms_movfast.scanners.ScannerManager
  * Сервис для взаимодействия с API сканирования штрих-кодов
  * Updated: URL construction now relies on SettingsManager base URL without hardcoded prefix
  */
+/** A planned trip-purpose candidate for the start picker (Level A). */
+data class PurposeCandidate(
+    val purposeRef: String,   // visit_task:xxx | order:yyy — sent back as purpose_ref
+    val label: String,        // destination / customer name
+    val address: String?,
+    val distanceKm: Double?,  // present when a position was supplied
+    val overdue: Boolean
+)
+
+/** A trip destination row (ticket) for the interactive console (trip mode). */
+data class Destination(
+    val purposeRef: String,   // order:<id>
+    val label: String,        // customer name (or order no.)
+    val address: String?,
+    val city: String?,
+    val lat: Double?,
+    val lng: Double?
+)
+
+/** A city with waiting tickets — a city button in the trip grid. */
+data class CityCount(val city: String, val count: Int)
+
+data class DestinationsResult(val cities: List<CityCount>, val results: List<Destination>)
+
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
@@ -1942,6 +1966,84 @@ class ScanApiService(private val context: Context) {
     suspend fun uploadTrip(payload: String): Boolean = withContext(Dispatchers.IO) {
         val result = authenticatedPostWithFailover("/api/trips", payload)
         return@withContext result is ScanResult.Success
+    }
+
+    /** Trip-mode console data: cities with waiting tickets + the result list for
+     *  a typed query (fuzzy over ALL tickets) or a selected city. */
+    suspend fun fetchDestinations(
+        query: String? = null,
+        city: String? = null,
+        ai: Boolean = false
+    ): DestinationsResult? = withContext(Dispatchers.IO) {
+        val enc = { s: String -> java.net.URLEncoder.encode(s, "UTF-8") }
+        val params = StringBuilder("?device_id=$deviceId")
+        if (!query.isNullOrBlank()) params.append("&q=").append(enc(query))
+        if (!city.isNullOrBlank()) params.append("&city=").append(enc(city))
+        if (ai) params.append("&ai=true")
+        val result = authenticatedGetWithFailover("/api/trips/destinations$params")
+        if (result !is ScanResult.Success) return@withContext null
+        try {
+            val root = JSONObject(result.data)
+            val cities = mutableListOf<CityCount>()
+            root.optJSONArray("cities")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val c = o.optString("city", "")
+                    if (c.isNotBlank()) cities.add(CityCount(c, o.optInt("count", 0)))
+                }
+            }
+            val results = mutableListOf<Destination>()
+            root.optJSONArray("results")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    results.add(
+                        Destination(
+                            purposeRef = o.optString("purpose_ref", ""),
+                            label = o.optString("label", ""),
+                            address = if (o.isNull("address")) null else o.optString("address", null),
+                            city = if (o.isNull("city")) null else o.optString("city", null),
+                            lat = if (o.isNull("lat")) null else o.optDouble("lat"),
+                            lng = if (o.isNull("lng")) null else o.optDouble("lng")
+                        )
+                    )
+                }
+            }
+            DestinationsResult(cities, results)
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchDestinations parse error: ${e.message}")
+            null
+        }
+    }
+
+    /** Planned purpose candidates for the trip-start picker (Level A). Sourced
+     *  from open visit_tasks; pass a rough position to rank the nearest first. */
+    suspend fun fetchPurposeCandidates(
+        lat: Double? = null,
+        lng: Double? = null
+    ): List<PurposeCandidate>? = withContext(Dispatchers.IO) {
+        val pos = if (lat != null && lng != null) "&lat=$lat&lng=$lng" else ""
+        val result = authenticatedGetWithFailover("/api/trips/purpose-candidates?device_id=$deviceId$pos")
+        if (result !is ScanResult.Success) return@withContext null
+        try {
+            val arr = JSONArray(result.data)
+            val list = mutableListOf<PurposeCandidate>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    PurposeCandidate(
+                        purposeRef = o.optString("purpose_ref", ""),
+                        label = o.optString("label", ""),
+                        address = if (o.isNull("address")) null else o.optString("address", null),
+                        distanceKm = if (o.isNull("distance_km")) null else o.optDouble("distance_km"),
+                        overdue = o.optBoolean("overdue", false)
+                    )
+                )
+            }
+            list
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchPurposeCandidates parse error: ${e.message}")
+            null
+        }
     }
 
     /**

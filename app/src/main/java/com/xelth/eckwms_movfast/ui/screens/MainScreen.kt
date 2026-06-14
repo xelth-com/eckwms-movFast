@@ -1,5 +1,8 @@
 package com.xelth.eckwms_movfast.ui.screens
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -7,15 +10,19 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -23,6 +30,7 @@ import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,9 +42,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xelth.eckwms_movfast.ui.dynamic.DynamicUiRenderer
+import com.xelth.eckwms_movfast.ui.screens.components.ConsoleList
+import com.xelth.eckwms_movfast.ui.screens.components.ConsoleRow
 import com.xelth.eckwms_movfast.ui.screens.pos.components.ConsoleView
 import com.xelth.eckwms_movfast.ui.screens.pos.components.SelectionAreaSheet
 import com.xelth.eckwms_movfast.ui.viewmodels.MainScreenViewModel
@@ -97,6 +109,12 @@ fun MainScreen(
     val receivingStatus by mainViewModel.receivingStatus.observeAsState("")
     val receivingModalJson by mainViewModel.showReceivingModal.observeAsState(null)
 
+    // Trip mode state (Fahrtenbuch)
+    val isTripMode by mainViewModel.isTripMode.observeAsState(false)
+    val tripStatus by mainViewModel.tripStatus.observeAsState("")
+    val tripActive by com.xelth.eckwms_movfast.trips.TripManager.activeTrip.observeAsState(null)
+    LaunchedEffect(tripActive) { mainViewModel.setTripRecording(tripActive != null) }
+
     // Device Check mode state
     val isDeviceCheckMode by mainViewModel.isDeviceCheckMode.observeAsState(false)
     val deviceCheckStatus by mainViewModel.deviceCheckStatus.observeAsState("")
@@ -120,6 +138,69 @@ fun MainScreen(
 
     val density = LocalDensity.current
     val context = LocalContext.current
+
+    // Trip mode: refresh active trip on enter + auto-detect permission launcher
+    LaunchedEffect(isTripMode) {
+        if (isTripMode) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
+            }
+        }
+    }
+    val tripAutoPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        mainViewModel.setTripAutoDetect(
+            granted && com.xelth.eckwms_movfast.trips.TripManager.enableAutoDetect(context)
+        )
+    }
+
+    // Trip mode: console search (text + push-to-talk voice) + start (ticket tap
+    // OR dictated/typed address) + odometer
+    val tripScope = rememberCoroutineScope()
+    val tripDestinations by mainViewModel.tripDestinations.observeAsState(emptyList())
+    var tripQuery by remember { mutableStateOf("") }
+    var tripListening by remember { mutableStateOf(false) }
+    val speech = remember { com.xelth.eckwms_movfast.utils.SpeechToText(context) }
+    var tripPendingRef by remember { mutableStateOf<String?>(null) }
+    var tripPendingLabel by remember { mutableStateOf<String?>(null) }
+    var tripPendingSource by remember { mutableStateOf("planned") }
+    var tripOdometerStart by remember { mutableStateOf(false) }
+
+    // Debounced live search across ALL tickets while typing/dictating
+    LaunchedEffect(tripQuery, isTripMode) {
+        if (isTripMode) {
+            kotlinx.coroutines.delay(350)
+            mainViewModel.searchTripDestinations(tripQuery)
+        }
+    }
+    DisposableEffect(Unit) { onDispose { speech.destroy() } }
+
+    val tripStartLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            com.xelth.eckwms_movfast.trips.TripManager.startTrip(
+                context, manual = true, purpose = "business",
+                purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
+                purposeSource = tripPendingSource
+            )
+            tripOdometerStart = true
+        }
+    }
+    val tripStart: (String?, String?, String) -> Unit = { ref, label, src ->
+        tripPendingRef = ref; tripPendingLabel = label; tripPendingSource = src
+        tripStartLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        )
+    }
+    val micPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* granted → user presses the mic again to talk */ }
 
     // State for the Intake Bottom Sheet
     var showIntakeSheet by remember { mutableStateOf(false) }
@@ -220,6 +301,7 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         val scanApiService = com.xelth.eckwms_movfast.api.ScanApiService(context)
         mainViewModel.onFetchShipments = { limit -> scanApiService.getShipments(limit) }
+        mainViewModel.onFetchDestinations = { q, city, ai -> scanApiService.fetchDestinations(q, city, ai) }
         mainViewModel.onInventorySubmit = { target, event, data ->
             scanApiService.sendRepairEvent(target, event, data)
         }
@@ -287,6 +369,9 @@ fun MainScreen(
                 mainViewModel.onReceivingScan(scannedBarcode!!)
             } else if (isDeviceCheckMode) {
                 mainViewModel.onDeviceCheckScan(scannedBarcode!!)
+            } else if (isTripMode) {
+                // Phase 4 will bind this as a vehicle link-barcode; for now log it
+                mainViewModel.addLog("🚗 Fahrzeug-Barcode: ${scannedBarcode}")
             } else {
                 mainViewModel.onRepairScan(scannedBarcode!!)
             }
@@ -604,6 +689,108 @@ fun MainScreen(
                             onScannerToggle = {}
                         )
                     }
+                } else if (isTripMode) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                            .background(Color.Black)
+                    ) {
+                        // Thin status header (top)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = tripStatus,
+                                color = Color(0xFF4CAF50),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        // The ecKasse-style interactive console (interlocking
+                        // rows, auto-scroll, bottom → up). Generalized component.
+                        ConsoleList(
+                            rows = tripDestinations.map { dest ->
+                                ConsoleRow(
+                                    id = dest.purposeRef,
+                                    primary = dest.label,
+                                    secondary = listOfNotNull(
+                                        dest.address?.takeIf { it.isNotBlank() },
+                                        dest.city?.takeIf { it.isNotBlank() }
+                                    ).joinToString(" · "),
+                                    trailing = "🚗",
+                                    onClick = { tripStart(dest.purposeRef, dest.label, "planned") }
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(vertical = 4.dp),
+                            emptyHint = "Stadt wählen oder Ziel tippen/🎤"
+                        )
+                        // Smart Gemini fallback — only when local search missed
+                        // (corrects mis-heard queries: "treutlingen" → "Reutlingen")
+                        if (tripDestinations.isEmpty() && tripQuery.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFF4A148C))
+                                    .clickable { mainViewModel.aiSearchTripDestinations(tripQuery.trim()) }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "🤖 Mit KI suchen „${tripQuery.trim()}“",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        // Start by a dictated/typed address (no specific client)
+                        if (tripQuery.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFF1B5E20))
+                                    .clickable { tripStart(null, tripQuery.trim(), "text") }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "🚗 Mit „${tripQuery.trim()}“ fahren",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        // INPUT = the freshest, BOTTOM-most console line
+                        OutlinedTextField(
+                            value = tripQuery,
+                            onValueChange = { tripQuery = it },
+                            placeholder = {
+                                Text(
+                                    if (tripListening) "🎤 hört zu…" else "› Ziel tippen oder 🎤 halten…",
+                                    color = Color.Gray, fontSize = 13.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = Color(0xFF00FF00),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        )
+                    }
                 } else {
                     // Idle / Smart Context mode
                     val smartStatus by mainViewModel.smartStatus.observeAsState("")
@@ -689,7 +876,18 @@ fun MainScreen(
                             "navigate_explorer" -> navController.navigate("explorerScreen")
                             "navigate_picking" -> navController.navigate("pickingList")
                             "navigate_pos" -> navController.navigate("pos")
-                            "navigate_trips" -> navController.navigate("tripsScreen")
+                            "trip_open_start" -> navController.navigate("tripsScreen")
+                            "trip_toggle_autodetect" -> {
+                                val tm = com.xelth.eckwms_movfast.trips.TripManager
+                                if (mainViewModel.tripAutoDetect.value == true) {
+                                    tm.disableAutoDetect(context)
+                                    mainViewModel.setTripAutoDetect(false)
+                                } else if (tm.hasActivityPermission(context)) {
+                                    mainViewModel.setTripAutoDetect(tm.enableAutoDetect(context))
+                                } else {
+                                    tripAutoPermLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                                }
+                            }
                         }
                     },
                     onButtonLongClick = { action ->
@@ -724,6 +922,22 @@ fun MainScreen(
                     },
                     onNetworkIndicatorLongClick = {
                         navController.navigate("pairingScreen")
+                    },
+                    // 🎤 PUSH-TO-TALK in the grid (under Photo/Scan): hold to talk
+                    onMicPress = {
+                        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                                context, Manifest.permission.RECORD_AUDIO
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        ) {
+                            tripListening = true
+                            speech.start { text, _ -> tripQuery = text }
+                        } else {
+                            micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    onMicRelease = {
+                        speech.stop()
+                        tripListening = false
                     }
                 )
             }
@@ -1227,4 +1441,24 @@ fun MainScreen(
             }
         }
     }
+
+    // Trip mode: start-odometer dialog (after starting a trip from a ticket)
+    if (tripOdometerStart) {
+        com.xelth.eckwms_movfast.ui.screens.components.OdometerDialog(
+            isStart = true,
+            onDismiss = { tripOdometerStart = false },
+            onSave = { km, source, photoId ->
+                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                    val target = db.tripDao().getOpenTrip()?.id
+                    if (target != null) {
+                        db.tripDao().setStartOdometer(target, km, source, photoId)
+                        com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
+                    }
+                }
+                tripOdometerStart = false
+            }
+        )
+    }
 }
+

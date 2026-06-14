@@ -24,6 +24,11 @@ data class TripEntity(
     val endOdometerSource: String? = null,
     val endOdometerPhotoId: String? = null,
     val purpose: String = "business",        // business | private | commute
+    // Structured purpose (Level A) — declared at trip start (GoBD anti-fabrication).
+    val purposeRef: String? = null,          // visit_task:xxx | order:yyy — Geschäftspartner ref
+    val purposeLabel: String? = null,        // destination / customer name
+    val purposeDeclaredAt: Long? = null,     // epoch millis, set when first declared (= start)
+    val purposeSource: String? = null,       // planned | text | voice | manual
     val note: String? = null,
     val manualStart: Boolean = false,        // started by button vs auto-detect
     val syncedAt: Long? = null

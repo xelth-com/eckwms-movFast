@@ -53,7 +53,10 @@ fun SelectionAreaSheet(
     onButtonClick: (String) -> Unit = {},
     onButtonLongClick: (String) -> Unit = {},
     onNetworkIndicatorClick: () -> Unit = {},
-    onNetworkIndicatorLongClick: () -> Unit = {}
+    onNetworkIndicatorLongClick: () -> Unit = {},
+    // PUSH-TO-TALK mic button (action == "trip_mic"): press/release callbacks
+    onMicPress: () -> Unit = {},
+    onMicRelease: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -187,7 +190,9 @@ fun SelectionAreaSheet(
                     },
                     onLongClick = {
                         if (enabled && action != null) onButtonLongClick(action)
-                    }
+                    },
+                    onPress = if (action == "trip_mic") onMicPress else null,
+                    onRelease = if (action == "trip_mic") onMicRelease else null
                 )
             }
         }

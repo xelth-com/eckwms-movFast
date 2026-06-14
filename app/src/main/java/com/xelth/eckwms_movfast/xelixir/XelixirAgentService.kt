@@ -150,7 +150,12 @@ class XelixirAgentService : Service() {
             )
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // 34+
+        // Declare the mediaProjection FGS type on API 29+ (not just 34+). The system grants
+        // the FGS-start exemption for a fresh MediaProjection token ONLY when the service
+        // goes foreground WITH this type; the untyped overload on API 33 got
+        // "startForeground() not allowed due to bg restriction" → getMediaProjection() then
+        // threw. Manifest already declares foregroundServiceType="mediaProjection".
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { // 29+
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(NOTIF_ID, notif)
