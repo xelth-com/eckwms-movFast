@@ -64,13 +64,14 @@
             android:exported="false"
             android:theme="@style/Theme.EckwmsmovFast" />
 
-        <!-- Xelixir embedded support agent (Phase A: view-only screen mirroring) -->
-        <!-- DEBUG bring-up: exported=true so `adb shell am start` can trigger the agent for
-             testing. PROD trigger is the server XELIXIR_START WS push (HybridMessageSender) —
-             revert to exported="false" (or debug-guard) before release. -->
+        <!-- Xelixir embedded support agent (Phase A: view-only screen mirroring).
+             Consent activity is NOT exported — the only legitimate trigger is the
+             server XELIXIR_START WS push (HybridMessageSender). For local bring-up
+             via `adb shell am start`, temporarily flip exported="true" (DEBUG ONLY,
+             do not commit). -->
         <activity
             android:name=".xelixir.XelixirConsentActivity"
-            android:exported="true"
+            android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service
