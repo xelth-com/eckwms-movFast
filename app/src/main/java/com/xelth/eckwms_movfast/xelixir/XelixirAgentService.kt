@@ -49,7 +49,7 @@ class XelixirAgentService : Service() {
         // Stream defaults (overridden live by operator set_stream_config).
         private const val DEFAULT_LONG_EDGE = 1280
         private const val DEFAULT_QUALITY = 50
-        private const val TARGET_FPS = 3
+        private const val TARGET_FPS = 10
 
         @Volatile var isRunning: Boolean = false
             private set
