@@ -77,6 +77,16 @@ fun TripsScreen(onBack: () -> Unit) {
     var odometerFor by remember { mutableStateOf<String?>(null) } // "start" | "end"
     var pendingTripId by remember { mutableStateOf<String?>(null) }
 
+    // Known vehicles for the start picker (Fahrtenbuch). Refreshed from the
+    // server on entry; the dialog auto-fills when the fleet has exactly one.
+    var vehicles by remember {
+        mutableStateOf<List<com.xelth.eckwms_movfast.data.local.entity.VehicleEntity>>(emptyList())
+    }
+    LaunchedEffect(Unit) {
+        com.xelth.eckwms_movfast.trips.VehicleManager.refresh(context)
+        vehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
+    }
+
     // Refresh active-trip LiveData from DB on entry (after process restarts)
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -248,9 +258,15 @@ fun TripsScreen(onBack: () -> Unit) {
                                 showPurposePicker = true
                                 loadingCandidates = true
                                 scope.launch {
+                                    // Best-effort current position → the server ranks the
+                                    // nearest planned stop first (route-planner-lite) and
+                                    // fills distance_km. Instant cached fix, permission-
+                                    // guarded, never prompts; null → server falls back to
+                                    // due-date order (the prior behaviour).
+                                    val here = lastKnownLocation(context)
                                     val cands = withContext(Dispatchers.IO) {
                                         com.xelth.eckwms_movfast.api.ScanApiService(context)
-                                            .fetchPurposeCandidates()
+                                            .fetchPurposeCandidates(here?.latitude, here?.longitude)
                                     }
                                     purposeCandidates = cands ?: emptyList()
                                     loadingCandidates = false
@@ -374,7 +390,8 @@ fun TripsScreen(onBack: () -> Unit) {
         OdometerDialog(
             isStart = odometerFor == "start",
             onDismiss = { odometerFor = null; pendingTripId = null },
-            onSave = { km, source, photoId ->
+            vehicles = if (odometerFor == "start") vehicles else emptyList(),
+            onSave = { km, source, photoId, vehicle ->
                 val forStart = odometerFor == "start"
                 val tripId = pendingTripId
                 scope.launch(Dispatchers.IO) {
@@ -383,6 +400,12 @@ fun TripsScreen(onBack: () -> Unit) {
                     if (target != null) {
                         if (forStart) db.tripDao().setStartOdometer(target, km, source, photoId)
                         else db.tripDao().setEndOdometer(target, km, source, photoId)
+                        // Bind the vehicle (declared at start with the odometer)
+                        if (forStart && vehicle != null) {
+                            com.xelth.eckwms_movfast.trips.VehicleManager.resolveAndAttach(
+                                context, target, vehicle.vehicleId, vehicle.plate, vehicle.photoId
+                            )
+                        }
                         // End odometer arrives after finalize — re-queue the upload
                         if (!forStart) TripManager.queueTripSync(context, target)
                         TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
@@ -515,6 +538,33 @@ private suspend fun oneShotLocation(context: android.content.Context): android.l
                 }
             }
         }
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/**
+ * Instant best-effort position (cached last-known fix — no provider request, no
+ * wait) used only to rank planned stops nearest-first in the start picker.
+ * Permission-guarded and non-interactive: returns null fast when location isn't
+ * available (no permission / no cached fix), in which case the server falls back
+ * to due-date ordering. Never prompts the user — the location permission is
+ * still requested later, by the actual trip start.
+ */
+private fun lastKnownLocation(context: android.content.Context): android.location.Location? {
+    if (androidx.core.content.ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+    ) return null
+    return try {
+        val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE)
+            as android.location.LocationManager
+        @Suppress("MissingPermission")
+        listOf(
+            android.location.LocationManager.NETWORK_PROVIDER,
+            android.location.LocationManager.GPS_PROVIDER
+        ).mapNotNull { p -> if (lm.isProviderEnabled(p)) lm.getLastKnownLocation(p) else null }
+            .maxByOrNull { it.time }
     } catch (e: Exception) {
         null
     }

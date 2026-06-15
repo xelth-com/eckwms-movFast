@@ -14,6 +14,7 @@ import com.xelth.eckwms_movfast.data.local.dao.ActiveTransactionDao
 import com.xelth.eckwms_movfast.data.local.dao.CrmEntityDao
 import com.xelth.eckwms_movfast.data.local.dao.SyncQueueDao
 import com.xelth.eckwms_movfast.data.local.dao.CellTowerDao
+import com.xelth.eckwms_movfast.data.local.dao.VehicleDao
 import com.xelth.eckwms_movfast.data.local.dao.TripDao
 import com.xelth.eckwms_movfast.data.local.dao.VisitDao
 import com.xelth.eckwms_movfast.data.local.entity.ActiveTransactionEntity
@@ -32,6 +33,7 @@ import com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripEntity
 import com.xelth.eckwms_movfast.data.local.entity.TripPointEntity
 import com.xelth.eckwms_movfast.data.local.entity.CellTowerEntity
+import com.xelth.eckwms_movfast.data.local.entity.VehicleEntity
 import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
 
 @Database(
@@ -52,9 +54,10 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         TripEntity::class,
         TripPointEntity::class,
         VisitTaskEntity::class,
-        CellTowerEntity::class
+        CellTowerEntity::class,
+        VehicleEntity::class
     ],
-    version = 16,  // Trip purpose Level A: purpose_ref/label/declared_at/source on trips
+    version = 17,  // Fahrtenbuch vehicle registry + trip vehicleId/vehiclePlate
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -70,6 +73,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tripDao(): TripDao
     abstract fun visitDao(): VisitDao
     abstract fun cellTowerDao(): CellTowerDao
+    abstract fun vehicleDao(): VehicleDao
 
     companion object {
         @Volatile

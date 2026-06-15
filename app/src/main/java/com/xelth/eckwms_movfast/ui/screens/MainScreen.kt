@@ -167,6 +167,14 @@ fun MainScreen(
     var tripPendingLabel by remember { mutableStateOf<String?>(null) }
     var tripPendingSource by remember { mutableStateOf("planned") }
     var tripOdometerStart by remember { mutableStateOf(false) }
+    // Known vehicles for the start picker (Fahrtenbuch); auto-fill when one.
+    var tripVehicles by remember {
+        mutableStateOf<List<com.xelth.eckwms_movfast.data.local.entity.VehicleEntity>>(emptyList())
+    }
+    LaunchedEffect(Unit) {
+        com.xelth.eckwms_movfast.trips.VehicleManager.refresh(context)
+        tripVehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
+    }
 
     // Debounced live search across ALL tickets while typing/dictating
     LaunchedEffect(tripQuery, isTripMode) {
@@ -1447,12 +1455,18 @@ fun MainScreen(
         com.xelth.eckwms_movfast.ui.screens.components.OdometerDialog(
             isStart = true,
             onDismiss = { tripOdometerStart = false },
-            onSave = { km, source, photoId ->
+            vehicles = tripVehicles,
+            onSave = { km, source, photoId, vehicle ->
                 tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
                     val target = db.tripDao().getOpenTrip()?.id
                     if (target != null) {
                         db.tripDao().setStartOdometer(target, km, source, photoId)
+                        if (vehicle != null) {
+                            com.xelth.eckwms_movfast.trips.VehicleManager.resolveAndAttach(
+                                context, target, vehicle.vehicleId, vehicle.plate, vehicle.photoId
+                            )
+                        }
                         com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
                     }
                 }

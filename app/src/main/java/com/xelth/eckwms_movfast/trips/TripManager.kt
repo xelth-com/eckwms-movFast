@@ -226,6 +226,8 @@ object TripManager {
             trip.purposeLabel?.let { put("purpose_label", it) }
             trip.purposeDeclaredAt?.let { put("purpose_declared_at", iso(it)) }
             trip.purposeSource?.let { put("purpose_source", it) }
+            trip.vehicleId?.let { put("vehicle_id", it) }
+            trip.vehiclePlate?.let { put("vehicle_plate", it) }
             trip.note?.let { put("note", it) }
             val userId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
             if (!userId.isNullOrEmpty()) put("driver_user_id", userId)

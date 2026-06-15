@@ -29,6 +29,10 @@ data class TripEntity(
     val purposeLabel: String? = null,        // destination / customer name
     val purposeDeclaredAt: Long? = null,     // epoch millis, set when first declared (= start)
     val purposeSource: String? = null,       // planned | text | voice | manual
+    // Vehicle (Fahrtenbuch): registry id + denormalized plate (amtliches
+    // Kennzeichen). The plate folds into the GoBD seal (v3) and the export.
+    val vehicleId: String? = null,
+    val vehiclePlate: String? = null,
     val note: String? = null,
     val manualStart: Boolean = false,        // started by button vs auto-detect
     val syncedAt: Long? = null

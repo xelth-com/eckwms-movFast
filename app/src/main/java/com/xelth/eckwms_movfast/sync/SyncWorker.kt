@@ -108,6 +108,14 @@ class SyncWorker(
             Log.w(TAG, "Cell cache refresh failed (non-fatal): ${e.message}")
         }
 
+        // 2f. Vehicle registry refresh (Fahrtenbuch). Small list — refresh each
+        // run so a vehicle registered on one device appears on the others.
+        try {
+            com.xelth.eckwms_movfast.trips.VehicleManager.refresh(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Vehicle refresh failed (non-fatal): ${e.message}")
+        }
+
         // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()

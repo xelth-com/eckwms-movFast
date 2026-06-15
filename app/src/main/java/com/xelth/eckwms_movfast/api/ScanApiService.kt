@@ -31,6 +31,15 @@ data class PurposeCandidate(
     val overdue: Boolean
 )
 
+/** A registered vehicle (Fahrtenbuch) returned by /api/vehicles. */
+data class Vehicle(
+    val id: String,
+    val plate: String,
+    val label: String?,
+    val photoId: String?,
+    val active: Boolean
+)
+
 /** A trip destination row (ticket) for the interactive console (trip mode). */
 data class Destination(
     val purposeRef: String,   // order:<id>
@@ -2042,6 +2051,57 @@ class ScanApiService(private val context: Context) {
             list
         } catch (e: Exception) {
             Log.e(TAG, "fetchPurposeCandidates parse error: ${e.message}")
+            null
+        }
+    }
+
+    /** Registered vehicles (Fahrtenbuch). The PDA mirrors these for offline
+     *  selection at trip start. */
+    suspend fun fetchVehicles(): List<Vehicle>? = withContext(Dispatchers.IO) {
+        val result = authenticatedGetWithFailover("/api/vehicles")
+        if (result !is ScanResult.Success) return@withContext null
+        try {
+            val arr = JSONArray(result.data)
+            val list = mutableListOf<Vehicle>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    Vehicle(
+                        id = o.optString("id", ""),
+                        plate = o.optString("plate", ""),
+                        label = if (o.isNull("label")) null else o.optString("label", null),
+                        photoId = if (o.isNull("photo_file_id")) null else o.optString("photo_file_id", null),
+                        active = o.optBoolean("active", true)
+                    )
+                )
+            }
+            list
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchVehicles parse error: ${e.message}")
+            null
+        }
+    }
+
+    /** Register/dedupe a vehicle by plate (+ optional plate-photo CAS id).
+     *  Returns the server row (with its id) or null on failure/offline. */
+    suspend fun createVehicle(plate: String, photoId: String?): Vehicle? = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("plate", plate)
+            if (photoId != null) put("photo_file_id", photoId)
+        }.toString()
+        val result = authenticatedPostWithFailover("/api/vehicles", body)
+        if (result !is ScanResult.Success) return@withContext null
+        try {
+            val o = JSONObject(result.data)
+            Vehicle(
+                id = o.optString("id", ""),
+                plate = o.optString("plate", plate),
+                label = if (o.isNull("label")) null else o.optString("label", null),
+                photoId = if (o.isNull("photo_file_id")) null else o.optString("photo_file_id", null),
+                active = o.optBoolean("active", true)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "createVehicle parse error: ${e.message}")
             null
         }
     }

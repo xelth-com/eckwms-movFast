@@ -49,6 +49,9 @@ interface TripDao {
     )
     suspend fun setEndOdometer(id: String, km: Double, source: String, photoId: String?)
 
+    @Query("UPDATE trips SET vehicleId = :vehicleId, vehiclePlate = :plate WHERE id = :id")
+    suspend fun setVehicle(id: String, vehicleId: String?, plate: String?)
+
     @Query("DELETE FROM trip_points WHERE tripId IN (SELECT id FROM trips WHERE status = 'synced' AND syncedAt < :olderThan)")
     suspend fun prunePointsOfOldSyncedTrips(olderThan: Long)
 }
