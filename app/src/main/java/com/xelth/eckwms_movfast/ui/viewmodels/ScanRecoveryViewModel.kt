@@ -1933,6 +1933,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         //            ordered by mod3(mesh); only the customer's OWN nodes are in QR.
         val urlField: String
         val inviteToken: String?
+        var pairedMeshId: String? = null
         if (version == "3") {
             if (parts.size < 6) throw Exception("Invalid ECK v3 format. Too few parts.")
             val meshCompact = parts[4]
@@ -1941,10 +1942,15 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             val meshId = if (meshCompact.matches(Regex("^[0-9A-Fa-f]{32}$")))
                 "${meshCompact.substring(0,8)}-${meshCompact.substring(8,12)}-${meshCompact.substring(12,16)}-${meshCompact.substring(16,20)}-${meshCompact.substring(20,32)}".lowercase()
             else meshCompact.lowercase()
+            pairedMeshId = meshId
             val ownUrls = ownField.split(",").filter { it.isNotBlank() }
-            val eckN = SettingsManager.orderedEckNodes(meshId)
-            urlField = (ownUrls + eckN).joinToString(",")
-            addPairingLog("✅ Paid mesh ${meshId.take(8)}… — eckN defaults (mod3 primary first)")
+            // Paid mesh: the eckN are RELAYS, not direct servers. Try only the
+            // customer's OWN nodes directly (LAN-first); if none is reachable
+            // (e.g. mobile data, master behind NAT) we fall through to
+            // relay-forwarded pairing (registerViaRelay) via a paid relay. This
+            // is the end-state behaviour that keeps eckN as pure blind relays.
+            urlField = ownUrls.joinToString(",")
+            addPairingLog("✅ Paid mesh ${meshId.take(8)}… — own nodes direct, else relay-forwarded")
         } else {
             urlField = parts[4]
             inviteToken = if (parts.size == 6) parts[5] else null
@@ -2030,7 +2036,15 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(sortedCandidates)
 
         if (reachableUrl == null) {
-            throw Exception("No reachable server found among candidates")
+            // No directly reachable full WMS (mobile data; the master is behind
+            // NAT/LAN). Fall back to relay-forwarded pairing: dispatch
+            // device_register as a mesh-task to the master (QR instanceId) via a
+            // paid relay; the NAT'd master fulfills it by polling. This is what
+            // lets the eckN service nodes stay pure relays.
+            addPairingLog("")
+            addPairingLog("⚠️ No directly reachable server — relay-forwarded pairing")
+            registerViaRelay(instanceId, pairedMeshId, inviteToken)
+            return
         }
 
         addPairingLog("✅ CONNECTED to: $reachableUrl")
@@ -2137,6 +2151,83 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                 _pairingStatus.postValue("Error: ${result.message}")
             }
         }
+    }
+
+    /**
+     * Relay-forwarded device pairing — used when no full WMS is directly
+     * reachable (mobile data; the master is behind NAT/LAN).
+     *
+     * The phone dispatches its `device_register` as a mesh-task to the master's
+     * UUID on a paid relay; the NAT'd master fulfills it by polling
+     * (`mesh_relay_poller`) and acks `{status, token}`. The relay only ever sees
+     * an opaque queued task, so the eckN service nodes stay pure blind relays —
+     * no directly-reachable full WMS required.
+     */
+    private suspend fun registerViaRelay(masterUuid: String, meshId: String?, inviteToken: String?) {
+        val relayBase = SettingsManager.getRelayUrl().trimEnd('/')
+        addPairingLog("🔁 Relay: $relayBase → master ${masterUuid.take(8)}…")
+        _pairingStatus.postValue("Pairing via relay…")
+
+        com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
+        val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
+        val deviceId = android.provider.Settings.Secure.getString(
+            getApplication<Application>().contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID
+        ) ?: "unknown-android-id"
+        val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
+        val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
+        val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
+
+        val payload = JSONObject().apply {
+            put("deviceId", deviceId)
+            put("devicePublicKey", publicKeyBase64)
+            put("signature", signatureBase64)
+            if (!inviteToken.isNullOrEmpty()) put("inviteToken", inviteToken)
+        }
+
+        val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId ?: "")
+        val taskId = relay.meshDispatch(masterUuid, "device_register", payload).getOrElse {
+            addPairingLog("❌ Relay dispatch failed: ${it.message}")
+            _pairingStatus.postValue("Error: relay dispatch failed (${it.message})")
+            return
+        }
+        addPairingLog("📨 Dispatched task=$taskId — waiting for master to poll…")
+
+        // The master polls its primary relay every ~3–15 s; allow ~90 s.
+        val deadline = System.currentTimeMillis() + 90_000
+        var result: JSONObject? = null
+        while (System.currentTimeMillis() < deadline) {
+            result = relay.meshResult(taskId).getOrNull()
+            if (result != null) break
+            kotlinx.coroutines.delay(2500)
+        }
+        if (result == null) {
+            addPairingLog("❌ Master did not respond within timeout")
+            _pairingStatus.postValue("Error: master did not respond (is it online?)")
+            return
+        }
+        if (!result.optBoolean("ok", false)) {
+            val err = result.optString("error", "unknown")
+            addPairingLog("❌ Master rejected registration: $err")
+            _pairingStatus.postValue("Error: $err")
+            return
+        }
+
+        val status = result.optString("status", "active")
+        val token = result.optString("token", "")
+        SettingsManager.saveDeviceStatus(status)
+        if (token.isNotEmpty()) SettingsManager.saveAuthToken(token)
+        // For a relay-paired device the relay is the comms anchor; subsequent
+        // data sync rides the same /E/m/* reverse-fetch queue (follow-up).
+        SettingsManager.saveServerUrl(relayBase)
+        SettingsManager.saveRelayUrl(relayBase)
+        addPairingLog("✅ Relay-forwarded pairing: status=$status")
+        if (status == "pending") {
+            _pairingStatus.postValue("⚠️ Registered, waiting for approval")
+        } else {
+            _pairingStatus.postValue("✅ Success! Device paired (via relay).")
+        }
+        handlePairingSuccess()
     }
 
     /**

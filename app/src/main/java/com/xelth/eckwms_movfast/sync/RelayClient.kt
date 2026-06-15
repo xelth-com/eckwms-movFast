@@ -180,6 +180,75 @@ class RelayClient(
         }
     }
 
+    // -- Mesh-task reverse-fetch queue (NAT traversal) --
+
+    /**
+     * Queue a mesh task for a NAT'd target node on the (paid) relay. The relay
+     * is a blind queue; the target's `mesh_relay_poller` interprets `kind`.
+     * Returns the relay-assigned task_id.
+     *
+     * Used for relay-forwarded pairing: the phone (mobile data, no directly
+     * reachable full WMS) dispatches `device_register` to the master's UUID,
+     * which the master fulfills by polling — so eckN stay pure relays.
+     * Envelope shape mirrors Rust `RelayClient::mesh_dispatch`.
+     */
+    suspend fun meshDispatch(
+        targetUuid: String,
+        kind: String,
+        payload: JSONObject,
+        senderUuid: String = instanceId
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val conn = openPost("$baseUrl/E/m/dispatch/$targetUuid")
+            val body = JSONObject().apply {
+                put("envelope", JSONObject().apply {
+                    put("target_uuid", targetUuid)
+                    put("sender_uuid", senderUuid)
+                    put("kind", kind)
+                    put("payload", payload)
+                })
+            }
+            conn.outputStream.write(body.toString().toByteArray())
+
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull() ?: ""
+                return@withContext Result.failure(RuntimeException("meshDispatch HTTP $code $err"))
+            }
+            val json = JSONObject(conn.inputStream.bufferedReader().readText())
+            val taskId = json.getString("task_id")
+            Log.d(TAG, "meshDispatch OK: kind=$kind target=$targetUuid task=$taskId")
+            Result.success(taskId)
+        } catch (e: Exception) {
+            Log.e(TAG, "meshDispatch failed: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Poll a dispatched task's result. Returns the result body once the target
+     * acks, or null while still pending (HTTP 404 = not yet, or status=pending).
+     */
+    suspend fun meshResult(taskId: String): Result<JSONObject?> = withContext(Dispatchers.IO) {
+        try {
+            val conn = openGet("$baseUrl/E/m/result/$taskId")
+            val code = conn.responseCode
+            if (code == 404) return@withContext Result.success(null)
+            if (code !in 200..299) {
+                return@withContext Result.failure(RuntimeException("meshResult HTTP $code"))
+            }
+            val json = JSONObject(conn.inputStream.bufferedReader().readText())
+            if (json.optString("status") == "completed") {
+                Result.success(json.optJSONObject("result") ?: JSONObject())
+            } else {
+                Result.success(null) // still pending
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "meshResult failed: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     // -- HTTP helpers --
 
     private fun openPost(urlStr: String): HttpURLConnection {
