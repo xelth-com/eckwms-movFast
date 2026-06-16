@@ -47,6 +47,7 @@ fun TripsScreen(onBack: () -> Unit) {
     val activeTrip by TripManager.activeTrip.observeAsState(null)
     var autoDetect by remember { mutableStateOf(SettingsManager.getTripAutoDetect()) }
     var consent by remember { mutableStateOf(SettingsManager.getTripConsent()) }
+    var liveShare by remember { mutableStateOf(SettingsManager.getTripLiveShare()) }
     var chosenPurpose by remember { mutableStateOf("business") } // business | private (set in the dialog)
 
     // Level A: declare the purpose at trip start (planned candidate). Chosen
@@ -291,6 +292,22 @@ fun TripsScreen(onBack: () -> Unit) {
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("Fahrten automatisch erkennen", color = Color(0xFFB0BEC5), fontSize = 13.sp)
+                    }
+
+                    // Separate opt-in: stream the live position of business trips
+                    // to the dashboard map (moving car marker with Kennzeichen).
+                    // Recording stays independent — off here = vehicle only shown
+                    // at its parked end point. Privatfahrten are never shared.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = liveShare,
+                            onCheckedChange = {
+                                liveShare = it
+                                SettingsManager.saveTripLiveShare(it)
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("📍 Standort live im Dashboard teilen", color = Color(0xFFB0BEC5), fontSize = 13.sp)
                     }
                 }
             }

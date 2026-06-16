@@ -1977,6 +1977,30 @@ class ScanApiService(private val context: Context) {
         return@withContext result is ScanResult.Success
     }
 
+    /** Fire-and-forget live position of an in-progress BUSINESS trip → the
+     *  dashboard's moving car marker. The server persists nothing (DSGVO: the
+     *  live track is transient; only the sealed aggregate is retained). The
+     *  caller must gate this on live-share consent and a non-private purpose. */
+    suspend fun postTripLive(
+        tripId: String,
+        lat: Double,
+        lng: Double,
+        heading: Double? = null,
+        speedKmh: Double? = null,
+        plate: String? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("trip_uuid", tripId)
+            put("device_id", deviceId)
+            put("lat", lat)
+            put("lng", lng)
+            heading?.let { put("heading", it) }
+            speedKmh?.let { put("speed_kmh", it) }
+            if (!plate.isNullOrBlank()) put("vehicle_plate", plate)
+        }.toString()
+        authenticatedPostWithFailover("/api/trips/live", body) is ScanResult.Success
+    }
+
     /** Trip-mode console data: cities with waiting tickets + the result list for
      *  a typed query (fuzzy over ALL tickets) or a selected city. */
     suspend fun fetchDestinations(

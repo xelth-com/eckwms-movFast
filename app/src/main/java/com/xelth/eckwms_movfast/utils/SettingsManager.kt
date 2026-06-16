@@ -207,6 +207,15 @@ object SettingsManager {
     fun saveTripConsent(granted: Boolean) { prefs.edit().putBoolean(KEY_TRIP_CONSENT, granted).commit() }
     fun getTripConsent(): Boolean = prefs.getBoolean(KEY_TRIP_CONSENT, false)
 
+    // Separate, ADDITIONAL opt-in: share the live position of a business trip to
+    // the dashboard map in near-real-time (a moving car marker with the plate).
+    // Distinct from recording consent — recording can be on while live sharing is
+    // off (then the vehicle only ever appears at its parked end point). Default
+    // OFF; private trips are never shared regardless.
+    private const val KEY_TRIP_LIVE_SHARE = "trip_live_share"
+    fun saveTripLiveShare(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_LIVE_SHARE, enabled).commit() }
+    fun getTripLiveShare(): Boolean = prefs.getBoolean(KEY_TRIP_LIVE_SHARE, false)
+
     // Dynamic repair order prefix (fetched from server /api/status)
     private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
     private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"

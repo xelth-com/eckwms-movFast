@@ -78,6 +78,7 @@ class TripRecordingService : Service() {
 
     private var tripId: String? = null
     private val seq = AtomicInteger(0)
+    private val apiService by lazy { com.xelth.eckwms_movfast.api.ScanApiService(applicationContext) }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -257,6 +258,10 @@ class TripRecordingService : Service() {
                         VisitManager.onTripLocation(
                             applicationContext, loc.latitude, loc.longitude, loc.accuracy.toDouble()
                         )
+                        // Consent-gated live dashboard visibility: reuse this same
+                        // fused fix (no extra location cost) to push an ephemeral
+                        // live position for the moving car marker.
+                        maybeShareLive(id, loc)
                     }
                 }
             }
@@ -265,6 +270,26 @@ class TripRecordingService : Service() {
         } catch (e: Exception) {
             // No Play Services / no permission — cells alone still work
             Log.w(TAG, "Fused updates unavailable: ${e.message}")
+        }
+    }
+
+    // ── Live dashboard visibility (consent-gated) ────────────────────────────
+
+    /** Push the current fused fix as an ephemeral live position when the driver
+     *  has opted into live sharing. Skipped for private trips (which never reach
+     *  the fused callback anyway) and when sharing is off. Re-read per fix so a
+     *  mid-trip toggle takes effect immediately. Fire-and-forget — failure here
+     *  must never disturb recording. */
+    private suspend fun maybeShareLive(id: String, loc: android.location.Location) {
+        if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripLiveShare()) return
+        try {
+            val trip = AppDatabase.getInstance(applicationContext).tripDao().getTrip(id) ?: return
+            if (trip.purpose == "private") return
+            val heading = if (loc.hasBearing()) loc.bearing.toDouble() else null
+            val speed = if (loc.hasSpeed()) (loc.speed * 3.6) else null
+            apiService.postTripLive(id, loc.latitude, loc.longitude, heading, speed, trip.vehiclePlate)
+        } catch (e: Exception) {
+            Log.w(TAG, "live share failed: ${e.message}")
         }
     }
 
