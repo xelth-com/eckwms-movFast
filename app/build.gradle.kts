@@ -84,6 +84,20 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Bundle the exported Room schemas into androidTest assets so a future
+    // MigrationTestHelper can validate each Migration against the real baseline.
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+}
+
+// Room schema export (exportSchema=true in AppDatabase). Each version's schema
+// JSON lands in app/schemas/ and is committed, giving every future migration a
+// known baseline to migrate from + test against. Replaces the old destructive
+// wipe — see .eck/TECH_DEBT.md.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

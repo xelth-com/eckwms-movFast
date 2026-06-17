@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import com.xelth.eckwms_movfast.data.local.dao.AttachmentDao
 import com.xelth.eckwms_movfast.data.local.dao.FileResourceDao
 import com.xelth.eckwms_movfast.data.local.dao.PickingDao
@@ -58,7 +59,7 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         VehicleEntity::class
     ],
     version = 17,  // Fahrtenbuch vehicle registry + trip vehicleId/vehiclePlate
-    exportSchema = false
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun scanDao(): ScanDao
@@ -79,6 +80,26 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        // Real schema migrations. Every schema change MUST bump `version` above
+        // AND add a Migration here (or an @AutoMigration). Room exports each
+        // version's schema to app/schemas/ (exportSchema=true + the
+        // room.schemaLocation KSP arg) so the next migration can be written and
+        // tested against a known baseline.
+        //
+        // DO NOT reinstate fallbackToDestructiveMigration(): it silently wiped a
+        // live, unsynced Fahrtenbuch trip on 2026-06-17 when an install bumped
+        // the schema (.eck/TECH_DEBT.md → "Android app (movFast)"). On a missing
+        // migration the app now FAILS LOUD instead of erasing the driver's data,
+        // which for a GoBD logbook is the correct trade-off.
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            // Example for the next bump (17 → 18):
+            // object : Migration(17, 18) {
+            //     override fun migrate(db: SupportSQLiteDatabase) {
+            //         db.execSQL("ALTER TABLE trips ADD COLUMN purpose_late INTEGER NOT NULL DEFAULT 0")
+            //     }
+            // },
+        )
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
@@ -91,7 +112,11 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "eckwms_database"
             )
-                .fallbackToDestructiveMigration() // For development only
+                .addMigrations(*MIGRATIONS)
+                // Only a *downgrade* (newer DB than the installed app) wipes —
+                // that can't happen through normal forward updates, so retained
+                // Fahrtenbuch data is safe across every upgrade path.
+                .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
         }
     }

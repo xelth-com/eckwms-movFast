@@ -38,7 +38,7 @@ import java.util.Locale
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TripsScreen(onBack: () -> Unit) {
+fun TripsScreen(onBack: () -> Unit, onOpenMap: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.getInstance(context) }
@@ -129,6 +129,10 @@ fun TripsScreen(onBack: () -> Unit) {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
+                },
+                actions = {
+                    // Streckenhistorie & Planung (Leaflet map)
+                    IconButton(onClick = onOpenMap) { Text("🗺", fontSize = 20.sp) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color(0xFF1A1A1A),

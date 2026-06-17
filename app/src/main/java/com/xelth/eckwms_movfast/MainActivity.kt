@@ -263,6 +263,13 @@ class MainActivity : ComponentActivity() {
 
                     composable("tripsScreen") {
                         com.xelth.eckwms_movfast.ui.screens.TripsScreen(
+                            onBack = { navController.popBackStack() },
+                            onOpenMap = { navController.navigate("tripMapScreen") }
+                        )
+                    }
+
+                    composable("tripMapScreen") {
+                        com.xelth.eckwms_movfast.ui.screens.TripMapScreen(
                             onBack = { navController.popBackStack() }
                         )
                     }

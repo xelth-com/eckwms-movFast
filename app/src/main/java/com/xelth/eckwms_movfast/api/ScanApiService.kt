@@ -28,7 +28,9 @@ data class PurposeCandidate(
     val label: String,        // destination / customer name
     val address: String?,
     val distanceKm: Double?,  // present when a position was supplied
-    val overdue: Boolean
+    val overdue: Boolean,
+    val lat: Double? = null,  // geocoded position (for the planning map markers)
+    val lng: Double? = null
 )
 
 /** A registered vehicle (Fahrtenbuch) returned by /api/vehicles. */
@@ -2068,7 +2070,9 @@ class ScanApiService(private val context: Context) {
                         label = o.optString("label", ""),
                         address = if (o.isNull("address")) null else o.optString("address", null),
                         distanceKm = if (o.isNull("distance_km")) null else o.optDouble("distance_km"),
-                        overdue = o.optBoolean("overdue", false)
+                        overdue = o.optBoolean("overdue", false),
+                        lat = if (o.isNull("lat")) null else o.optDouble("lat"),
+                        lng = if (o.isNull("lng")) null else o.optDouble("lng")
                     )
                 )
             }

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- TODO(privacy): before the free Play-Store release, vendor leaflet.js/.css
+       into assets and proxy tiles through our own server. For now (owner's dev
+       phone) Leaflet is loaded from a CDN and tiles come from OSM directly. -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; background: #e8eef2; }
+    .num-pin {
+      background: #1769aa; color: #fff; border: 2px solid #fff;
+      border-radius: 50%; width: 26px; height: 26px; line-height: 22px;
+      text-align: center; font: bold 14px sans-serif;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    }
+    .num-pin.overdue { background: #c62828; }
+    .leaflet-popup-content { font: 13px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    // Germany-ish default view until data arrives.
+    var map = L.map('map', { zoomControl: true }).setView([51.1, 10.4], 6);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    var trackLayer = null;      // recorded track polyline + endpoints
+    var stopsLayer = L.layerGroup().addTo(map); // numbered planned stops
+    var allBounds = null;
+
+    function extend(latlng) {
+      if (!allBounds) { allBounds = L.latLngBounds(latlng, latlng); }
+      else { allBounds.extend(latlng); }
+    }
+    function fit() {
+      if (allBounds && allBounds.isValid()) {
+        map.fitBounds(allBounds, { padding: [40, 40], maxZoom: 16 });
+      }
+    }
+
+    // points = [[lat,lng], ...] in time order (the recorded Fahrt track).
+    function setTrack(points) {
+      if (trackLayer) { map.removeLayer(trackLayer); trackLayer = null; }
+      if (!points || points.length === 0) return;
+      trackLayer = L.layerGroup().addTo(map);
+      var latlngs = points.map(function (p) { return [p[0], p[1]]; });
+      L.polyline(latlngs, { color: '#1769aa', weight: 4, opacity: 0.8 }).addTo(trackLayer);
+      // start (green) + end (checkered-ish) markers
+      L.circleMarker(latlngs[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#2e7d32', fillOpacity: 1 })
+        .bindPopup('Start').addTo(trackLayer);
+      L.circleMarker(latlngs[latlngs.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#37474f', fillOpacity: 1 })
+        .bindPopup('Ende (zuletzt)').addTo(trackLayer);
+      // Tap on the track → hand the coordinate back to Kotlin (future: slice here)
+      L.polyline(latlngs, { color: 'transparent', weight: 22 })
+        .on('click', function (e) {
+          if (window.AndroidMap && AndroidMap.onTrackTap) {
+            AndroidMap.onTrackTap(e.latlng.lat, e.latlng.lng);
+          }
+        }).addTo(trackLayer);
+      latlngs.forEach(extend);
+      fit();
+    }
+
+    // stops = [{n, lat, lng, label, overdue, ref}, ...] (planned destinations).
+    function setStops(stops) {
+      stopsLayer.clearLayers();
+      if (!stops) return;
+      stops.forEach(function (s) {
+        if (s.lat == null || s.lng == null) return;
+        var icon = L.divIcon({
+          className: '',
+          html: '<div class="num-pin' + (s.overdue ? ' overdue' : '') + '">' + s.n + '</div>',
+          iconSize: [26, 26], iconAnchor: [13, 13]
+        });
+        var m = L.marker([s.lat, s.lng], { icon: icon }).addTo(stopsLayer);
+        var html = '<b>' + s.n + '. ' + (s.label || '') + '</b>';
+        if (s.address) html += '<br>' + s.address;
+        m.bindPopup(html);
+        m.on('click', function () {
+          if (window.AndroidMap && AndroidMap.onStopTap) AndroidMap.onStopTap(s.ref || '');
+        });
+        extend([s.lat, s.lng]);
+      });
+      fit();
+    }
+
+    // Let Kotlin know the page + Leaflet are ready (it also uses onPageFinished).
+    if (window.AndroidMap && AndroidMap.onReady) AndroidMap.onReady();
+  </script>
+</body>
+</html>
