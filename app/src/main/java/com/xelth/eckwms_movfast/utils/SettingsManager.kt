@@ -197,15 +197,20 @@ object SettingsManager {
     fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
 
     // ── Trip recording (Fahrtenbuch) ────────────────────────────────────────
+    // Owner decision 2026-06-17: trips are ON by default (opt-out) — the user
+    // turns them off with the switch if they don't want recording. (Note: for
+    // employee deployments this opt-out default is legally sensitive under DSGVO
+    // /§26 BDSG/Betriebsrat — see PRIVACY_BY_DESIGN.md; fine for the owner's own
+    // use and the standalone free app where the user records their own trips.)
     private const val KEY_TRIP_AUTO_DETECT = "trip_auto_detect"
     fun saveTripAutoDetect(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit() }
-    fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, false)
+    fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, true)
 
-    // DSGVO consent (Einwilligung): trip recording is strictly opt-in and
-    // revocable at any time. No recording happens while this is false.
+    // DSGVO consent (Einwilligung): revocable at any time via the switch. ON by
+    // default per the owner decision above; no recording happens while false.
     private const val KEY_TRIP_CONSENT = "trip_recording_consent"
     fun saveTripConsent(granted: Boolean) { prefs.edit().putBoolean(KEY_TRIP_CONSENT, granted).commit() }
-    fun getTripConsent(): Boolean = prefs.getBoolean(KEY_TRIP_CONSENT, false)
+    fun getTripConsent(): Boolean = prefs.getBoolean(KEY_TRIP_CONSENT, true)
 
     // Separate, ADDITIONAL opt-in: share the live position of a business trip to
     // the dashboard map in near-real-time (a moving car marker with the plate).

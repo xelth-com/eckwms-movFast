@@ -170,6 +170,11 @@ dependencies {
     // WebSocket for hybrid transport
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
 
+    // MapLibre Native — GPU vector map (Vulkan/GL). Trip map renders the track
+    // + numbered planned stops natively (no WebView/Leaflet). Tiles/style from
+    // OpenFreeMap (no API key).
+    implementation("org.maplibre.gl:android-sdk:11.13.5")
+
     // Kotlinx Collections Immutable (required by POS UI)
     implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7")
 }

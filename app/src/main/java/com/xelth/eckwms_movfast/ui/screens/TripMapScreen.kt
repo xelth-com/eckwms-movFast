@@ -1,11 +1,6 @@
 package com.xelth.eckwms_movfast.ui.screens
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.util.Log
-import android.webkit.JavascriptInterface
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,38 +29,109 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.FeatureCollection
 
 /**
- * Trip map (Fahrtenbuch). One Leaflet/WebView surface serving two jobs:
- *  - PAST: the recorded track of the most recent Fahrt as a polyline (later:
- *    slice trips out of it for retroactive classification — see
- *    .eck/TRIP_PURPOSE.md §9; the JS already reports track taps via AndroidMap).
- *  - FUTURE: today's planned destinations as numbered markers (1, 2, 3 …) for
- *    trip planning.
+ * Trip map (Fahrtenbuch) — native MapLibre GPU map (no WebView). One surface,
+ * two jobs:
+ *  - PAST: the recorded track of the most recent Fahrt as a line (later: slice
+ *    trips out of it for retroactive classification — TRIP_PURPOSE.md §9).
+ *  - FUTURE: today's planned destinations as numbered markers (1, 2, 3 …).
  *
- * Read-only foundation for now. Map HTML/JS lives in assets/trip_map.html.
+ * Style/tiles from OpenFreeMap (vector, no API key). Read-only foundation.
  */
+private const val STYLE_URL = "https://tiles.openfreemap.org/styles/bright"
+
 @Composable
 fun TripMapScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    var webView by remember { mutableStateOf<WebView?>(null) }
-    var pageReady by remember { mutableStateOf(false) }
-    var trackJson by remember { mutableStateOf<String?>(null) }
-    var stopsJson by remember { mutableStateOf<String?>(null) }
+    val mapView = remember {
+        MapLibre.getInstance(context)
+        MapView(context)
+    }
+    var data by remember { mutableStateOf<MapData?>(null) }
 
-    // Load both layers once (off the main thread).
-    LaunchedEffect(Unit) {
-        val data = withContext(Dispatchers.IO) { loadMapData(context) }
-        trackJson = data.first
-        stopsJson = data.second
+    // MapView has its own lifecycle; drive it from the composition's presence.
+    DisposableEffect(Unit) {
+        mapView.onCreate(null)
+        mapView.onStart()
+        mapView.onResume()
+        onDispose {
+            mapView.onPause()
+            mapView.onStop()
+            mapView.onDestroy()
+        }
     }
 
-    // Push to Leaflet as soon as the page is ready AND the data has loaded.
-    LaunchedEffect(pageReady, trackJson, stopsJson, webView) {
-        val wv = webView ?: return@LaunchedEffect
-        if (!pageReady) return@LaunchedEffect
-        trackJson?.let { wv.evaluateJavascript("setTrack($it)", null) }
-        stopsJson?.let { wv.evaluateJavascript("setStops($it)", null) }
+    LaunchedEffect(Unit) {
+        data = withContext(Dispatchers.IO) { loadMapData(context) }
+    }
+
+    // Once data is loaded, set the style and add the track + stop layers.
+    LaunchedEffect(data) {
+        val d = data ?: return@LaunchedEffect
+        mapView.getMapAsync { map ->
+            map.setStyle(Style.Builder().fromUri(STYLE_URL)) { style ->
+                style.addSource(GeoJsonSource("track-src", FeatureCollection.fromJson(d.trackGeoJson)))
+                style.addLayer(
+                    LineLayer("track-line", "track-src").withProperties(
+                        PropertyFactory.lineColor("#1769aa"),
+                        PropertyFactory.lineWidth(4f),
+                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                    )
+                )
+
+                style.addSource(GeoJsonSource("stops-src", FeatureCollection.fromJson(d.stopsGeoJson)))
+                style.addLayer(
+                    CircleLayer("stops-circle", "stops-src").withProperties(
+                        PropertyFactory.circleRadius(13f),
+                        PropertyFactory.circleColor(
+                            Expression.switchCase(
+                                Expression.get("overdue"), Expression.literal("#c62828"),
+                                Expression.literal("#1769aa")
+                            )
+                        ),
+                        PropertyFactory.circleStrokeColor("#ffffff"),
+                        PropertyFactory.circleStrokeWidth(2f)
+                    )
+                )
+                style.addLayer(
+                    SymbolLayer("stops-num", "stops-src").withProperties(
+                        PropertyFactory.textField(Expression.get("num")),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                        PropertyFactory.textSize(13f),
+                        PropertyFactory.textColor("#ffffff"),
+                        PropertyFactory.textAllowOverlap(true),
+                        PropertyFactory.textIgnorePlacement(true)
+                    )
+                )
+
+                // Frame everything we have.
+                when {
+                    d.points.size >= 2 -> {
+                        val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
+                        try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
+                        catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
+                    }
+                    d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
+                    else -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(51.1, 10.4), 5.0))
+                }
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -82,53 +149,26 @@ fun TripMapScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
-        AndroidView(
-            factory = { ctx ->
-                @SuppressLint("SetJavaScriptEnabled")
-                WebView(ctx).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            pageReady = true
-                        }
-                    }
-                    addJavascriptInterface(MapBridge(), "AndroidMap")
-                    loadUrl("file:///android_asset/trip_map.html")
-                    webView = this
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
     }
 }
 
-/** JS → Kotlin bridge. Taps are wired now; acting on them (slicing a trip /
- *  opening a stop) lands with the §9 reverse-Fahrtenbuch step. */
-private class MapBridge {
-    @JavascriptInterface
-    fun onReady() { /* page also signals via onPageFinished */ }
+private data class MapData(
+    val trackGeoJson: String,
+    val stopsGeoJson: String,
+    val points: List<LatLng>
+)
 
-    @JavascriptInterface
-    fun onTrackTap(lat: Double, lng: Double) {
-        Log.d("TripMap", "track tap @ $lat,$lng (slice point — TODO §9)")
-    }
-
-    @JavascriptInterface
-    fun onStopTap(ref: String) {
-        Log.d("TripMap", "stop tap: $ref")
-    }
-}
-
-/** Build the two JSON payloads for the map: the recent track polyline and the
- *  numbered planned stops. Returns valid JS array literals. */
-private suspend fun loadMapData(context: Context): Pair<String, String> {
+/** Build the GeoJSON for the track (LineString) and the numbered stops (Points),
+ *  plus the flat point list used to frame the camera. */
+private suspend fun loadMapData(context: Context): MapData {
     val db = AppDatabase.getInstance(context)
+    val all = mutableListOf<LatLng>()
 
     // Track = the most recent trip's points, resolved to coordinates. Fused
     // points carry lat/lng directly; cell points resolve via the on-device
-    // tower cache (same path as TripManager.buildUploadJson).
-    val trackArr = JSONArray()
+    // tower cache (same path as TripManager.buildUploadJson). GeoJSON is [lng,lat].
+    val trackCoords = JSONArray()
     val trip = db.tripDao().observeTrips(1).first().firstOrNull()
     if (trip != null) {
         val cellDao = db.cellTowerDao()
@@ -140,33 +180,57 @@ private suspend fun loadMapData(context: Context): Pair<String, String> {
                 if (tower != null) { lat = tower.lat; lng = tower.lng }
             }
             if (lat != null && lng != null) {
-                trackArr.put(JSONArray().put(lat).put(lng))
+                trackCoords.put(JSONArray().put(lng).put(lat))
+                all.add(LatLng(lat, lng))
             }
         }
     }
+    val trackGeoJson = JSONObject().apply {
+        put("type", "FeatureCollection")
+        put("features", JSONArray().apply {
+            if (trackCoords.length() >= 2) {
+                put(JSONObject().apply {
+                    put("type", "Feature")
+                    put("properties", JSONObject())
+                    put("geometry", JSONObject().apply {
+                        put("type", "LineString")
+                        put("coordinates", trackCoords)
+                    })
+                })
+            }
+        })
+    }.toString()
 
-    // Planned stops = Level-A purpose candidates that have coordinates, numbered
-    // in the order the server returns them (nearest-first when a position is
-    // known; due-date otherwise). True shortest-tour ordering is the open
-    // "Routenplaner" item.
-    val stopsArr = JSONArray()
+    // Planned stops = Level-A purpose candidates with coordinates, numbered in
+    // the order the server returns them (nearest-first with a position, else
+    // due-date). True shortest-tour ordering is the open "Routenplaner" item.
+    val features = JSONArray()
     val candidates = try { ScanApiService(context).fetchPurposeCandidates() } catch (e: Exception) { null }
     var n = 1
     candidates?.forEach { c ->
         val lat = c.lat
         val lng = c.lng
         if (lat != null && lng != null) {
-            stopsArr.put(JSONObject().apply {
-                put("n", n++)
-                put("lat", lat)
-                put("lng", lng)
-                put("label", c.label)
-                put("address", c.address ?: JSONObject.NULL)
-                put("overdue", c.overdue)
-                put("ref", c.purposeRef)
+            features.put(JSONObject().apply {
+                put("type", "Feature")
+                put("properties", JSONObject().apply {
+                    put("num", (n).toString())
+                    put("label", c.label)
+                    put("overdue", c.overdue)
+                })
+                put("geometry", JSONObject().apply {
+                    put("type", "Point")
+                    put("coordinates", JSONArray().put(lng).put(lat))
+                })
             })
+            all.add(LatLng(lat, lng))
+            n++
         }
     }
+    val stopsGeoJson = JSONObject().apply {
+        put("type", "FeatureCollection")
+        put("features", features)
+    }.toString()
 
-    return Pair(trackArr.toString(), stopsArr.toString())
+    return MapData(trackGeoJson, stopsGeoJson, all)
 }
