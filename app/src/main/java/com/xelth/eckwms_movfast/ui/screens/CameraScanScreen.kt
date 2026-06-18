@@ -79,6 +79,18 @@ fun CameraScanScreen(
 
     Log.d(TAG, "CameraScanScreen opened with scan_mode: $scanMode")
 
+    // Coexistence with the hardware scanner: the scan engine and the app camera
+    // share one ISP on this PDA, so opening CameraX/ML Kit (barcode camera scan,
+    // odometer/plate OCR, photo capture) while the scanner holds the camera wedges
+    // it until reboot. Suspend the scan engine's camera for the lifetime of THIS
+    // screen and restore it on exit so the hardware scanner keeps working.
+    val appContext = LocalContext.current.applicationContext
+    DisposableEffect(Unit) {
+        val sm = (appContext as? com.xelth.eckwms_movfast.EckwmsApp)?.scannerManager
+        sm?.suspendScanService()
+        onDispose { sm?.resumeScanService() }
+    }
+
     if (cameraPermissionState.status.isGranted) {
         when (scanMode) {
             "barcode" -> {

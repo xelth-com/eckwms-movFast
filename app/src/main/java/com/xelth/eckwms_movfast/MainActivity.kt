@@ -416,6 +416,28 @@ class MainActivity : ComponentActivity() {
      * This prevents hardware scanner's Enter key from clicking focused UI elements.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Hardware scan triggers: the PDA's two side buttons emit F10/F11 (and the
+        // front trigger F8/F9) via the "xctech-key" input device (confirmed with
+        // getevent). The XCheng service does NOT bind them to the scan engine, so
+        // drive our SDK directly — a trigger press starts a scan and the result
+        // comes back through ScannerManager.scanResult. Consume them so the raw
+        // F-keys never leak into the Compose UI.
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_F8,
+            KeyEvent.KEYCODE_F9,
+            KeyEvent.KEYCODE_F10,
+            KeyEvent.KEYCODE_F11 -> {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    android.util.Log.d("ScanTrigger", "hardware key ${event.keyCode} → startScan()")
+                    try {
+                        (application as EckwmsApp).scannerManager.startScan()
+                    } catch (e: Exception) {
+                        android.util.Log.w("ScanTrigger", "startScan failed: ${e.message}")
+                    }
+                }
+                return true
+            }
+        }
         return when (event.keyCode) {
             KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER,

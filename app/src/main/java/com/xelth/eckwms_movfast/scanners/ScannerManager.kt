@@ -207,6 +207,26 @@ class ScannerManager private constructor(private val application: Application) {
     }
 
     /**
+     * Release the hardware scanner's camera so a CameraX / ML Kit session (barcode
+     * camera scan, odometer/plate OCR, photos) can use the camera. On this PDA the
+     * scan engine and the app camera share one ISP — opening the app camera while
+     * the scanner holds it wedges the scan camera until reboot. Suspend before
+     * opening any CameraX screen and [resumeScanService] after closing it.
+     */
+    fun suspendScanService() {
+        if (!isInitialized) { Log.d(TAG, "suspendScanService: not initialized"); return }
+        Log.d(TAG, ">>> suspendScanService (free camera for ML Kit)")
+        XCScannerWrapper.suspendScanService()
+    }
+
+    /** Resume the hardware scanner after a CameraX/ML Kit session is done. */
+    fun resumeScanService() {
+        if (!isInitialized) { Log.d(TAG, "resumeScanService: not initialized"); return }
+        Log.d(TAG, ">>> resumeScanService (re-acquire scan camera)")
+        XCScannerWrapper.resumeScanService()
+    }
+
+    /**
      * Устанавливает режим подсветки
      */
     fun setFlashLightsMode(flashMode: Int) {

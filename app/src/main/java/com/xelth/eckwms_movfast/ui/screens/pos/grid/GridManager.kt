@@ -6,6 +6,9 @@ import android.util.Log
  * Priority constants for content placement.
  */
 object PRIORITIES {
+    // Fixed system buttons (Scan / Photo / 🎤) — outrank ALL content so their
+    // reserved hex slots are never evicted by mode content. See placeSystemButtons.
+    const val SYSTEM_FIXED = 200
     const val TABLE_BUTTON = 95
     const val PAYMENT_BUTTON = 95
     const val PINPAD_BUTTON = 95

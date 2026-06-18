@@ -10,6 +10,8 @@ import com.xelth.eckwms_movfast.api.ScanResult
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.GridConfig
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.GridManager
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.PRIORITIES
+import com.xelth.eckwms_movfast.ui.screens.pos.grid.SystemElement
+import com.xelth.eckwms_movfast.voice.VoiceCommandManager
 import com.xelth.eckwms_movfast.ui.screens.pos.grid.RenderCell
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -496,8 +498,6 @@ class MainScreenViewModel : ViewModel() {
     private fun initializeGrid() {
         val buttons = listOf(
             MainMenuButton("settings", "⚙️\nSettings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
-            MainMenuButton("photo", "📷\nPhoto", "#9C27B0", "capture_photo", PRIORITIES.DEFAULT),
-            MainMenuButton("scan", "🔍\nScan", "#00BCD4", "capture_barcode", PRIORITIES.DEFAULT),
             MainMenuButton("repair", "🔧\nRepair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
             MainMenuButton("receiving", "📦\nReceiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
             MainMenuButton("device_check", "✅\nCheck", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
@@ -520,6 +520,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
+        placeSystemButtons(scanAction = "capture_barcode", photoAction = "capture_photo")
         gridManager.placeItems(contentItems, priority = PRIORITIES.SCAN_BUTTON)
         _exitButton.postValue(null)
         updateRenderCells()
@@ -530,6 +531,83 @@ class MainScreenViewModel : ViewModel() {
             val cells = gridManager.getRenderStructure()
             _renderCells.postValue(cells)
         }
+    }
+
+    /**
+     * Voice Commands P0 — pin the 3 always-present "system" buttons at FIXED hex
+     * positions in EVERY mode. Hex geometry (asymmetrical): even rows have FULL
+     * slots at cols 1/3/5, odd rows at cols 0/2/4.
+     *   • Scan  → (row 0, col 5)  top-right corner.
+     *   • Photo → (row 0, col 3)  immediately left of Scan.
+     *   • 🎤    → (row 1, col 4)  full hex, far-right of the 2nd row (under Scan) —
+     *                             GLOBAL push-to-talk, action "voice_command".
+     * Scan/Photo carry the CURRENT mode's actions; only their POSITION is fixed.
+     * Call AFTER clearAndReset() and BEFORE placeItems(): SYSTEM_FIXED priority
+     * reserves the slots so the mode's content flows around them.
+     */
+    private fun placeSystemButtons(
+        scanAction: String = "act_scan",
+        photoAction: String? = "act_photo",
+        scanLabel: String = "🔍\nScan",
+        scanColor: String = "#00BCD4",
+        photoLabel: String = "📷\nPhoto",
+        photoColor: String = "#9C27B0",
+    ) {
+        val sys = mutableListOf<SystemElement>()
+        sys.add(SystemElement(0, 5,
+            mapOf("type" to "button", "label" to scanLabel, "color" to scanColor, "action" to scanAction),
+            PRIORITIES.SYSTEM_FIXED, "scan"))
+        if (photoAction != null) {
+            sys.add(SystemElement(0, 3,
+                mapOf("type" to "button", "label" to photoLabel, "color" to photoColor, "action" to photoAction),
+                PRIORITIES.SYSTEM_FIXED, "photo"))
+        }
+        sys.add(SystemElement(1, 4,
+            mapOf("type" to "button", "label" to "🎤", "color" to "#455A64", "action" to "voice_command"),
+            PRIORITIES.SYSTEM_FIXED, "voice"))
+        gridManager.placeSystemElements(sys, _isLeftHanded.value ?: false)
+    }
+
+    /** The active workspace mode, as a registry key for [VoiceCommandManager]. */
+    fun currentVoiceMode(): String = when {
+        _isRepairMode.value == true -> "repair"
+        _isReceivingMode.value == true -> "receiving"
+        _isInventoryMode.value == true -> "inventory"
+        _isDeviceCheckMode.value == true -> "device_check"
+        _isRestockMode.value == true -> "restock"
+        _isTripMode.value == true -> "trip"
+        else -> "main"
+    }
+
+    /**
+     * Voice Commands P1/P2 — match an STT transcript against the current mode's
+     * LOCAL command registry. On a hit: log "verstanden → …" and return the grid
+     * action (nothing is executed here — the caller dispatches it via the normal
+     * button path). On a miss return null; the caller decides what null means:
+     * trip mode runs its destination search, other modes escalate to the Gemini
+     * fallback in MainScreen and finally call [logVoiceMiss].
+     */
+    fun matchVoiceLocal(text: String): String? {
+        if (text.isBlank()) return null
+        val cmd = VoiceCommandManager.match(currentVoiceMode(), text) ?: return null
+        addLog("🎤 verstanden: „$text\" → ${cmd.description}")
+        return cmd.action
+    }
+
+    /** Console line for a Gemini-resolved command (P2). */
+    fun logVoiceGemini(text: String, description: String) =
+        addLog("🤖 verstanden: „$text\" → $description")
+
+    /** Free-form voice status line (e.g. "🤖 frage KI…"). */
+    fun logVoiceInfo(message: String) = addLog(message)
+
+    /** Final miss — surface the text + what the user CAN say in this mode. */
+    fun logVoiceMiss(text: String) {
+        val mode = currentVoiceMode()
+        addLog("🎤 „$text\" — kein Sprachbefehl erkannt")
+        val labels = VoiceCommandManager.availableLabels(mode)
+        if (labels.isEmpty()) addLog("· keine Sprachbefehle in diesem Modus")
+        else addLog("· möglich: ${labels.joinToString(", ")}")
     }
 
     /** Fetch users from server and populate UserManager. */
@@ -808,11 +886,10 @@ class MainScreenViewModel : ViewModel() {
             else -> {}
         }
 
-        // 3. Photo & Scan buttons (always available)
-        uiItems.add(mapOf("type" to "button", "label" to "PHOTO", "color" to "#9C27B0", "action" to "capture_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "SCAN", "color" to "#00BCD4", "action" to "capture_barcode"))
+        // 3. Photo & Scan are now pinned via placeSystemButtons (fixed positions).
 
         gridManager.clearAndReset()
+        placeSystemButtons(scanAction = "capture_barcode", photoAction = "capture_photo")
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
 
         // 4. X button — native half-slot
@@ -822,6 +899,9 @@ class MainScreenViewModel : ViewModel() {
     }
 
     fun onButtonClick(action: String): String {
+        // 🎤 Voice command is GLOBAL push-to-talk, driven by onMicPress/onMicRelease
+        // in MainScreen. A plain tap falls through to here as a harmless no-op.
+        if (action == "voice_command") return "handled"
         addLog("Button clicked: $action")
 
         // User button — works in ALL modes (short press = switch view)
@@ -1308,12 +1388,10 @@ class MainScreenViewModel : ViewModel() {
     private fun renderRepairGrid() {
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        // Action buttons (top row): UNDO | PHOTO | SCAN (scan = top-right)
+        // Action button (top-left): UNDO. Photo/Scan are pinned via placeSystemButtons.
         val undoColor = if (lastSentAction != null) "#FF9800" else "#37474F"
         uiItems.add(mapOf("type" to "button", "label" to "↩️\nUNDO", "color" to undoColor, "action" to "act_undo"))
         val photoColor = if (pendingAction is RepairAction.PendingPhoto) "#FF9800" else "#9C27B0"
-        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO", "color" to photoColor, "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Device slots
         slots.forEach { slot ->
@@ -1338,6 +1416,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
+        placeSystemButtons(photoColor = photoColor, photoLabel = "📷\nPHOTO", scanLabel = "🔍\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -1462,11 +1541,7 @@ class MainScreenViewModel : ViewModel() {
                 "color" to if (auto) "#2E7D32" else "#37474F",
                 "action" to "trip_toggle_autodetect"
             ))
-            uiItems.add(mapOf("type" to "button", "label" to "📷\nPhoto", "color" to "#9C27B0", "action" to "act_photo"))
-            uiItems.add(mapOf("type" to "button", "label" to "🔍\nScan", "color" to "#00BCD4", "action" to "act_scan"))
-            // 🎤 under Photo/Scan — PUSH-TO-TALK (hold to talk). Handled via
-            // onMicPress/onMicRelease in MainScreen (not a normal click action).
-            uiItems.add(mapOf("type" to "button", "label" to "🎤\nHalten", "color" to "#37474F", "action" to "trip_mic"))
+            // Photo / Scan / 🎤 are pinned globally via placeSystemButtons.
             // Opens the on-hex start/stop sub-menu (no panel).
             uiItems.add(mapOf(
                 "type" to "button",
@@ -1491,6 +1566,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
+        placeSystemButtons(scanAction = "act_scan", photoAction = "act_photo")
         gridManager.placeItems(uiItems, priority = 100)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
         updateRenderCells()
@@ -2303,15 +2379,11 @@ class MainScreenViewModel : ViewModel() {
         val isContentsStep = currentStepIndex in receivingSteps.indices &&
             receivingSteps[currentStepIndex]["type"] == "contents_grid"
 
-        // Top row: BACK | PHOTO | SCAN
+        // Top-left: BACK/UNDO. Photo/Scan are pinned via placeSystemButtons.
         val backAction = if (isContentsStep && packagingSubLevel) "act_back_contents" else "act_noop"
         val backColor = if (isContentsStep && packagingSubLevel) "#546E7A" else "#37474F"
         val backLabel = if (isContentsStep && packagingSubLevel) "◀️\nBACK" else "↩️\nUNDO"
         uiItems.add(mapOf("type" to "button", "label" to backLabel, "color" to backColor, "action" to backAction))
-        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO",
-            "color" to if (isContentsStep) "#263238" else "#9C27B0",
-            "action" to if (isContentsStep) "act_noop" else "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
 
         // Workflow step buttons
         receivingSteps.forEachIndexed { index, step ->
@@ -2421,6 +2493,11 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
+        placeSystemButtons(
+            photoAction = if (isContentsStep) "act_noop" else "act_photo",
+            photoColor = if (isContentsStep) "#263238" else "#9C27B0",
+            photoLabel = "\uD83D\uDCF7\nPHOTO", scanLabel = "\uD83D\uDD0D\nSCAN",
+        )
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT — native half-slot (dimmed during contents step)
@@ -2715,8 +2792,7 @@ class MainScreenViewModel : ViewModel() {
         } else {
             uiItems.add(mapOf("type" to "button", "label" to "↩️\nUNDO", "color" to "#37474F", "action" to "act_undo"))
         }
-        uiItems.add(mapOf("type" to "button", "label" to "📷\nPHOTO", "color" to "#9C27B0", "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        // Photo/Scan are pinned via placeSystemButtons (fixed positions).
 
         // Row 2+: 3 Slots
         // Colors: grey=inactive, yellow=initializing, blue=initialized-not-done, green=ready
@@ -2763,6 +2839,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
+        placeSystemButtons(photoLabel = "📷\nPHOTO", scanLabel = "🔍\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -3581,8 +3658,7 @@ class MainScreenViewModel : ViewModel() {
             lastScannedType == "item" && canPhoto -> "📷\nITEM"
             else -> "📷\nPHOTO"
         }
-        uiItems.add(mapOf("type" to "button", "label" to photoLabel, "color" to photoColor, "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        // Photo (dynamic state) + Scan are pinned via placeSystemButtons.
 
         // Row 2: TYPE toggle | SUBMIT | CLEAR
         val typeColor = when {
@@ -3600,6 +3676,7 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "🔢\nNUM", "color" to numColor, "action" to "act_numpad", "enabled" to numEnabled))
 
         gridManager.clearAndReset()
+        placeSystemButtons(photoColor = photoColor, photoLabel = photoLabel, scanLabel = "🔍\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
@@ -3728,9 +3805,10 @@ class MainScreenViewModel : ViewModel() {
 
         uiItems.add(mapOf("type" to "button", "label" to "📤\nSEND", "color" to "#2196F3", "action" to "act_submit_restock"))
         uiItems.add(mapOf("type" to "button", "label" to "🗑️\nCLEAR", "color" to "#D32F2F", "action" to "act_clear_restock"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nSCAN", "color" to "#00BCD4", "action" to "act_scan"))
+        // Scan + 🎤 are pinned via placeSystemButtons. Restock has no Photo action.
 
         gridManager.clearAndReset()
+        placeSystemButtons(photoAction = null, scanLabel = "🔍\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))

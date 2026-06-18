@@ -163,6 +163,11 @@ fun MainScreen(
     var tripQuery by remember { mutableStateOf("") }
     var tripListening by remember { mutableStateOf(false) }
     val speech = remember { com.xelth.eckwms_movfast.utils.SpeechToText(context) }
+    // Voice Commands P2 — Gemini fallback + best-effort parallel audio capture
+    // (kept in memory until a resolution finishes, for the multimodal re-listen).
+    val voiceRec = remember { com.xelth.eckwms_movfast.voice.VoiceAudioRecorder() }
+    val voiceApi = remember { com.xelth.eckwms_movfast.api.ScanApiService(context) }
+    var lastVoiceAudioB64 by remember { mutableStateOf<String?>(null) }
     var tripPendingRef by remember { mutableStateOf<String?>(null) }
     var tripPendingLabel by remember { mutableStateOf<String?>(null) }
     var tripPendingSource by remember { mutableStateOf("planned") }
@@ -185,7 +190,7 @@ fun MainScreen(
             mainViewModel.searchTripDestinations(tripQuery)
         }
     }
-    DisposableEffect(Unit) { onDispose { speech.destroy() } }
+    DisposableEffect(Unit) { onDispose { speech.destroy(); voiceRec.cancel() } }
 
     val tripStartLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -224,6 +229,47 @@ fun MainScreen(
     val micPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* granted → user presses the mic again to talk */ }
+
+    // Dispatch a grid action — shared by button taps AND voice commands. Runs the
+    // ViewModel handler, then performs the MainScreen-only side effects
+    // (navigation, camera, dialogs, permission flows).
+    val onGridAction: (String) -> Unit = { action ->
+        val result = mainViewModel.onButtonClick(action)
+        android.util.Log.e("NAV_CAMERA", ">>> onButtonClick action=$action result=$result")
+        when (result) {
+            "capture_photo" -> {
+                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (photo) action=$action")
+                navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
+            }
+            "capture_barcode" -> {
+                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (barcode) action=$action")
+                navController.navigate("cameraScanScreen?scan_mode=barcode")
+            }
+            "navigate_scan" -> navController.navigate("scanScreen")
+            "navigate_ai" -> navController.navigate("scanScreen")
+            "navigate_settings" -> navController.navigate("settings")
+            "navigate_qc" -> navController.navigate("qcScreen")
+            "navigate_explorer" -> navController.navigate("explorerScreen")
+            "navigate_picking" -> navController.navigate("pickingList")
+            "navigate_pos" -> navController.navigate("pos")
+            // Trip start/stop sub-menu (replaces the TripsScreen panel)
+            "trip_start_business" -> tripStartWithPurpose("business")
+            "trip_start_private" -> tripStartWithPurpose("private")
+            "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
+            "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
+            "trip_toggle_autodetect" -> {
+                val tm = com.xelth.eckwms_movfast.trips.TripManager
+                if (mainViewModel.tripAutoDetect.value == true) {
+                    tm.disableAutoDetect(context)
+                    mainViewModel.setTripAutoDetect(false)
+                } else if (tm.hasActivityPermission(context)) {
+                    mainViewModel.setTripAutoDetect(tm.enableAutoDetect(context))
+                } else {
+                    tripAutoPermLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                }
+            }
+        }
+    }
 
     // State for the Intake Bottom Sheet
     var showIntakeSheet by remember { mutableStateOf(false) }
@@ -722,7 +768,8 @@ fun MainScreen(
                         // track + planned stops, matching the desktop dark map.
                         com.xelth.eckwms_movfast.ui.screens.TripMapView(
                             modifier = Modifier.fillMaxSize(),
-                            dark = true
+                            dark = true,
+                            liveLocation = true   // show & follow current position on entry
                         )
                         // Console stripped to a clean map for now — only the
                         // (transparent) ticket list overlays; tap a city hex to
@@ -815,43 +862,7 @@ fun MainScreen(
                     currentUser = currentUserState,
                     viewingUser = viewingUserState,
                     exitButton = exitButtonState,
-                    onButtonClick = { action ->
-                        val result = mainViewModel.onButtonClick(action)
-                        android.util.Log.e("NAV_CAMERA", ">>> onButtonClick action=$action result=$result")
-                        when (result) {
-                            "capture_photo" -> {
-                                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (photo) action=$action")
-                                navController.navigate("cameraScanScreen?scan_mode=workflow_capture")
-                            }
-                            "capture_barcode" -> {
-                                android.util.Log.e("NAV_CAMERA", ">>> BUTTON→CAMERA (barcode) action=$action")
-                                navController.navigate("cameraScanScreen?scan_mode=barcode")
-                            }
-                            "navigate_scan" -> navController.navigate("scanScreen")
-                            "navigate_ai" -> navController.navigate("scanScreen")
-                            "navigate_settings" -> navController.navigate("settings")
-                            "navigate_qc" -> navController.navigate("qcScreen")
-                            "navigate_explorer" -> navController.navigate("explorerScreen")
-                            "navigate_picking" -> navController.navigate("pickingList")
-                            "navigate_pos" -> navController.navigate("pos")
-                            // Trip start/stop sub-menu (replaces the TripsScreen panel)
-                            "trip_start_business" -> tripStartWithPurpose("business")
-                            "trip_start_private" -> tripStartWithPurpose("private")
-                            "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
-                            "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
-                            "trip_toggle_autodetect" -> {
-                                val tm = com.xelth.eckwms_movfast.trips.TripManager
-                                if (mainViewModel.tripAutoDetect.value == true) {
-                                    tm.disableAutoDetect(context)
-                                    mainViewModel.setTripAutoDetect(false)
-                                } else if (tm.hasActivityPermission(context)) {
-                                    mainViewModel.setTripAutoDetect(tm.enableAutoDetect(context))
-                                } else {
-                                    tripAutoPermLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-                                }
-                            }
-                        }
-                    },
+                    onButtonClick = onGridAction,
                     onButtonLongClick = { action ->
                         val result = mainViewModel.onButtonLongClick(action)
                         when (result) {
@@ -885,14 +896,62 @@ fun MainScreen(
                     onNetworkIndicatorLongClick = {
                         navController.navigate("pairingScreen")
                     },
-                    // 🎤 PUSH-TO-TALK in the grid (under Photo/Scan): hold to talk
+                    // 🎤 GLOBAL push-to-talk (action "voice_command"), pinned in
+                    // every mode. Hold to talk. Trip mode feeds the live search
+                    // box; every mode gets console feedback (Voice Commands P0).
                     onMicPress = {
                         if (androidx.core.content.ContextCompat.checkSelfPermission(
                                 context, Manifest.permission.RECORD_AUDIO
                             ) == android.content.pm.PackageManager.PERMISSION_GRANTED
                         ) {
                             tripListening = true
-                            speech.start { text, _ -> tripQuery = text }
+                            lastVoiceAudioB64 = null
+                            voiceRec.start()   // best-effort parallel capture (P2)
+                            speech.start { text, isFinal ->
+                                if (!isFinal) {
+                                    // Live partials only drive the trip search box.
+                                    if (isTripMode) tripQuery = text
+                                    return@start
+                                }
+                                // Final transcript → 1) local registry match.
+                                val local = mainViewModel.matchVoiceLocal(text)
+                                if (local != null) {
+                                    onGridAction(local)              // dispatch like a button tap
+                                    return@start
+                                }
+                                // 2) Trip mode's default = destination search.
+                                if (isTripMode) {
+                                    tripQuery = text
+                                    return@start
+                                }
+                                // 3) Other modes: Gemini fallback on a local miss (P2).
+                                val mode = mainViewModel.currentVoiceMode()
+                                val commands = com.xelth.eckwms_movfast.voice.VoiceCommandManager.commandsFor(mode)
+                                if (commands.isEmpty()) { mainViewModel.logVoiceMiss(text); return@start }
+                                val audioB64 = lastVoiceAudioB64
+                                tripScope.launch {
+                                    mainViewModel.logVoiceInfo("🤖 frage KI…")
+                                    // Pass 1: text only (cheap — no audio tokens).
+                                    var res = voiceApi.resolveVoice(mode, text, commands, null)
+                                    if (res == null || res.source == "off") { mainViewModel.logVoiceMiss(text); return@launch }
+                                    res.action?.let { act ->
+                                        mainViewModel.logVoiceGemini(text, commands.firstOrNull { it.action == act }?.description ?: act)
+                                        onGridAction(act)
+                                        return@launch
+                                    }
+                                    // Pass 2 (escalation, ≤1): multimodal re-listen with retained audio.
+                                    if (res.needsAudio && audioB64 != null) {
+                                        mainViewModel.logVoiceInfo("🤖 höre Aufnahme…")
+                                        res = voiceApi.resolveVoice(mode, text, commands, audioB64)
+                                        res?.action?.let { act ->
+                                            mainViewModel.logVoiceGemini(text, commands.firstOrNull { it.action == act }?.description ?: act)
+                                            onGridAction(act)
+                                            return@launch
+                                        }
+                                    }
+                                    mainViewModel.logVoiceMiss(text)
+                                }
+                            }
                         } else {
                             micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
@@ -900,6 +959,7 @@ fun MainScreen(
                     onMicRelease = {
                         speech.stop()
                         tripListening = false
+                        lastVoiceAudioB64 = try { voiceRec.stopAndGetWavBase64() } catch (e: Exception) { null }
                     }
                 )
             }

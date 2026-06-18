@@ -21,6 +21,55 @@
 
 8. **picking_confirm retry can mask legit rejection** — `confirmPickLine()` returns `false` for both network failure and server rejection. The offline queue retries up to MAX_RETRIES then drops. Server should distinguish 4xx (drop) from network error (retry).
 
+9. **Hardware scanner ↔ app camera share one ISP (fragile) — mitigated 2026-06-18.**
+   On this XCheng/MTK PDA the laser/imager scan engine IS a camera sensor
+   (`persist.sys.scanner=ov9281_mipi_raw`, `vendor.debug.scan.camid=2`), while
+   ML Kit / CameraX barcode-scan + odometer/plate OCR open camera id **0**. The
+   two share one ISP, so opening the app camera while the scan engine holds the
+   camera **wedges the scan camera until reboot** — system-wide (even XCheng's own
+   `com.xcheng.scannere3` scan-test app stops reacting; the camera icon no longer
+   appears on a hardware-trigger press). No root on the device → `cameraserver`
+   HAL can't be reset live (`killall cameraserver` = Operation not permitted), so
+   only a reboot recovers it.
+   - **Diagnosis trail (adb):** `getevent -p` → side buttons = device `xctech-key`
+     emitting `KEY_F10`/`KEY_F11`; `getevent` confirmed presses reach the kernel
+     but NOT our app (XCheng service intercepts them — so handling keys in-app is
+     a dead end). `dumpsys media.camera` → `Camera ID 2 = com.xcheng.scannere3`,
+     our app had connected/disconnected `Camera ID 0`. Scanner SDK init logs fine
+     (`License state: Inactive` after the wedge; normally Active). `MovStage`
+     (`com.xcheng.movstage`) silence-mode also `deInit`s the scanner on app-switch.
+   - **Mitigation:** `ScannerManager.suspendScanService()` / `resumeScanService()`
+     (wrap `XcBarcodeScanner.suspendScanService()` — "releases camera resources")
+     called from a `DisposableEffect` around the whole `CameraScanScreen`
+     lifecycle: free the scan engine's camera while any CameraX/ML Kit screen is
+     open, re-acquire on exit. Verified: the camera→exit→side-button cycle that
+     used to kill the scanner now survives.
+   - **Residual risk:** if `CameraScanScreen`'s process is killed without
+     `onDispose`, `resumeScanService` won't run (app restart re-inits the scanner,
+     so it self-heals). Other camera entry points (pairing/QR in `ScanScreen`) are
+     NOT yet bracketed. The scan SDK is a vendor `.aar` (`xcscanner_qrcode_v1.3.56.1.7`,
+     newest in git; the older `1.1.x` line is also in `app/libs/` but unused) — a
+     newer XCheng SDK may handle coexistence natively. The bug was intermittent;
+     keep watching. If it recurs, grab `dumpsys media.camera` at the moment of death.
+
+## Resolved (2026-06-18)
+
+- ~~Trip auto-detect never armed on app launch~~ ✅ `EckwmsApp.onCreate` now
+  re-arms `TripManager.enableAutoDetect()` (consent + pref + ACTIVITY_RECOGNITION
+  guarded). Previously only armed on reboot (`BootReceiver`) or manual toggle, so
+  the pref defaulted ON and the UI showed "Auto 🟢" while no IN_VEHICLE transition
+  was actually registered (lost on process death) → nothing recorded.
+- ~~Trip map showed the old track (centred near the last trip), not where you are~~
+  ✅ `TripMapView(liveLocation=true)` from the trip console: MapLibre
+  LocationComponent puck, `CameraMode.TRACKING` + `zoomWhileTracking(15)` so it
+  centres on the current position at street zoom on entry; the recorded track is
+  only framed on the full history screen (`liveLocation=false`).
+- Hardware scan-trigger keys F8–F11 routed to `startScan()` in
+  `MainActivity.dispatchKeyEvent` — kept as a harmless fallback, but note the
+  XCheng service intercepts these keys before the app, so it does not fire (the
+  real scan path is the SDK callback / camera engine, see item 9).
+- Voice Commands P0–P3 shipped (registry + Gemini fallback) — see `VOICE_COMMANDS.md`.
+
 ## Resolved (2026-06-11)
 
 - ~~No offline confirm queue for pickings~~ ✅ `picking_confirm` / `picking_validate` SyncQueue job types; PickingViewModel queues on failure, SyncWorker retries.

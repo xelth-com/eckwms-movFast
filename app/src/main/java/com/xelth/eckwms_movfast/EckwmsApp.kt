@@ -52,6 +52,22 @@ class EckwmsApp : Application() {
         SyncManager.schedulePeriodicSync(this)
         Log.d(TAG, "Periodic sync scheduled")
 
+        // Re-arm trip auto-detection on EVERY launch. The ActivityRecognition
+        // transition registration is process-level and is lost when the OS kills
+        // the app; it was previously only (re)armed on reboot or a manual toggle.
+        // The pref defaults ON, so the trip UI shows "Auto 🟢" while nothing was
+        // actually registered → no IN_VEHICLE transitions → no auto-recording.
+        // requestActivityTransitionUpdates is idempotent (same PendingIntent).
+        if (SettingsManager.getTripConsent() &&
+            SettingsManager.getTripAutoDetect() &&
+            com.xelth.eckwms_movfast.trips.TripManager.hasActivityPermission(this)
+        ) {
+            val armed = com.xelth.eckwms_movfast.trips.TripManager.enableAutoDetect(this)
+            Log.d(TAG, "Trip auto-detect re-armed on launch: $armed")
+        } else {
+            Log.d(TAG, "Trip auto-detect NOT armed (consent/pref/permission missing)")
+        }
+
         // Initialize Sunlight Mode (ambient light → audio-haptic feedback)
         SunlightModeManager.init(this)
         Log.d(TAG, "SunlightModeManager initialized")

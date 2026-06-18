@@ -42,7 +42,14 @@ import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.geojson.FeatureCollection
+import android.annotation.SuppressLint
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 
 /**
  * Trip map (Fahrtenbuch) — native MapLibre GPU map (no WebView). One surface,
@@ -60,10 +67,15 @@ private const val STYLE_DARK = "https://tiles.openfreemap.org/styles/dark"
  *  full-screen by [TripMapScreen] and as the dark background of trip mode's
  *  console. `dark = true` selects the dark OpenFreeMap style (matches the
  *  desktop dashboard). */
+@SuppressLint("MissingPermission")
 @Composable
 fun TripMapView(
     modifier: Modifier = Modifier,
     dark: Boolean = false,
+    // Live mode: show the device's CURRENT position (blue puck) and keep the
+    // camera on it, instead of framing the last recorded track. Used by the trip
+    // console on entry. The full history screen leaves this false → fits the track.
+    liveLocation: Boolean = false,
 ) {
     val context = LocalContext.current
     val styleUrl = if (dark) STYLE_DARK else STYLE_BRIGHT
@@ -103,7 +115,34 @@ fun TripMapView(
                 setLogoMargins(0, 8, 0, 0)
                 setAttributionMargins(0, 0, 8, 0)
             }
-            map.setStyle(Style.Builder().fromUri(styleUrl)) { style -> styleReady = style }
+            map.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
+                styleReady = style
+                // Live current-position puck (blue dot) — only when requested AND
+                // location permission is granted. Camera tracks the user.
+                if (liveLocation &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                ) {
+                    try {
+                        val lc = map.locationComponent
+                        lc.activateLocationComponent(
+                            LocationComponentActivationOptions.builder(context, style)
+                                .useDefaultLocationEngine(true)
+                                .build()
+                        )
+                        lc.isLocationComponentEnabled = true
+                        lc.cameraMode = CameraMode.TRACKING
+                        lc.renderMode = RenderMode.COMPASS
+                        // Zoom to a street-level scale (default is world view, which
+                        // shows the puck against Africa/America). zoomWhileTracking
+                        // applies once a fix arrives; zoomTo sets it immediately.
+                        map.moveCamera(CameraUpdateFactory.zoomTo(15.0))
+                        lc.zoomWhileTracking(15.0)
+                    } catch (e: Exception) {
+                        android.util.Log.w("TripMapView", "location component failed: ${e.message}")
+                    }
+                }
+            }
         }
     }
 
@@ -148,15 +187,19 @@ fun TripMapView(
             )
         }
 
-        // Frame everything we have.
-        when {
-            d.points.size >= 2 -> {
-                val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
-                try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
-                catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
+        // Frame the recorded track ONLY when not in live mode. In live mode the
+        // LocationComponent owns the camera (it follows the user) — framing the old
+        // track here would yank the view back to where the last trip ended.
+        if (!liveLocation) {
+            when {
+                d.points.size >= 2 -> {
+                    val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
+                    try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
+                    catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
+                }
+                d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
+                else -> { /* leave the default world view */ }
             }
-            d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
-            else -> { /* leave the default world view */ }
         }
     }
 

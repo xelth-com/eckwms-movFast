@@ -57,6 +57,14 @@ data class CityCount(val city: String, val count: Int)
 
 data class DestinationsResult(val cities: List<CityCount>, val results: List<Destination>)
 
+/** Result of POST /api/voice/resolve (Voice Commands P2 — Gemini fallback). */
+data class VoiceResolveResult(
+    val action: String?,     // matched grid action (one of the supplied), or null
+    val needsAudio: Boolean, // true → re-send WITH audio for a multimodal re-listen
+    val reason: String,
+    val source: String       // "gemini" | "off"
+)
+
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
@@ -1150,6 +1158,69 @@ class ScanApiService(private val context: Context) {
      * @param format The format of the document (e.g., "json")
      * @return Result of the submission operation
      */
+    /**
+     * Voice Commands P2 — resolve an unmatched spoken command via the server's
+     * Gemini fallback. Called only on a LOCAL registry miss. [audioWavBase64] is
+     * sent only on the escalation pass (when a prior response set needsAudio).
+     * Returns null on transport failure (caller treats as "KI nicht verfügbar").
+     */
+    suspend fun resolveVoice(
+        mode: String,
+        text: String,
+        commands: List<com.xelth.eckwms_movfast.voice.VoiceCommand>,
+        audioWavBase64: String?,
+    ): VoiceResolveResult? = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+            val url = URL("$baseUrl/api/voice/resolve")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 8000
+            connection.readTimeout = 25000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-API-Key", API_KEY)
+            connection.setRequestProperty(
+                "Authorization",
+                "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+            )
+            connection.doOutput = true
+
+            val cmds = JSONArray()
+            commands.forEach { c ->
+                cmds.put(JSONObject().apply {
+                    put("action", c.action)
+                    put("description", c.description)
+                })
+            }
+            val body = JSONObject().apply {
+                put("mode", mode)
+                put("text", text)
+                put("commands", cmds)
+                if (!audioWavBase64.isNullOrEmpty()) put("audio_wav_base64", audioWavBase64)
+            }
+            OutputStreamWriter(connection.outputStream, "UTF-8").use { it.write(body.toString()); it.flush() }
+
+            val code = connection.responseCode
+            if (code == HttpURLConnection.HTTP_OK) {
+                val resp = connection.inputStream.bufferedReader().use { it.readText() }
+                val o = JSONObject(resp)
+                VoiceResolveResult(
+                    action = if (o.isNull("action")) null else o.optString("action").ifBlank { null },
+                    needsAudio = o.optBoolean("needs_audio", false),
+                    reason = o.optString("reason", ""),
+                    source = o.optString("source", "gemini")
+                )
+            } else {
+                Log.w(TAG, "resolveVoice HTTP $code")
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "resolveVoice failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun submitDocument(type: String, payload: String, format: String): ScanResult = withContext(Dispatchers.IO) {
         Log.d(TAG, "Submitting document of type '$type'")
         try {
