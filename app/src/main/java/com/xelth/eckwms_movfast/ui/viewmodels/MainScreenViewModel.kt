@@ -1413,6 +1413,7 @@ class MainScreenViewModel : ViewModel() {
 
     fun exitTripMode() {
         _isTripMode.value = false
+        tripStartMenu = false
         addLog("Exited Trip Mode")
         initializeGrid()
     }
@@ -1432,44 +1433,63 @@ class MainScreenViewModel : ViewModel() {
         if (_isTripMode.value == true) renderTripGrid()
     }
 
+    // Trip START/STOP sub-menu (replaces the old TripsScreen panel — everything
+    // on hexagons now). `🚗 Fahrt` opens it; ◀ goes back.
+    private var tripStartMenu = false
+
     private fun renderTripGrid() {
         val auto = _tripAutoDetect.value == true
         val recording = _tripRecording.value == true
         val uiItems = mutableListOf<Map<String, Any>>()
-        // LEFTMOST: auto-detect trigger — deliberately the leftmost key so a
-        // right-hander does not hit it by accident.
-        uiItems.add(mapOf(
-            "type" to "button",
-            "label" to if (auto) "🟢\nAuto" else "⚪\nAuto",
-            "color" to if (auto) "#2E7D32" else "#37474F",
-            "action" to "trip_toggle_autodetect"
-        ))
-        uiItems.add(mapOf("type" to "button", "label" to "📷\nPhoto", "color" to "#9C27B0", "action" to "act_photo"))
-        uiItems.add(mapOf("type" to "button", "label" to "🔍\nScan", "color" to "#00BCD4", "action" to "act_scan"))
-        // 🎤 under Photo/Scan — PUSH-TO-TALK (hold to talk). Handled via
-        // onMicPress/onMicRelease in MainScreen (not a normal click action).
-        uiItems.add(mapOf("type" to "button", "label" to "🎤\nHalten", "color" to "#37474F", "action" to "trip_mic"))
-        // Start/Stop flow stays in TripsScreen for now ("start as is")
-        uiItems.add(mapOf(
-            "type" to "button",
-            "label" to if (recording) "🚗\nFahrt●" else "🚗\nFahrt",
-            "color" to if (recording) "#1B5E20" else "#2E7D32",
-            "action" to "trip_open_start"
-        ))
-        // City buttons (cities with waiting tickets). Tap → console shows that
-        // city's tickets. "All" clears the filter.
-        if (tripSelectedCity != null) {
-            uiItems.add(mapOf("type" to "button", "label" to "⬅\nAlle", "color" to "#455A64", "action" to "trip_city_all"))
-        }
-        _tripCities.value?.forEach { c ->
-            val selected = c.city == tripSelectedCity
+
+        if (tripStartMenu) {
+            // ── Start/Stop sub-menu (on hexes, no separate panel) ──
+            uiItems.add(mapOf("type" to "button", "label" to "◀\nZurück", "color" to "#455A64", "action" to "trip_submenu_back"))
+            if (recording) {
+                uiItems.add(mapOf("type" to "button", "label" to "⏹\nStop", "color" to "#C62828", "action" to "trip_stop"))
+            } else {
+                uiItems.add(mapOf("type" to "button", "label" to "🚗\nStart", "color" to "#2E7D32", "action" to "trip_start_business"))
+                uiItems.add(mapOf("type" to "button", "label" to "🔒\nPrivat", "color" to "#546E7A", "action" to "trip_start_private"))
+            }
+            // Odometer + vehicle (the OdometerDialog carries the Kfz selector).
+            uiItems.add(mapOf("type" to "button", "label" to "🔢\nKm/Kfz", "color" to "#37474F", "action" to "trip_odometer"))
+        } else {
+            // LEFTMOST: auto-detect trigger — deliberately the leftmost key so a
+            // right-hander does not hit it by accident.
             uiItems.add(mapOf(
                 "type" to "button",
-                "label" to "${c.city}\n(${c.count})",
-                "color" to if (selected) "#1565C0" else "#37474F",
-                "action" to "trip_city:${c.city}"
+                "label" to if (auto) "🟢\nAuto" else "⚪\nAuto",
+                "color" to if (auto) "#2E7D32" else "#37474F",
+                "action" to "trip_toggle_autodetect"
             ))
+            uiItems.add(mapOf("type" to "button", "label" to "📷\nPhoto", "color" to "#9C27B0", "action" to "act_photo"))
+            uiItems.add(mapOf("type" to "button", "label" to "🔍\nScan", "color" to "#00BCD4", "action" to "act_scan"))
+            // 🎤 under Photo/Scan — PUSH-TO-TALK (hold to talk). Handled via
+            // onMicPress/onMicRelease in MainScreen (not a normal click action).
+            uiItems.add(mapOf("type" to "button", "label" to "🎤\nHalten", "color" to "#37474F", "action" to "trip_mic"))
+            // Opens the on-hex start/stop sub-menu (no panel).
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to if (recording) "🚗\nFahrt●" else "🚗\nNeue Fahrt",
+                "color" to if (recording) "#1B5E20" else "#2E7D32",
+                "action" to "trip_open_start"
+            ))
+            // City buttons (cities with waiting tickets). Tap → console shows that
+            // city's tickets. "All" clears the filter.
+            if (tripSelectedCity != null) {
+                uiItems.add(mapOf("type" to "button", "label" to "⬅\nAlle", "color" to "#455A64", "action" to "trip_city_all"))
+            }
+            _tripCities.value?.forEach { c ->
+                val selected = c.city == tripSelectedCity
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to "${c.city}\n(${c.count})",
+                    "color" to if (selected) "#1565C0" else "#37474F",
+                    "action" to "trip_city:${c.city}"
+                ))
+            }
         }
+
         gridManager.clearAndReset()
         gridManager.placeItems(uiItems, priority = 100)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
@@ -1486,9 +1506,19 @@ class MainScreenViewModel : ViewModel() {
                 refreshTripDestinations(city = action.removePrefix("trip_city:"))
                 "handled"
             }
-            // context-bound — handled in MainScreen (TripManager / navigation)
+            // Open / close the start-stop sub-menu (stays in the grid).
+            action == "trip_open_start" -> { tripStartMenu = true; renderTripGrid(); "handled" }
+            action == "trip_submenu_back" -> { tripStartMenu = false; renderTripGrid(); "handled" }
+            // Start/stop/odometer need MainScreen (TripManager + dialogs +
+            // permissions) — return the action and drop back to the main grid.
+            action == "trip_start_business" || action == "trip_start_private" ||
+                action == "trip_stop" || action == "trip_odometer" -> {
+                tripStartMenu = false
+                renderTripGrid()
+                action
+            }
+            // context-bound — handled in MainScreen
             action == "trip_toggle_autodetect" -> "trip_toggle_autodetect"
-            action == "trip_open_start" -> "trip_open_start"
             else -> "handled"
         }
     }

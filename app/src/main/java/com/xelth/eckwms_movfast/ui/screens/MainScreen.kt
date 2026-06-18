@@ -166,7 +166,9 @@ fun MainScreen(
     var tripPendingRef by remember { mutableStateOf<String?>(null) }
     var tripPendingLabel by remember { mutableStateOf<String?>(null) }
     var tripPendingSource by remember { mutableStateOf("planned") }
+    var tripPendingPurpose by remember { mutableStateOf("business") }
     var tripOdometerStart by remember { mutableStateOf(false) }
+    var tripOdometerEnd by remember { mutableStateOf(false) }
     // Known vehicles for the start picker (Fahrtenbuch); auto-fill when one.
     var tripVehicles by remember {
         mutableStateOf<List<com.xelth.eckwms_movfast.data.local.entity.VehicleEntity>>(emptyList())
@@ -190,15 +192,28 @@ fun MainScreen(
     ) { grants ->
         if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
             com.xelth.eckwms_movfast.trips.TripManager.startTrip(
-                context, manual = true, purpose = "business",
+                context, manual = true, purpose = tripPendingPurpose,
                 purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
                 purposeSource = tripPendingSource
             )
             tripOdometerStart = true
         }
     }
+    // Destination-based start (from a ticket / typed address) → always business.
     val tripStart: (String?, String?, String) -> Unit = { ref, label, src ->
+        tripPendingPurpose = "business"
         tripPendingRef = ref; tripPendingLabel = label; tripPendingSource = src
+        tripStartLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        )
+    }
+    // Hex sub-menu start (no destination): business or private.
+    val tripStartWithPurpose: (String) -> Unit = { purpose ->
+        tripPendingPurpose = purpose
+        tripPendingRef = null; tripPendingLabel = null; tripPendingSource = "manual"
         tripStartLauncher.launch(
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
@@ -698,106 +713,41 @@ fun MainScreen(
                         )
                     }
                 } else if (isTripMode) {
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(consoleHeight + overlap)
-                            .background(Color.Black)
                     ) {
-                        // Thin status header (top)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = tripStatus,
-                                color = Color(0xFF4CAF50),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        // The ecKasse-style interactive console (interlocking
-                        // rows, auto-scroll, bottom → up). Generalized component.
-                        ConsoleList(
-                            rows = tripDestinations.map { dest ->
-                                ConsoleRow(
-                                    id = dest.purposeRef,
-                                    primary = dest.label,
-                                    secondary = listOfNotNull(
-                                        dest.address?.takeIf { it.isNotBlank() },
-                                        dest.city?.takeIf { it.isNotBlank() }
-                                    ).joinToString(" · "),
-                                    trailing = "🚗",
-                                    onClick = { tripStart(dest.purposeRef, dest.label, "planned") }
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(vertical = 4.dp),
-                            emptyHint = "Stadt wählen oder Ziel tippen/🎤"
+                        // Dark MapLibre map behind the trip console — recorded
+                        // track + planned stops, matching the desktop dark map.
+                        com.xelth.eckwms_movfast.ui.screens.TripMapView(
+                            modifier = Modifier.fillMaxSize(),
+                            dark = true
                         )
-                        // Smart Gemini fallback — only when local search missed
-                        // (corrects mis-heard queries: "treutlingen" → "Reutlingen")
-                        if (tripDestinations.isEmpty() && tripQuery.isNotBlank()) {
-                            Box(
+                        // Console stripped to a clean map for now — only the
+                        // (transparent) ticket list overlays; tap a city hex to
+                        // populate it. Status/input/mic intentionally removed.
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            ConsoleList(
+                                rows = tripDestinations.map { dest ->
+                                    ConsoleRow(
+                                        id = dest.purposeRef,
+                                        primary = dest.label,
+                                        secondary = listOfNotNull(
+                                            dest.address?.takeIf { it.isNotBlank() },
+                                            dest.city?.takeIf { it.isNotBlank() }
+                                        ).joinToString(" · "),
+                                        trailing = "🚗",
+                                        onClick = { tripStart(dest.purposeRef, dest.label, "planned") }
+                                    )
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFF4A148C))
-                                    .clickable { mainViewModel.aiSearchTripDestinations(tripQuery.trim()) }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "🤖 Mit KI suchen „${tripQuery.trim()}“",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                        // Start by a dictated/typed address (no specific client)
-                        if (tripQuery.isNotBlank()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFF1B5E20))
-                                    .clickable { tripStart(null, tripQuery.trim(), "text") }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "🚗 Mit „${tripQuery.trim()}“ fahren",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                        // INPUT = the freshest, BOTTOM-most console line
-                        OutlinedTextField(
-                            value = tripQuery,
-                            onValueChange = { tripQuery = it },
-                            placeholder = {
-                                Text(
-                                    if (tripListening) "🎤 hört zu…" else "› Ziel tippen oder 🎤 halten…",
-                                    color = Color.Gray, fontSize = 13.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                )
-                            },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                color = Color(0xFF00FF00),
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    .weight(1f)
+                                    .padding(vertical = 4.dp),
+                                emptyHint = ""
                             )
-                        )
+                        }
                     }
                 } else {
                     // Idle / Smart Context mode
@@ -884,7 +834,11 @@ fun MainScreen(
                             "navigate_explorer" -> navController.navigate("explorerScreen")
                             "navigate_picking" -> navController.navigate("pickingList")
                             "navigate_pos" -> navController.navigate("pos")
-                            "trip_open_start" -> navController.navigate("tripsScreen")
+                            // Trip start/stop sub-menu (replaces the TripsScreen panel)
+                            "trip_start_business" -> tripStartWithPurpose("business")
+                            "trip_start_private" -> tripStartWithPurpose("private")
+                            "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
+                            "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
                             "trip_toggle_autodetect" -> {
                                 val tm = com.xelth.eckwms_movfast.trips.TripManager
                                 if (mainViewModel.tripAutoDetect.value == true) {
@@ -1471,6 +1425,26 @@ fun MainScreen(
                     }
                 }
                 tripOdometerStart = false
+            }
+        )
+    }
+
+    // Trip mode: end-odometer dialog (Stop hex) → write end km, then finalize.
+    if (tripOdometerEnd) {
+        com.xelth.eckwms_movfast.ui.screens.components.OdometerDialog(
+            isStart = false,
+            onDismiss = { tripOdometerEnd = false },
+            vehicles = tripVehicles,
+            onSave = { km, source, photoId, _ ->
+                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                    val target = db.tripDao().getOpenTrip()?.id
+                    if (target != null) {
+                        db.tripDao().setEndOdometer(target, km, source, photoId)
+                    }
+                    com.xelth.eckwms_movfast.trips.TripManager.stopTrip(context, graceful = false)
+                }
+                tripOdometerEnd = false
             }
         )
     }

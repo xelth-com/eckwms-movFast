@@ -53,16 +53,27 @@ import org.maplibre.geojson.FeatureCollection
  *
  * Style/tiles from OpenFreeMap (vector, no API key). Read-only foundation.
  */
-private const val STYLE_URL = "https://tiles.openfreemap.org/styles/bright"
+private const val STYLE_BRIGHT = "https://tiles.openfreemap.org/styles/bright"
+private const val STYLE_DARK = "https://tiles.openfreemap.org/styles/dark"
 
+/** Reusable MapLibre trip map (recorded track + numbered planned stops). Used
+ *  full-screen by [TripMapScreen] and as the dark background of trip mode's
+ *  console. `dark = true` selects the dark OpenFreeMap style (matches the
+ *  desktop dashboard). */
 @Composable
-fun TripMapScreen(onBack: () -> Unit) {
+fun TripMapView(
+    modifier: Modifier = Modifier,
+    dark: Boolean = false,
+) {
     val context = LocalContext.current
+    val styleUrl = if (dark) STYLE_DARK else STYLE_BRIGHT
     val mapView = remember {
         MapLibre.getInstance(context)
         MapView(context)
     }
     var data by remember { mutableStateOf<MapData?>(null) }
+    var mapRef by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
+    var styleReady by remember { mutableStateOf<Style?>(null) }
 
     // MapView has its own lifecycle; drive it from the composition's presence.
     DisposableEffect(Unit) {
@@ -76,64 +87,85 @@ fun TripMapScreen(onBack: () -> Unit) {
         }
     }
 
+    // Load trip data in the background — must NOT gate the base map appearing.
     LaunchedEffect(Unit) {
         data = withContext(Dispatchers.IO) { loadMapData(context) }
     }
 
-    // Once data is loaded, set the style and add the track + stop layers.
-    LaunchedEffect(data) {
-        val d = data ?: return@LaunchedEffect
+    // Show the base map ASAP (independent of the data load). Also relocate the
+    // logo + attribution to the top band (into the status-bar gap).
+    LaunchedEffect(styleUrl) {
         mapView.getMapAsync { map ->
-            map.setStyle(Style.Builder().fromUri(STYLE_URL)) { style ->
-                style.addSource(GeoJsonSource("track-src", FeatureCollection.fromJson(d.trackGeoJson)))
-                style.addLayer(
-                    LineLayer("track-line", "track-src").withProperties(
-                        PropertyFactory.lineColor("#1769aa"),
-                        PropertyFactory.lineWidth(4f),
-                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                    )
-                )
-
-                style.addSource(GeoJsonSource("stops-src", FeatureCollection.fromJson(d.stopsGeoJson)))
-                style.addLayer(
-                    CircleLayer("stops-circle", "stops-src").withProperties(
-                        PropertyFactory.circleRadius(13f),
-                        PropertyFactory.circleColor(
-                            Expression.switchCase(
-                                Expression.get("overdue"), Expression.literal("#c62828"),
-                                Expression.literal("#1769aa")
-                            )
-                        ),
-                        PropertyFactory.circleStrokeColor("#ffffff"),
-                        PropertyFactory.circleStrokeWidth(2f)
-                    )
-                )
-                style.addLayer(
-                    SymbolLayer("stops-num", "stops-src").withProperties(
-                        PropertyFactory.textField(Expression.get("num")),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                        PropertyFactory.textSize(13f),
-                        PropertyFactory.textColor("#ffffff"),
-                        PropertyFactory.textAllowOverlap(true),
-                        PropertyFactory.textIgnorePlacement(true)
-                    )
-                )
-
-                // Frame everything we have.
-                when {
-                    d.points.size >= 2 -> {
-                        val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
-                        try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
-                        catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
-                    }
-                    d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
-                    else -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(51.1, 10.4), 5.0))
-                }
+            mapRef = map
+            map.uiSettings.apply {
+                logoGravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+                attributionGravity = android.view.Gravity.TOP or android.view.Gravity.END
+                setLogoMargins(0, 8, 0, 0)
+                setAttributionMargins(0, 0, 8, 0)
             }
+            map.setStyle(Style.Builder().fromUri(styleUrl)) { style -> styleReady = style }
         }
     }
 
+    // Add the track + stop layers once BOTH the style and the data are ready.
+    LaunchedEffect(data, styleReady) {
+        val d = data ?: return@LaunchedEffect
+        val style = styleReady ?: return@LaunchedEffect
+        val map = mapRef ?: return@LaunchedEffect
+        if (style.getSource("track-src") == null) {
+            style.addSource(GeoJsonSource("track-src", FeatureCollection.fromJson(d.trackGeoJson)))
+            style.addLayer(
+                LineLayer("track-line", "track-src").withProperties(
+                    PropertyFactory.lineColor("#1769aa"),
+                    PropertyFactory.lineWidth(4f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+            )
+            style.addSource(GeoJsonSource("stops-src", FeatureCollection.fromJson(d.stopsGeoJson)))
+            style.addLayer(
+                CircleLayer("stops-circle", "stops-src").withProperties(
+                    PropertyFactory.circleRadius(13f),
+                    PropertyFactory.circleColor(
+                        Expression.switchCase(
+                            Expression.get("overdue"), Expression.literal("#c62828"),
+                            Expression.literal("#1769aa")
+                        )
+                    ),
+                    PropertyFactory.circleStrokeColor("#ffffff"),
+                    PropertyFactory.circleStrokeWidth(2f)
+                )
+            )
+            style.addLayer(
+                SymbolLayer("stops-num", "stops-src").withProperties(
+                    PropertyFactory.textField(Expression.get("num")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                    PropertyFactory.textSize(13f),
+                    PropertyFactory.textColor("#ffffff"),
+                    PropertyFactory.textAllowOverlap(true),
+                    PropertyFactory.textIgnorePlacement(true)
+                )
+            )
+        }
+
+        // Frame everything we have.
+        when {
+            d.points.size >= 2 -> {
+                val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
+                try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
+                catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
+            }
+            d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
+            else -> { /* leave the default world view */ }
+        }
+    }
+
+    AndroidView(factory = { mapView }, modifier = modifier)
+}
+
+/** Full-screen trip map with a header (the 🗺 entry from the Fahrten screen). */
+@Composable
+fun TripMapScreen(onBack: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -149,7 +181,7 @@ fun TripMapScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
-        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+        TripMapView(modifier = Modifier.fillMaxSize())
     }
 }
 
