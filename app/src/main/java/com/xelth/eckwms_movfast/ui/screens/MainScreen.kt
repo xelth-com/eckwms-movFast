@@ -168,6 +168,8 @@ fun MainScreen(
     val voiceRec = remember { com.xelth.eckwms_movfast.voice.VoiceAudioRecorder() }
     val voiceApi = remember { com.xelth.eckwms_movfast.api.ScanApiService(context) }
     var lastVoiceAudioB64 by remember { mutableStateOf<String?>(null) }
+    // Bumped by the "📍 Zu mir" hex → TripMapView recenters on the current position.
+    var mapRecenterTick by remember { mutableStateOf(0) }
     var tripPendingRef by remember { mutableStateOf<String?>(null) }
     var tripPendingLabel by remember { mutableStateOf<String?>(null) }
     var tripPendingSource by remember { mutableStateOf("planned") }
@@ -257,6 +259,8 @@ fun MainScreen(
             "trip_start_private" -> tripStartWithPurpose("private")
             "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
             "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
+            "trip_recenter" -> mapRecenterTick++    // pan map to current position
+
             "trip_toggle_autodetect" -> {
                 val tm = com.xelth.eckwms_movfast.trips.TripManager
                 if (mainViewModel.tripAutoDetect.value == true) {
@@ -769,7 +773,8 @@ fun MainScreen(
                         com.xelth.eckwms_movfast.ui.screens.TripMapView(
                             modifier = Modifier.fillMaxSize(),
                             dark = true,
-                            liveLocation = true   // show & follow current position on entry
+                            liveLocation = true,   // show current position on entry
+                            recenterTick = mapRecenterTick   // 📍 hex → pan to me
                         )
                         // Console stripped to a clean map for now — only the
                         // (transparent) ticket list overlays; tap a city hex to
@@ -1493,7 +1498,16 @@ fun MainScreen(
     if (tripOdometerEnd) {
         com.xelth.eckwms_movfast.ui.screens.components.OdometerDialog(
             isStart = false,
-            onDismiss = { tripOdometerEnd = false },
+            // "Überspringen" / tapping outside STILL stops the trip — the end km is
+            // optional (the distance is estimated from the track, as the dialog
+            // says). Previously this only closed the dialog and left the trip open,
+            // so the "Fahrt●" dot stayed and the trip could not be stopped.
+            onDismiss = {
+                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    com.xelth.eckwms_movfast.trips.TripManager.stopTrip(context, graceful = false)
+                }
+                tripOdometerEnd = false
+            },
             vehicles = tripVehicles,
             onSave = { km, source, photoId, _ ->
                 tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {

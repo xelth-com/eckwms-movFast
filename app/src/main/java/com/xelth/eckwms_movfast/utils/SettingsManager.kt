@@ -221,6 +221,22 @@ object SettingsManager {
     fun saveTripLiveShare(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_LIVE_SHARE, enabled).commit() }
     fun getTripLiveShare(): Boolean = prefs.getBoolean(KEY_TRIP_LIVE_SHARE, false)
 
+    // Last trip-console map camera (lat,lng,zoom). Restored on re-entry so the map
+    // resumes where it was instead of flashing the whole globe + re-framing. Pure
+    // UI state — no location is persisted beyond this last camera centre.
+    private const val KEY_TRIP_MAP_CAM = "trip_map_camera"
+    fun saveTripMapCamera(lat: Double, lng: Double, zoom: Double) {
+        prefs.edit().putString(KEY_TRIP_MAP_CAM, "$lat,$lng,$zoom").apply()
+    }
+    fun getTripMapCamera(): Triple<Double, Double, Double>? {
+        val parts = (prefs.getString(KEY_TRIP_MAP_CAM, null) ?: return null).split(",")
+        if (parts.size != 3) return null
+        val lat = parts[0].toDoubleOrNull() ?: return null
+        val lng = parts[1].toDoubleOrNull() ?: return null
+        val zoom = parts[2].toDoubleOrNull() ?: return null
+        return Triple(lat, lng, zoom)
+    }
+
     // Dynamic repair order prefix (fetched from server /api/status)
     private const val KEY_REPAIR_ORDER_PREFIX = "repair_order_prefix"
     private const val DEFAULT_REPAIR_ORDER_PREFIX = "REP-"

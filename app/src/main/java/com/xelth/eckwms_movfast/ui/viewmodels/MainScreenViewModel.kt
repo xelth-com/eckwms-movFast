@@ -548,7 +548,7 @@ class MainScreenViewModel : ViewModel() {
     private fun placeSystemButtons(
         scanAction: String = "act_scan",
         photoAction: String? = "act_photo",
-        scanLabel: String = "🔍\nScan",
+        scanLabel: String = "🔲\nScan",
         scanColor: String = "#00BCD4",
         photoLabel: String = "📷\nPhoto",
         photoColor: String = "#9C27B0",
@@ -563,7 +563,7 @@ class MainScreenViewModel : ViewModel() {
                 PRIORITIES.SYSTEM_FIXED, "photo"))
         }
         sys.add(SystemElement(1, 4,
-            mapOf("type" to "button", "label" to "🎤", "color" to "#455A64", "action" to "voice_command"),
+            mapOf("type" to "button", "label" to "🎤\nAudio", "color" to "#455A64", "action" to "voice_command"),
             PRIORITIES.SYSTEM_FIXED, "voice"))
         gridManager.placeSystemElements(sys, _isLeftHanded.value ?: false)
     }
@@ -1003,6 +1003,20 @@ class MainScreenViewModel : ViewModel() {
             return "handled"
         }
         return when (action) {
+            // Long-press the red ✕ = jump straight to the root (main menu),
+            // bypassing the short-press step-back behaviour.
+            "act_exit" -> {
+                when {
+                    _isTripMode.value == true -> exitTripMode()
+                    _isRepairMode.value == true -> exitRepairMode()
+                    _isReceivingMode.value == true -> exitReceivingMode()
+                    _isInventoryMode.value == true -> exitInventoryMode()
+                    _isDeviceCheckMode.value == true -> exitDeviceCheckMode()
+                    _isRestockMode.value == true -> exitRestockMode()
+                    else -> {}
+                }
+                "handled"
+            }
             "act_photo" -> "capture_photo_continuous"
             "act_scan" -> "capture_barcode_continuous"
             else -> onButtonClick(action) // fallback to normal click
@@ -1416,7 +1430,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoColor = photoColor, photoLabel = "📷\nPHOTO", scanLabel = "🔍\nSCAN")
+        placeSystemButtons(photoColor = photoColor, photoLabel = "📷\nPHOTO", scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -1535,18 +1549,42 @@ class MainScreenViewModel : ViewModel() {
         } else {
             // LEFTMOST: auto-detect trigger — deliberately the leftmost key so a
             // right-hander does not hit it by accident.
+            // Two settings toggles in the (deliberately hard-to-reach) top-left so
+            // they aren't fat-fingered: auto-detect, and live server tracking.
+            // Both grey (green is reserved for the active Fahrt state), state shown
+            // by a ✓/✕ on top with the label below — same shape as every key.
             uiItems.add(mapOf(
                 "type" to "button",
-                "label" to if (auto) "🟢\nAuto" else "⚪\nAuto",
-                "color" to if (auto) "#2E7D32" else "#37474F",
+                "label" to if (auto) "✓ Auto\nStart" else "✕ Auto\nStart",
+                "color" to "#455A64",
                 "action" to "trip_toggle_autodetect"
             ))
+            // Live server tracking (consent to be watched live on the dashboard).
+            // Default OFF; this is the opt-in the driver flips when they want to be
+            // visible. Toggling only sets the flag — no location leaves the device
+            // unless a business trip is actually recording.
+            val liveShare = com.xelth.eckwms_movfast.utils.SettingsManager.getTripLiveShare()
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to if (liveShare) "✓ Live\nServer" else "✕ Live\nServer",
+                "color" to "#455A64",
+                "action" to "trip_toggle_liveshare"
+            ))
+            // 📍 Recenter the map on the current position (keeps zoom). A hex here —
+            // no overlay button on the map (plenty of free hexes).
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to "📍\nZu mir",
+                "color" to "#37474F",
+                "action" to "trip_recenter"
+            ))
             // Photo / Scan / 🎤 are pinned globally via placeSystemButtons.
-            // Opens the on-hex start/stop sub-menu (no panel).
+            // Opens the on-hex start/stop sub-menu (no panel). Colour reflects the
+            // trip state: GREEN while a Fahrt is running, GREY when idle.
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to if (recording) "🚗\nFahrt●" else "🚗\nNeue Fahrt",
-                "color" to if (recording) "#1B5E20" else "#2E7D32",
+                "color" to if (recording) "#2E7D32" else "#455A64",
                 "action" to "trip_open_start"
             ))
             // City buttons (cities with waiting tickets). Tap → console shows that
@@ -1574,7 +1612,17 @@ class MainScreenViewModel : ViewModel() {
 
     private fun handleTripButtonClick(action: String): String {
         return when {
-            action == "act_exit" -> { exitTripMode(); "handled" }
+            // Red ✕ short press = step BACK one level (long press exits to root,
+            // handled in onButtonLongClick): sub-menu → main grid, city filter →
+            // all cities, otherwise leave trip mode.
+            action == "act_exit" -> {
+                when {
+                    tripStartMenu -> { tripStartMenu = false; renderTripGrid() }
+                    tripSelectedCity != null -> refreshTripDestinations()
+                    else -> exitTripMode()
+                }
+                "handled"
+            }
             action == "act_photo" -> "capture_photo"
             action == "act_scan" -> "capture_barcode"
             action == "trip_city_all" -> { refreshTripDestinations(); "handled" }
@@ -1593,8 +1641,19 @@ class MainScreenViewModel : ViewModel() {
                 renderTripGrid()
                 action
             }
-            // context-bound — handled in MainScreen
+            // context-bound — handled in MainScreen (needs the permission flow)
             action == "trip_toggle_autodetect" -> "trip_toggle_autodetect"
+            // Map recenter — handled in MainScreen (it owns the map view).
+            action == "trip_recenter" -> "trip_recenter"
+            // Live server tracking: a pure consent flag — flip it here, no
+            // permission needed (the recording service re-reads it per fix).
+            action == "trip_toggle_liveshare" -> {
+                val cur = com.xelth.eckwms_movfast.utils.SettingsManager.getTripLiveShare()
+                com.xelth.eckwms_movfast.utils.SettingsManager.saveTripLiveShare(!cur)
+                addLog(if (!cur) "🛰 Live-Tracking AN" else "Live-Tracking AUS")
+                renderTripGrid()
+                "handled"
+            }
             else -> "handled"
         }
     }
@@ -2839,7 +2898,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoLabel = "📷\nPHOTO", scanLabel = "🔍\nSCAN")
+        placeSystemButtons(photoLabel = "📷\nPHOTO", scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -3676,7 +3735,7 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "🔢\nNUM", "color" to numColor, "action" to "act_numpad", "enabled" to numEnabled))
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoColor = photoColor, photoLabel = photoLabel, scanLabel = "🔍\nSCAN")
+        placeSystemButtons(photoColor = photoColor, photoLabel = photoLabel, scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
@@ -3808,7 +3867,7 @@ class MainScreenViewModel : ViewModel() {
         // Scan + 🎤 are pinned via placeSystemButtons. Restock has no Photo action.
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoAction = null, scanLabel = "🔍\nSCAN")
+        placeSystemButtons(photoAction = null, scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))

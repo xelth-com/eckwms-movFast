@@ -76,6 +76,8 @@ fun TripMapView(
     // camera on it, instead of framing the last recorded track. Used by the trip
     // console on entry. The full history screen leaves this false → fits the track.
     liveLocation: Boolean = false,
+    // Incremented by the "📍 Zu mir" hex → pan to the current position (keep zoom).
+    recenterTick: Int = 0,
 ) {
     val context = LocalContext.current
     val styleUrl = if (dark) STYLE_DARK else STYLE_BRIGHT
@@ -86,6 +88,9 @@ fun TripMapView(
     var data by remember { mutableStateOf<MapData?>(null) }
     var mapRef by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
     var styleReady by remember { mutableStateOf<Style?>(null) }
+    // True once we've restored the saved camera → skip the auto-framing so the map
+    // resumes exactly where it was left (no globe flash, no re-zoom).
+    var camRestored by remember { mutableStateOf(false) }
 
     // MapView has its own lifecycle; drive it from the composition's presence.
     DisposableEffect(Unit) {
@@ -93,6 +98,26 @@ fun TripMapView(
         mapView.onStart()
         mapView.onResume()
         onDispose {
+            // Remember the camera so re-entry resumes here (no globe flash). This
+            // is the only thing persisted — a UI camera centre, never a track.
+            if (liveLocation) {
+                try {
+                    mapRef?.cameraPosition?.let { cp ->
+                        cp.target?.let { t ->
+                            com.xelth.eckwms_movfast.utils.SettingsManager
+                                .saveTripMapCamera(t.latitude, t.longitude, cp.zoom)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            // Privacy: kill location the moment the map leaves the screen. The
+            // current-position puck is DISPLAY-ONLY — it is never uploaded or
+            // persisted, and must not keep running when you're not on the map.
+            try {
+                mapRef?.locationComponent?.let { lc ->
+                    if (lc.isLocationComponentActivated) lc.isLocationComponentEnabled = false
+                }
+            } catch (_: Exception) {}
             mapView.onPause()
             mapView.onStop()
             mapView.onDestroy()
@@ -115,6 +140,14 @@ fun TripMapView(
                 setLogoMargins(0, 8, 0, 0)
                 setAttributionMargins(0, 0, 8, 0)
             }
+            // Resume the last camera immediately (before tiles load) so re-entering
+            // the map doesn't flash the whole globe and re-frame from scratch.
+            if (liveLocation) {
+                com.xelth.eckwms_movfast.utils.SettingsManager.getTripMapCamera()?.let { (lat, lng, z) ->
+                    map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), z))
+                    camRestored = true
+                }
+            }
             map.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
                 styleReady = style
                 // Live current-position puck (blue dot) — only when requested AND
@@ -131,13 +164,11 @@ fun TripMapView(
                                 .build()
                         )
                         lc.isLocationComponentEnabled = true
-                        lc.cameraMode = CameraMode.TRACKING
                         lc.renderMode = RenderMode.COMPASS
-                        // Zoom to a street-level scale (default is world view, which
-                        // shows the puck against Africa/America). zoomWhileTracking
-                        // applies once a fix arrives; zoomTo sets it immediately.
-                        map.moveCamera(CameraUpdateFactory.zoomTo(15.0))
-                        lc.zoomWhileTracking(15.0)
+                        // Show the puck but DON'T let it own the camera (TRACKING).
+                        // We frame manually below so the view fits BOTH the recorded
+                        // track and the current position, at a sensible zoom.
+                        lc.cameraMode = CameraMode.NONE
                     } catch (e: Exception) {
                         android.util.Log.w("TripMapView", "location component failed: ${e.message}")
                     }
@@ -187,19 +218,47 @@ fun TripMapView(
             )
         }
 
-        // Frame the recorded track ONLY when not in live mode. In live mode the
-        // LocationComponent owns the camera (it follows the user) — framing the old
-        // track here would yank the view back to where the last trip ended.
-        if (!liveLocation) {
-            when {
-                d.points.size >= 2 -> {
-                    val b = LatLngBounds.Builder().apply { d.points.forEach { include(it) } }.build()
-                    try { map.moveCamera(CameraUpdateFactory.newLatLngBounds(b, 80)) }
-                    catch (e: Exception) { map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 11.0)) }
-                }
-                d.points.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(d.points.first(), 13.0))
-                else -> { /* leave the default world view */ }
+        // Frame the view — UNLESS the saved camera was already restored (then we
+        // keep the user exactly where they left off). Live mode (trip console): fit
+        // BOTH the most recent surviving track AND the current position at a sensible
+        // zoom (poll briefly for the first GPS fix). History screen: fit track only.
+        if (!camRestored) {
+            val framePts = ArrayList(d.points)
+            if (liveLocation) {
+                awaitFirstLocation(map, context)?.let { framePts.add(it) }
             }
+            when {
+                framePts.size >= 2 -> {
+                    val b = LatLngBounds.Builder().apply { framePts.forEach { include(it) } }.build()
+                    // Fit the points, but CAP the zoom: a tiny/clustered track would
+                    // otherwise snap to max zoom (street/house level). Cap at 14 so
+                    // houses stay hidden; a real, spread-out trip fits below 14 anyway.
+                    val cam = try { map.getCameraForLatLngBounds(b, intArrayOf(140, 140, 140, 140)) }
+                              catch (e: Exception) { null }
+                    val target = cam?.target
+                    if (target != null) {
+                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(target, minOf(cam.zoom, 14.0)))
+                    } else {
+                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(framePts.first(), 13.0))
+                    }
+                }
+                // Only the current position (no trip to give a size reference): use a
+                // district-level zoom — houses aren't drawn yet at 13, one step closer
+                // and they appear. (With a trip, fitBounds above sets the scale.)
+                framePts.size == 1 -> map.moveCamera(CameraUpdateFactory.newLatLngZoom(framePts.first(), 13.0))
+                else -> { /* no track and no fix yet → leave the default view */ }
+            }
+        }
+    }
+
+    // 📍 "Zu mir" (from the grid hex): pan to the current position, KEEPING zoom
+    // (newLatLng, not newLatLngZoom). Skip the initial 0 so it doesn't fire on open.
+    LaunchedEffect(recenterTick) {
+        if (recenterTick <= 0) return@LaunchedEffect
+        val m = mapRef ?: return@LaunchedEffect
+        val loc = try { m.locationComponent.lastKnownLocation } catch (e: Exception) { null }
+        if (loc != null) {
+            m.animateCamera(CameraUpdateFactory.newLatLng(LatLng(loc.latitude, loc.longitude)))
         }
     }
 
@@ -226,6 +285,25 @@ fun TripMapScreen(onBack: () -> Unit) {
         }
         TripMapView(modifier = Modifier.fillMaxSize())
     }
+}
+
+/** Poll the location component's last fix for up to ~6s, for one-time camera
+ *  framing. Display-only: this position is NEVER uploaded or persisted, and the
+ *  location component is disabled when the map leaves the screen. */
+@SuppressLint("MissingPermission")
+private suspend fun awaitFirstLocation(
+    map: org.maplibre.android.maps.MapLibreMap,
+    context: Context
+): LatLng? {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+        != PackageManager.PERMISSION_GRANTED
+    ) return null
+    repeat(15) {
+        val loc = try { map.locationComponent.lastKnownLocation } catch (e: Exception) { null }
+        if (loc != null) return LatLng(loc.latitude, loc.longitude)
+        kotlinx.coroutines.delay(400)
+    }
+    return null
 }
 
 private data class MapData(
