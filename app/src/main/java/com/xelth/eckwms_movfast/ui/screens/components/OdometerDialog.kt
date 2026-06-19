@@ -57,6 +57,10 @@ fun OdometerDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Free the hardware-scanner camera while the (external) camera app is open — the
+    // scan engine and the camera share one ISP, so an unbracketed camera open can
+    // wedge the scanner until reboot (see TECH_DEBT scanner/ISP item).
+    val scanMgr = (context.applicationContext as? com.xelth.eckwms_movfast.EckwmsApp)?.scannerManager
     var kmText by remember { mutableStateOf("") }
     var source by remember { mutableStateOf("manual") }
     var photoId by remember { mutableStateOf<String?>(null) }
@@ -72,6 +76,7 @@ fun OdometerDialog(
     val takePhoto = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
+        scanMgr?.resumeScanService()   // camera returned → re-acquire scan engine
         if (bitmap != null) {
             ocrRunning = true
             scope.launch {
@@ -103,6 +108,7 @@ fun OdometerDialog(
     val takePlatePhoto = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
+        scanMgr?.resumeScanService()   // camera returned → re-acquire scan engine
         if (bitmap != null) {
             plateOcrRunning = true
             scope.launch {
@@ -145,7 +151,7 @@ fun OdometerDialog(
                     singleLine = true
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { takePhoto.launch(null) }, enabled = !ocrRunning) {
+                    OutlinedButton(onClick = { scanMgr?.suspendScanService(); takePhoto.launch(null) }, enabled = !ocrRunning) {
                         Text(if (ocrRunning) "OCR…" else "📷 Foto + OCR")
                     }
                     if (photoId != null) {
@@ -177,7 +183,7 @@ fun OdometerDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { takePlatePhoto.launch(null) }, enabled = !plateOcrRunning) {
+                        OutlinedButton(onClick = { scanMgr?.suspendScanService(); takePlatePhoto.launch(null) }, enabled = !plateOcrRunning) {
                             Text(if (plateOcrRunning) "OCR…" else "📷 Kennzeichen scannen")
                         }
                         if (platePhotoId != null) {

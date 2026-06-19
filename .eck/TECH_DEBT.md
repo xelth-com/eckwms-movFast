@@ -44,10 +44,14 @@
      lifecycle: free the scan engine's camera while any CameraX/ML Kit screen is
      open, re-acquire on exit. Verified: the camera→exit→side-button cycle that
      used to kill the scanner now survives.
+   - **Update 2026-06-19:** audited all camera opens — the only in-process CameraX
+     (`ProcessCameraProvider`) is `CameraScanScreen` (bracketed; pairing/QR route
+     through it too). The external camera in `OdometerDialog` (odometer + plate
+     photos, in the trip flow) is now ALSO bracketed (suspend on launch, resume in
+     the result callback). No unbracketed camera opens remain.
    - **Residual risk:** if `CameraScanScreen`'s process is killed without
      `onDispose`, `resumeScanService` won't run (app restart re-inits the scanner,
-     so it self-heals). Other camera entry points (pairing/QR in `ScanScreen`) are
-     NOT yet bracketed. The scan SDK is a vendor `.aar` (`xcscanner_qrcode_v1.3.56.1.7`,
+     so it self-heals). The scan SDK is a vendor `.aar` (`xcscanner_qrcode_v1.3.56.1.7`,
      newest in git; the older `1.1.x` line is also in `app/libs/` but unused) — a
      newer XCheng SDK may handle coexistence natively. The bug was intermittent;
      keep watching. If it recurs, grab `dumpsys media.camera` at the moment of death.

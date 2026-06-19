@@ -41,8 +41,41 @@ object VoiceCommandManager {
                 description = "Alle Städte",
             ),
         ),
-        // "repair", "receiving", "inventory", "device_check", "restock", "main"
-        // intentionally empty until each mode seeds its own commands.
+        "repair" to listOf(
+            VoiceCommand(listOf("scan", "scannen", "scanner"), "act_scan", "Scannen"),
+            VoiceCommand(listOf("foto", "photo", "bild"), "act_photo", "Foto"),
+            VoiceCommand(listOf("rückgängig", "rueckgaengig", "undo", "zurücknehmen"), "act_undo", "Rückgängig"),
+            VoiceCommand(listOf("schließen", "schliessen", "beenden", "exit"), "act_exit", "Schließen"),
+        ),
+        "receiving" to listOf(
+            VoiceCommand(listOf("scan", "scannen"), "act_scan", "Scannen"),
+            VoiceCommand(listOf("foto", "photo", "bild"), "act_photo", "Foto"),
+            VoiceCommand(listOf("speichern", "sichern", "save"), "act_save_receiving", "Speichern"),
+            VoiceCommand(listOf("ok", "fertig", "weiter", "bestätigen", "bestaetigen"), "act_contents_ok", "OK / Weiter"),
+            VoiceCommand(listOf("schließen", "schliessen", "beenden", "exit"), "act_exit", "Schließen"),
+        ),
+        "inventory" to listOf(
+            VoiceCommand(listOf("scan", "scannen"), "act_scan", "Scannen"),
+            VoiceCommand(listOf("foto", "photo", "bild"), "act_photo", "Foto"),
+            VoiceCommand(listOf("senden", "absenden", "submit", "übermitteln", "uebermitteln"), "act_submit_inventory", "Senden"),
+            VoiceCommand(listOf("löschen", "loeschen", "leeren", "clear"), "act_clear_inventory", "Löschen"),
+            VoiceCommand(listOf("box", "karton", "umschalten"), "act_toggle_box", "Box/Item"),
+            VoiceCommand(listOf("schließen", "schliessen", "beenden", "exit"), "act_exit", "Schließen"),
+        ),
+        "device_check" to listOf(
+            VoiceCommand(listOf("scan", "scannen"), "act_scan", "Scannen"),
+            VoiceCommand(listOf("foto", "photo", "bild"), "act_photo", "Foto"),
+            VoiceCommand(listOf("hochladen", "upload", "senden"), "act_upload_check", "Hochladen"),
+            VoiceCommand(listOf("rückgängig", "rueckgaengig", "undo"), "act_undo", "Rückgängig"),
+            VoiceCommand(listOf("schließen", "schliessen", "beenden", "exit"), "act_exit", "Schließen"),
+        ),
+        "restock" to listOf(
+            VoiceCommand(listOf("scan", "scannen"), "act_scan", "Scannen"),
+            VoiceCommand(listOf("senden", "absenden", "submit"), "act_submit_restock", "Senden"),
+            VoiceCommand(listOf("löschen", "loeschen", "leeren", "clear"), "act_clear_restock", "Löschen"),
+            VoiceCommand(listOf("schließen", "schliessen", "beenden", "exit"), "act_exit", "Schließen"),
+        ),
+        // "main" intentionally empty (the menu's labels are self-explanatory).
     )
 
     fun commandsFor(mode: String): List<VoiceCommand> = registry[mode] ?: emptyList()
