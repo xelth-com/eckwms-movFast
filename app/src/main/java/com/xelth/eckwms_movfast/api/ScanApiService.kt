@@ -65,6 +65,14 @@ data class VoiceResolveResult(
     val source: String       // "gemini" | "off"
 )
 
+/**
+ * Outcome of a server write that the offline SyncWorker may retry.
+ * Distinguishes a permanent server rejection (4xx — retrying is pointless and
+ * would silently mask the rejection) from a transient failure (network / 5xx —
+ * worth retrying). See picking_confirm/picking_validate handling.
+ */
+enum class SyncOutcome { SUCCESS, REJECTED, FAILED }
+
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
@@ -2453,7 +2461,7 @@ class ScanApiService(private val context: Context) {
         return@withContext null
     }
 
-    suspend fun confirmPickLine(pickingId: String, lineId: String, qtyDone: Double, productBarcode: String, locationBarcode: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun confirmPickLine(pickingId: String, lineId: String, qtyDone: Double, productBarcode: String, locationBarcode: String): SyncOutcome = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/pickings/$pickingId/lines/$lineId/confirm")
@@ -2472,17 +2480,20 @@ class ScanApiService(private val context: Context) {
             }
             connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
 
-            val success = connection.responseCode == HttpURLConnection.HTTP_OK
-            if (success) Log.i(TAG, "Confirmed pick line $lineId (qty=$qtyDone)")
-            else Log.w(TAG, "Confirm failed: HTTP ${connection.responseCode}")
-            return@withContext success
+            val outcome = classifyWrite(connection.responseCode)
+            when (outcome) {
+                SyncOutcome.SUCCESS -> Log.i(TAG, "Confirmed pick line $lineId (qty=$qtyDone)")
+                SyncOutcome.REJECTED -> Log.w(TAG, "Confirm REJECTED (no retry): HTTP ${connection.responseCode}")
+                SyncOutcome.FAILED -> Log.w(TAG, "Confirm failed (retryable): HTTP ${connection.responseCode}")
+            }
+            return@withContext outcome
         } catch (e: Exception) {
             Log.e(TAG, "Error confirming pick line", e)
-            return@withContext false
+            return@withContext SyncOutcome.FAILED
         }
     }
 
-    suspend fun validatePicking(pickingId: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun validatePicking(pickingId: String): SyncOutcome = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/pickings/$pickingId/validate")
@@ -2495,14 +2506,24 @@ class ScanApiService(private val context: Context) {
             connection.doOutput = true
             connection.outputStream.bufferedWriter().use { it.write("{}") }
 
-            val success = connection.responseCode == HttpURLConnection.HTTP_OK
-            if (success) Log.i(TAG, "Validated picking $pickingId")
-            else Log.w(TAG, "Validate failed: HTTP ${connection.responseCode}")
-            return@withContext success
+            val outcome = classifyWrite(connection.responseCode)
+            when (outcome) {
+                SyncOutcome.SUCCESS -> Log.i(TAG, "Validated picking $pickingId")
+                SyncOutcome.REJECTED -> Log.w(TAG, "Validate REJECTED (no retry): HTTP ${connection.responseCode}")
+                SyncOutcome.FAILED -> Log.w(TAG, "Validate failed (retryable): HTTP ${connection.responseCode}")
+            }
+            return@withContext outcome
         } catch (e: Exception) {
             Log.e(TAG, "Error validating picking", e)
-            return@withContext false
+            return@withContext SyncOutcome.FAILED
         }
+    }
+
+    /** Map an HTTP status to a sync outcome: 2xx ok, 4xx permanent reject, else retry. */
+    private fun classifyWrite(code: Int): SyncOutcome = when {
+        code in 200..299 -> SyncOutcome.SUCCESS
+        code in 400..499 -> SyncOutcome.REJECTED
+        else -> SyncOutcome.FAILED
     }
 
     // --- Multi-User API ---

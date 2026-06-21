@@ -680,13 +680,21 @@ fun WorkflowDrivenUI(
                     ) { Text("Capture Photo") }
                     "showMap" -> {
                         val whId = currentStep.variable ?: "1"
-                        // TODO: Extract target location barcode from step params when WorkflowStep has params map
-                        // For now, placeholder for demo
-                        val target = "p-LOC-001"
-                        
+                        // Target location barcode comes from the step's params (set by the
+                        // workflow definition). Accept a few common key names; if none is
+                        // configured, open the map with no highlight (route's target is nullable).
+                        val target = currentStep.params?.let { p ->
+                            p["target"] ?: p["targetLocation"] ?: p["location"] ?: p["barcode"]
+                        }?.takeIf { it.isNotBlank() }
+
                         Button(
-                            onClick = { 
-                                navController.navigate("warehouseMap/$whId?target=$target") 
+                            onClick = {
+                                val route = if (target != null) {
+                                    "warehouseMap/$whId?target=${java.net.URLEncoder.encode(target, "UTF-8")}"
+                                } else {
+                                    "warehouseMap/$whId"
+                                }
+                                navController.navigate(route)
                             },
                             modifier = Modifier.focusable(false)
                         ) { Text("Show Map") }

@@ -31,7 +31,9 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class BreadcrumbItem(val id: Long, val name: String)
+data class BreadcrumbItem(val id: String, val name: String)
+
+private fun encId(id: String): String = java.net.URLEncoder.encode(id, "UTF-8")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,12 +60,12 @@ fun ExplorerScreen(onBack: () -> Unit) {
 
     var isLoading by remember { mutableStateOf(false) }
 
-    fun loadLocations(parentId: Long?) {
+    fun loadLocations(parentId: String?) {
         scope.launch {
             isLoading = true
             showContents = false
             locationContents = emptyList()
-            val param = if (parentId != null) "?parent_id=$parentId" else ""
+            val param = if (parentId != null) "?parent_id=${encId(parentId)}" else ""
             val result = api.fetchExplorerData("/api/explorer/locations$param")
             if (result is ScanResult.Success) {
                 locations = parseJsonArray(result.data)
@@ -72,10 +74,10 @@ fun ExplorerScreen(onBack: () -> Unit) {
         }
     }
 
-    fun loadLocationContents(locationId: Long) {
+    fun loadLocationContents(locationId: String) {
         scope.launch {
             isLoading = true
-            val result = api.fetchExplorerData("/api/explorer/locations/$locationId/contents")
+            val result = api.fetchExplorerData("/api/explorer/locations/${encId(locationId)}/contents")
             if (result is ScanResult.Success) {
                 locationContents = parseJsonArray(result.data)
                 showContents = true
@@ -98,10 +100,10 @@ fun ExplorerScreen(onBack: () -> Unit) {
         }
     }
 
-    fun loadProductLocations(productId: Long) {
+    fun loadProductLocations(productId: String) {
         scope.launch {
             isLoading = true
-            val result = api.fetchExplorerData("/api/explorer/products/$productId/locations")
+            val result = api.fetchExplorerData("/api/explorer/products/${encId(productId)}/locations")
             if (result is ScanResult.Success) {
                 productLocations = parseJsonArray(result.data)
             }
@@ -112,7 +114,7 @@ fun ExplorerScreen(onBack: () -> Unit) {
     fun loadProductDetails(prod: JSONObject) {
         selectedProduct = prod
         productAttachments = emptyList()
-        loadProductLocations(prod.optLong("id"))
+        loadProductLocations(prod.optString("id"))
 
         // Fetch attachments using barcode (server auto-resolves EAN -> smart code)
         val barcode = prod.optString("barcode", "")
@@ -370,8 +372,8 @@ fun ExplorerScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun LocationCard(loc: JSONObject, onDrillDown: (Long, String) -> Unit, onViewContents: (Long) -> Unit) {
-    val id = loc.optLong("id")
+private fun LocationCard(loc: JSONObject, onDrillDown: (String, String) -> Unit, onViewContents: (String) -> Unit) {
+    val id = loc.optString("id")
     val name = loc.optString("name", "?")
     val childCount = loc.optInt("child_count", 0)
     val itemCount = loc.optInt("item_count", 0)

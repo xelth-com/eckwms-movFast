@@ -170,31 +170,19 @@ class SyncWorker(
                 }
                 "picking_confirm" -> {
                     val p = JSONObject(job.payload)
-                    val result = apiService.confirmPickLine(
+                    val outcome = apiService.confirmPickLine(
                         p.getString("picking_id"),
                         p.getString("line_id"),
                         p.getDouble("qty_done"),
                         p.optString("scanned_product_barcode"),
                         p.optString("scanned_location_barcode")
                     )
-                    if (result) {
-                        database.syncQueueDao().deleteJob(job)
-                        Log.d(TAG, "Picking confirm job ${job.id} delivered")
-                        Result.success()
-                    } else {
-                        handleRetry(job)
-                    }
+                    handleSyncOutcome(job, outcome, "Picking confirm")
                 }
                 "picking_validate" -> {
                     val p = JSONObject(job.payload)
-                    val result = apiService.validatePicking(p.getString("picking_id"))
-                    if (result) {
-                        database.syncQueueDao().deleteJob(job)
-                        Log.d(TAG, "Picking validate job ${job.id} delivered")
-                        Result.success()
-                    } else {
-                        handleRetry(job)
-                    }
+                    val outcome = apiService.validatePicking(p.getString("picking_id"))
+                    handleSyncOutcome(job, outcome, "Picking validate")
                 }
                 "visit_event" -> {
                     val result = apiService.pushVisitEvent(job.payload)
@@ -599,6 +587,35 @@ class SyncWorker(
                 if (cropped != it) cropped.recycle()
             }
         } else cropped
+    }
+
+    /**
+     * Resolve a [SyncOutcome] for a queued write:
+     *  - SUCCESS  → delete the job.
+     *  - REJECTED → server permanently rejected it (4xx); drop it now instead of
+     *    retrying until MAX_RETRIES silently swallows the rejection. Mark any
+     *    linked scan FAILED so the rejection is not lost.
+     *  - FAILED   → transient (network / 5xx); retry with backoff.
+     */
+    private suspend fun handleSyncOutcome(
+        job: com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity,
+        outcome: com.xelth.eckwms_movfast.api.SyncOutcome,
+        label: String
+    ): Result {
+        return when (outcome) {
+            com.xelth.eckwms_movfast.api.SyncOutcome.SUCCESS -> {
+                database.syncQueueDao().deleteJob(job)
+                Log.d(TAG, "$label job ${job.id} delivered")
+                Result.success()
+            }
+            com.xelth.eckwms_movfast.api.SyncOutcome.REJECTED -> {
+                Log.e(TAG, "$label job ${job.id} REJECTED by server — dropping (no retry)")
+                job.scanId?.let { database.scanDao().updateScanStatus(it, "FAILED") }
+                database.syncQueueDao().deleteJob(job)
+                Result.failure()
+            }
+            com.xelth.eckwms_movfast.api.SyncOutcome.FAILED -> handleRetry(job)
+        }
     }
 
     private suspend fun handleRetry(job: com.xelth.eckwms_movfast.data.local.entity.SyncQueueEntity): Result {

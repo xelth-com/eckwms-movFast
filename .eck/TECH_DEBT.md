@@ -2,8 +2,12 @@
 
 ## Active TODOs in Code
 
-1. **`ScanScreen.kt:683`** — `TODO: Extract target location barcode from step params`
-   "showMap" workflow step uses placeholder `p-LOC-001` for demo. Should extract real location from WorkflowStep params map.
+1. ~~**`ScanScreen.kt:683`** — `TODO: Extract target location barcode from step params`~~
+   ✅ **FIXED 2026-06-21.** `WorkflowStep` already carries `params: Map<String,String>?`, so
+   the `showMap` step now reads the target barcode from `params` (keys `target` /
+   `targetLocation` / `location` / `barcode`, first non-blank wins, URL-encoded). If no
+   target is configured it opens the map with **no** highlight (the `warehouseMap` route's
+   `target` arg is nullable) instead of the fake `p-LOC-001` placeholder.
 
 ## Structural Issues
 
@@ -17,9 +21,21 @@
 
 6. **Pairing code detection still uses `startsWith("ECK")`** — In `ScanRecoveryViewModel.handleGeneralScanResult()`, the pairing code detection (`effectiveCode.startsWith("ECK") && !isLinkBarcode`) still assumes pairing codes start with "ECK". This should be configurable if self-hosted instances use different pairing prefixes.
 
-7. **ExplorerScreen still parses entity IDs as Long** — `loadProductLocations(prod.optLong("id"))` etc. The new 9eck WMS returns String UUIDs / record ids; Explorer navigation will get `0` for non-numeric ids. Migrate Explorer to String ids like the rest of the app (commit d768363 did this everywhere else).
+7. ~~**ExplorerScreen still parses entity IDs as Long**~~ ✅ **FIXED 2026-06-21.**
+   Migrated the whole screen to String ids (the WMS returns `record::id(id)` String ids;
+   `optLong` was yielding `0`): `BreadcrumbItem.id`, `loadLocations`/`loadLocationContents`/
+   `loadProductLocations` params, `LocationCard` callbacks, and `loc.optString("id")`. Ids put
+   into URLs are URL-encoded via a local `encId()` helper (matches the app's
+   `java.net.URLEncoder` convention).
 
-8. **picking_confirm retry can mask legit rejection** — `confirmPickLine()` returns `false` for both network failure and server rejection. The offline queue retries up to MAX_RETRIES then drops. Server should distinguish 4xx (drop) from network error (retry).
+8. ~~**picking_confirm retry can mask legit rejection**~~ ✅ **FIXED 2026-06-21.**
+   Introduced `enum SyncOutcome { SUCCESS, REJECTED, FAILED }`; `confirmPickLine()` /
+   `validatePicking()` now return it (`classifyWrite`: 2xx→SUCCESS, 4xx→REJECTED,
+   5xx/IO→FAILED). `SyncWorker.handleSyncOutcome()` **drops** a REJECTED job (marks any
+   linked scan FAILED) instead of retrying-until-silently-dropped, and only retries FAILED.
+   Online path: `PickingViewModel.onProductScanned` rolls back the optimistic local update
+   and surfaces the rejection on REJECTED (queues only on FAILED); `validateAndComplete`
+   refuses to mark a picking complete on REJECTED.
 
 9. **Hardware scanner ↔ app camera share one ISP (fragile) — mitigated 2026-06-18.**
    On this XCheng/MTK PDA the laser/imager scan engine IS a camera sensor
