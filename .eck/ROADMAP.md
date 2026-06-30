@@ -203,4 +203,5 @@ relay must never be the authoritative path for a paid mesh.
     `200 {"qr":"ECK$2$<master-uuid>$<key>$<relay-urls>$<invite-token>"}` (free QR carries
     9eck.com in its relay URLs) / `404` invalid-or-expired. Mint short-lived codes per
     master + invite-token; map code → that QR. Until this lands the Android side returns
-    "invalid/expired" (no resolver endpoint yet).
+    "invalid/expired" (no resolver endpoint yet). **Full spec for the 9eck coder:
+    `.eck/PAIR_CODE_ONBOARDING.md`.**
