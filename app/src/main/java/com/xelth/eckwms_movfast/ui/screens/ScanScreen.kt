@@ -361,7 +361,10 @@ fun OrderConsoleScreen(
                     Text("Camera Scan")
                 }
                 Button(
-                    onClick = { navController.navigate("pairingScreen") },
+                    onClick = {
+                        viewModel.clearPairingLog()
+                        navController.navigate("cameraScanScreen?scan_mode=pairing")
+                    },
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondary
@@ -635,7 +638,8 @@ fun ScanningStatusCard(
             }
             OutlinedButton(
                 onClick = {
-                    navController.navigate("pairingScreen")
+                    viewModel.clearPairingLog()
+                    navController.navigate("cameraScanScreen?scan_mode=pairing")
                 },
                 modifier = Modifier
                     .fillMaxWidth()

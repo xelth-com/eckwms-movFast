@@ -197,7 +197,7 @@ class RelayClient(
         kind: String,
         payload: JSONObject,
         senderUuid: String = instanceId
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): RelayDispatch = withContext(Dispatchers.IO) {
         try {
             val conn = openPost("$baseUrl/E/m/dispatch/$targetUuid")
             val body = JSONObject().apply {
@@ -211,17 +211,43 @@ class RelayClient(
             conn.outputStream.write(body.toString().toByteArray())
 
             val code = conn.responseCode
-            if (code !in 200..299) {
-                val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull() ?: ""
-                return@withContext Result.failure(RuntimeException("meshDispatch HTTP $code $err"))
+            when {
+                code in 200..299 -> {
+                    val rawBody = runCatching { conn.inputStream.bufferedReader().readText() }.getOrNull().orEmpty()
+                    try {
+                        val json = JSONObject(rawBody)
+                        val taskId = json.getString("task_id")
+                        Log.d(TAG, "meshDispatch OK: kind=$kind target=$targetUuid task=$taskId via $baseUrl")
+                        RelayDispatch.Ok(taskId)
+                    } catch (e: Exception) {
+                        // A 2xx that isn't our JSON envelope means this relay isn't
+                        // speaking the mesh-queue protocol (e.g. the server's SPA / catch-all
+                        // fallback returned index.html for an unregistered /E/m/dispatch
+                        // route) — treat it as a down relay and try the next sibling, not
+                        // an authoritative stop.
+                        val snippet = rawBody.take(60).replace(Regex("\\s+"), " ").trim()
+                        Log.w(TAG, "meshDispatch 2xx non-JSON via $baseUrl: $snippet")
+                        RelayDispatch.Retryable(code, "non-JSON 2xx (\"$snippet…\")")
+                    }
+                }
+                code in 500..599 -> {
+                    val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull().orEmpty()
+                    Log.w(TAG, "meshDispatch 5xx via $baseUrl: $code $err")
+                    RelayDispatch.Retryable(code, "HTTP $code $err")
+                }
+                else -> {
+                    // 4xx (and any other non-2xx): the relay/master spoke authoritatively
+                    // (bad request, unknown target, rejected) — stop, don't try siblings.
+                    val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull().orEmpty()
+                    Log.w(TAG, "meshDispatch 4xx via $baseUrl: $code $err")
+                    RelayDispatch.Fatal(code, "HTTP $code $err")
+                }
             }
-            val json = JSONObject(conn.inputStream.bufferedReader().readText())
-            val taskId = json.getString("task_id")
-            Log.d(TAG, "meshDispatch OK: kind=$kind target=$targetUuid task=$taskId")
-            Result.success(taskId)
         } catch (e: Exception) {
-            Log.e(TAG, "meshDispatch failed: ${e.message}")
-            Result.failure(e)
+            // Transport-level failure (DNS / connect / read timeout): the relay is down
+            // for us → caller should try the next relay in the polygon.
+            Log.w(TAG, "meshDispatch transport error via $baseUrl: ${e.message}")
+            RelayDispatch.Retryable(0, e.message ?: e.toString())
         }
     }
 
@@ -297,3 +323,19 @@ data class NodeInfo(
     val status: String,
     val lastSeen: String
 )
+
+/**
+ * Classified outcome of [RelayClient.meshDispatch], so the caller can walk a relay
+ * polygon with skip-to-next failover (mirrors the Rust `relay_client` `payload_order`
+ * / `relay_is_down` logic):
+ *  - [Ok]        HTTP 2xx with a JSON `{task_id}` envelope → stop, success.
+ *  - [Retryable] transport error, HTTP 5xx, or a non-JSON 2xx (relay not speaking the
+ *                mesh-queue protocol, e.g. the server's SPA/catch-all returned HTML) →
+ *                try the next relay.
+ *  - [Fatal]     HTTP 4xx → authoritative rejection, do NOT keep walking.
+ */
+sealed class RelayDispatch {
+    data class Ok(val taskId: String) : RelayDispatch()
+    data class Retryable(val code: Int, val message: String) : RelayDispatch()
+    data class Fatal(val code: Int, val message: String) : RelayDispatch()
+}

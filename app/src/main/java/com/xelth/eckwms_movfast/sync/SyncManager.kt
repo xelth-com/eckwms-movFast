@@ -1,6 +1,10 @@
 package com.xelth.eckwms_movfast.sync
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import androidx.work.*
 import java.util.concurrent.TimeUnit
@@ -8,6 +12,9 @@ import java.util.concurrent.TimeUnit
 object SyncManager {
     private const val TAG = "SyncManager"
     private const val SYNC_WORK_NAME = "eckwms_sync"
+
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     /**
      * Schedule an immediate one-time sync
@@ -64,11 +71,55 @@ object SyncManager {
     }
 
     /**
+     * Event-driven sync: fire an immediate sync the moment the device regains
+     * connectivity, instead of waiting up to 15 min for the next periodic run.
+     *
+     * `scheduleSync` enqueues a unique one-time job with [ExistingWorkPolicy.KEEP],
+     * so a flapping network can't pile up jobs, and the worker is cheap when there's
+     * nothing pending. Idempotent — repeated calls are no-ops once registered.
+     */
+    fun registerConnectivityTrigger(context: Context) {
+        if (networkCallback != null) return
+        val appContext = context.applicationContext
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (cm == null) {
+            Log.w(TAG, "ConnectivityManager unavailable; skipping connectivity trigger")
+            return
+        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Connectivity regained → scheduling immediate sync")
+                scheduleSync(appContext)
+            }
+        }
+        try {
+            cm.registerNetworkCallback(request, callback)
+            connectivityManager = cm
+            networkCallback = callback
+            Log.d(TAG, "Connectivity sync trigger registered")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register connectivity trigger: ${e.message}")
+        }
+    }
+
+    /**
      * Cancel all sync work
      */
     fun cancelSync(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(SYNC_WORK_NAME)
         WorkManager.getInstance(context).cancelUniqueWork("${SYNC_WORK_NAME}_periodic")
+        networkCallback?.let { cb ->
+            try {
+                connectivityManager?.unregisterNetworkCallback(cb)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister connectivity trigger: ${e.message}")
+            }
+        }
+        networkCallback = null
+        connectivityManager = null
         Log.d(TAG, "Sync work cancelled")
     }
 }

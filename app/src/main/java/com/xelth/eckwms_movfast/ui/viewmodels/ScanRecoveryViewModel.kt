@@ -922,7 +922,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             val result = scanApiService.registerDevice(
                 publicKeyBase64 = publicKeyBase64,
                 signature = signature,
-                timestamp = timestamp
+                timestamp = timestamp,
+                signedDeviceId = deviceId
             )
 
             when (result) {
@@ -1439,19 +1440,16 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
             when {
                 // A. System Codes (Executed Locally) — but NOT Link Barcodes
-                effectiveCode.startsWith("ECK") && !isLinkBarcode -> {
+                // Pairing prefix is configurable (default "ECK"); self-hosted
+                // instances can push their own via /api/status `pairing_prefix`.
+                effectiveCode.startsWith(com.xelth.eckwms_movfast.utils.SettingsManager.getPairingPrefix()) && !isLinkBarcode -> {
                     android.util.Log.e("AUTO_PAIR", "=== ECK PAIRING CODE DETECTED ===")
                     addLog("[Router] → ROUTE A: System code (ECK Pairing)")
 
-                    if (!isOnPairingScreen) {
-                        addLog("Auto-Pairing triggered!")
-                        isAutoPairing = true
-                        _navigationCommand.postValue(NavigationCommand.TO_PAIRING)
-                    } else {
-                        addLog("Already on Pairing Screen - manual scan")
-                        isAutoPairing = false
-                    }
-
+                    // Pairing runs in place — the dedicated Pairing Console screen is
+                    // gone; handlePairingQrCode streams its feedback into the main hex
+                    // console and the network half-button color shows ok/fail.
+                    addLog("Pairing triggered (in-place)")
                     handlePairingQrCode(effectiveCode)
                     repository.updateScanStatusString(scanId, "PROCESSED_LOCALLY")
                     addLog("[Audit] Scan #$scanId → PROCESSED_LOCALLY")
@@ -1974,7 +1972,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             throw Exception("Invalid server public key format. Expected uppercase HEX, got: ${serverPublicKeyHex.take(20)}...")
         }
 
-        addPairingLog("✅ Protocol: ECK v2")
+        addPairingLog("✅ Protocol: ECK v$version")
         addPairingLog("✅ UUID: $instanceId")
         addPairingLog("✅ Server PubKey: ${serverPublicKeyHex.take(16)}...${serverPublicKeyHex.takeLast(8)}")
 
@@ -2038,12 +2036,18 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         if (reachableUrl == null) {
             // No directly reachable full WMS (mobile data; the master is behind
             // NAT/LAN). Fall back to relay-forwarded pairing: dispatch
-            // device_register as a mesh-task to the master (QR instanceId) via a
-            // paid relay; the NAT'd master fulfills it by polling. This is what
-            // lets the eckN service nodes stay pure relays.
+            // device_register as a mesh-task to the master (QR instanceId) over a
+            // relay POLYGON, which the NAT'd master fulfills by polling.
+            //   • paid (v3): the polygon is the baked-in eckN service nodes, ordered
+            //     deterministically by mesh_id — no hardcoded free relay.
+            //   • free (v2): the polygon is the public relay URL(s) carried IN the QR
+            //     (any non-LAN candidate); nothing hardcoded. If the QR shipped none,
+            //     pairing fails loudly instead of silently using a legacy free relay.
+            val isPaidMesh = version == "3"
+            val qrRelays = candidates.filterNot { isLanOrLinkLocal(it) }
             addPairingLog("")
             addPairingLog("⚠️ No directly reachable server — relay-forwarded pairing")
-            registerViaRelay(instanceId, pairedMeshId, inviteToken)
+            registerViaRelay(instanceId, pairedMeshId, inviteToken, isPaidMesh, qrRelays)
             return
         }
 
@@ -2094,10 +2098,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addPairingLog("✅ Failover list: ${(listOf(reachableUrl) + siblings).size} node(s)")
         }
 
-        performSecureRegistration(reachableUrl, instanceId, inviteToken)
+        performSecureRegistration(reachableUrl, instanceId, inviteToken, pairedMeshId)
     }
 
-    private suspend fun performSecureRegistration(reachableUrl: String, instanceId: String, inviteToken: String?) {
+    private suspend fun performSecureRegistration(reachableUrl: String, instanceId: String, inviteToken: String?, meshId: String?) {
         addPairingLog("")
         addPairingLog("🔐 STAGE 4: Secure Registration")
         _pairingStatus.postValue("Registering device securely...")
@@ -2119,7 +2123,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             publicKeyBase64 = publicKeyBase64,
             signature = signatureBase64,
             timestamp = timestamp,
-            inviteToken = inviteToken
+            inviteToken = inviteToken,
+            signedDeviceId = deviceId
         )
 
         when (result) {
@@ -2132,7 +2137,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                     if (token.isNotEmpty()) SettingsManager.saveAuthToken(token)
 
                     addPairingLog("✅ PAIRING SUCCESSFUL!")
-                    addPairingLog("Status: $status")
+                    // Single glanceable summary: connected to which mesh, via which path.
+                    addPairingLog("🎉 Connected to ${meshLabel(meshId, instanceId)} via direct LAN ($reachableUrl) · status=$status")
 
                     if (status == "pending") {
                         _pairingStatus.postValue("⚠️ Registered, waiting for approval")
@@ -2158,16 +2164,46 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      * reachable (mobile data; the master is behind NAT/LAN).
      *
      * The phone dispatches its `device_register` as a mesh-task to the master's
-     * UUID on a paid relay; the NAT'd master fulfills it by polling
-     * (`mesh_relay_poller`) and acks `{status, token}`. The relay only ever sees
-     * an opaque queued task, so the eckN service nodes stay pure blind relays —
-     * no directly-reachable full WMS required.
+     * UUID over a relay POLYGON; the NAT'd master fulfills it by polling
+     * (`mesh_relay_poller`) and acks `{status, token}`. The relay only ever sees an
+     * opaque queued task, so the service nodes stay blind relays — no directly
+     * reachable full WMS required.
+     *
+     * Polygon selection (one app, two tiers, decided from the QR — no hardcoded
+     * free relay; that legacy `9eck.com`/`pda.repair` fallback was the bug):
+     *  - paid mesh (v3): baked-in eckN service nodes, ordered deterministically by
+     *    mesh_id so phone and master independently pick the same primary.
+     *  - free mesh (v2): the public relay URL(s) that travelled inside the QR.
+     *
+     * Walk semantics mirror the Rust `relay_client`: transport error / 5xx → next
+     * relay; 4xx / parse → authoritative stop; 2xx → wait for the master's ack, and
+     * if it never acks here (it may be polling a sibling) advance to the next relay,
+     * sweeping the WHOLE polygon before giving up.
      */
-    private suspend fun registerViaRelay(masterUuid: String, meshId: String?, inviteToken: String?) {
-        val relayBase = SettingsManager.getRelayUrl().trimEnd('/')
-        addPairingLog("🔁 Relay: $relayBase → master ${masterUuid.take(8)}…")
+    private suspend fun registerViaRelay(
+        masterUuid: String,
+        meshId: String?,
+        inviteToken: String?,
+        isPaidMesh: Boolean,
+        qrRelays: List<String>
+    ) {
+        val polygon: List<String> = if (isPaidMesh && !meshId.isNullOrBlank()) {
+            SettingsManager.orderedEckNodes(meshId)
+        } else {
+            qrRelays.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        }
+
+        if (polygon.isEmpty()) {
+            addPairingLog("❌ No relay available — ${if (isPaidMesh) "no eckN defaults configured" else "free QR carried no relay URL"}")
+            _pairingStatus.postValue("Error: no relay to reach the master")
+            return
+        }
+
+        addPairingLog("🔁 Relay polygon (${if (isPaidMesh) "paid · eckN" else "free · from QR"}): ${polygon.size} node(s)")
+        polygon.forEach { addPairingLog("   • ${normalizeRelayBase(it)}") }
         _pairingStatus.postValue("Pairing via relay…")
 
+        // Sign the registration once; the same envelope is replayed per relay.
         com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
         val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
         val deviceId = android.provider.Settings.Secure.getString(
@@ -2177,7 +2213,6 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
         val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
         val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
-
         val payload = JSONObject().apply {
             put("deviceId", deviceId)
             put("devicePublicKey", publicKeyBase64)
@@ -2185,49 +2220,111 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             if (!inviteToken.isNullOrEmpty()) put("inviteToken", inviteToken)
         }
 
-        val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId ?: "")
-        val taskId = relay.meshDispatch(masterUuid, "device_register", payload).getOrElse {
-            addPairingLog("❌ Relay dispatch failed: ${it.message}")
-            _pairingStatus.postValue("Error: relay dispatch failed (${it.message})")
-            return
-        }
-        addPairingLog("📨 Dispatched task=$taskId — waiting for master to poll…")
+        var lastError = "all relays down"
+        for ((idx, raw) in polygon.withIndex()) {
+            val relayBase = normalizeRelayBase(raw)
+            addPairingLog("→ [${idx + 1}/${polygon.size}] dispatch via $relayBase")
+            val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId ?: "")
 
-        // The master polls its primary relay every ~3–15 s; allow ~90 s.
-        val deadline = System.currentTimeMillis() + 90_000
+            when (val outcome = relay.meshDispatch(masterUuid, "device_register", payload)) {
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
+                    addPairingLog("📨 Queued task=${outcome.taskId} — waiting for master to poll…")
+                    if (awaitRelayResult(relay, outcome.taskId, relayBase, isPaidMesh, meshId, masterUuid)) return
+                    lastError = "master did not ack via $relayBase"
+                    addPairingLog("⏳ No master ack via $relayBase — trying next relay")
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
+                    addPairingLog("❌ Relay rejected registration: ${outcome.message}")
+                    _pairingStatus.postValue("Error: ${outcome.message}")
+                    return
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
+                    addPairingLog("⏭️ $relayBase unavailable (${outcome.message}) — next relay")
+                    lastError = outcome.message
+                }
+            }
+        }
+
+        addPairingLog("❌ Relay-forwarded pairing failed: $lastError")
+        _pairingStatus.postValue("Error: all relays unreachable")
+    }
+
+    /**
+     * Poll a dispatched relay task for the master's ack.
+     * Returns true when the outcome is authoritative (paired, pending, or a hard
+     * rejection) so the caller stops; returns false on timeout so the caller can try
+     * the next relay in the polygon (the master may be polling a sibling).
+     */
+    private suspend fun awaitRelayResult(
+        relay: com.xelth.eckwms_movfast.sync.RelayClient,
+        taskId: String,
+        relayBase: String,
+        isPaidMesh: Boolean,
+        meshId: String?,
+        masterUuid: String
+    ): Boolean {
+        // ~45 s per relay so a 3-node sweep stays under the old single-relay budget.
+        val deadline = System.currentTimeMillis() + 45_000
         var result: JSONObject? = null
         while (System.currentTimeMillis() < deadline) {
             result = relay.meshResult(taskId).getOrNull()
             if (result != null) break
             kotlinx.coroutines.delay(2500)
         }
-        if (result == null) {
-            addPairingLog("❌ Master did not respond within timeout")
-            _pairingStatus.postValue("Error: master did not respond (is it online?)")
-            return
-        }
+        if (result == null) return false // timeout → caller advances to the next relay
+
         if (!result.optBoolean("ok", false)) {
             val err = result.optString("error", "unknown")
             addPairingLog("❌ Master rejected registration: $err")
             _pairingStatus.postValue("Error: $err")
-            return
+            return true // authoritative rejection — stop walking
         }
 
         val status = result.optString("status", "active")
         val token = result.optString("token", "")
         SettingsManager.saveDeviceStatus(status)
         if (token.isNotEmpty()) SettingsManager.saveAuthToken(token)
-        // For a relay-paired device the relay is the comms anchor; subsequent
-        // data sync rides the same /E/m/* reverse-fetch queue (follow-up).
-        SettingsManager.saveServerUrl(relayBase)
+
+        // The relay is this device's comms anchor for ongoing /E/m/* sync. Only a PAID
+        // eckN node (which is also a real WMS) is promoted to the authoritative server
+        // URL; a free blind relay is never treated as authoritative (spec point 4).
         SettingsManager.saveRelayUrl(relayBase)
-        addPairingLog("✅ Relay-forwarded pairing: status=$status")
+        if (isPaidMesh) {
+            SettingsManager.saveServerUrl(relayBase)
+            // A relay-paired device has no directly reachable global WMS — clear any
+            // stale value (e.g. a previous pairing's :443 web-UI URL) so the health
+            // monitor doesn't chase a phantom global server.
+            SettingsManager.saveGlobalServerUrl("")
+        }
+
+        addPairingLog("🎉 Connected to ${meshLabel(meshId, masterUuid)} via relay $relayBase · status=$status")
         if (status == "pending") {
             _pairingStatus.postValue("⚠️ Registered, waiting for approval")
         } else {
             _pairingStatus.postValue("✅ Success! Device paired (via relay).")
         }
         handlePairingSuccess()
+        return true
+    }
+
+    /** Human label for the pairing summary: the mesh id for a paid mesh (v3), else the
+     *  target node id (v2 / no mesh). Shortened for a one-line console summary. */
+    private fun meshLabel(meshId: String?, fallbackId: String): String =
+        if (!meshId.isNullOrBlank()) "mesh ${meshId.take(8)}…" else "node ${fallbackId.take(8)}…"
+
+    /** Strip a trailing `/E` (RelayClient re-appends it) and any trailing slash. */
+    private fun normalizeRelayBase(raw: String): String {
+        var u = raw.trim().trimEnd('/')
+        if (u.endsWith("/E", ignoreCase = true)) u = u.dropLast(2)
+        return u.trimEnd('/')
+    }
+
+    /** True for LAN / link-local / loopback hosts (not usable as a public relay). */
+    private fun isLanOrLinkLocal(url: String): Boolean {
+        val host = url.replace(Regex("(?i)https?://"), "").substringBefore("/").substringBefore(":")
+        return host.startsWith("192.168.") || host.startsWith("10.") ||
+               host.startsWith("172.") || host.startsWith("169.254.") ||
+               host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)
     }
 
     /**
@@ -2330,7 +2427,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
                         val result = scanApiService.registerDevice(
                             publicKeyBase64 = publicKeyBase64,
                             signature = signatureBase64,
-                            timestamp = timestamp
+                            timestamp = timestamp,
+                            signedDeviceId = deviceId
                         )
 
                         when (result) {
@@ -2487,7 +2585,8 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         val result = scanApiService.registerDevice(
             publicKeyBase64 = publicKeyBase64,
             signature = signatureBase64,
-            timestamp = timestamp
+            timestamp = timestamp,
+            signedDeviceId = deviceId
         )
 
         when (result) {

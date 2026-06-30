@@ -20,7 +20,6 @@ import com.xelth.eckwms_movfast.ui.screens.CameraScanScreen
 import com.xelth.eckwms_movfast.ui.screens.CrmEntityScreen
 import com.xelth.eckwms_movfast.ui.screens.ImageViewerScreen
 import com.xelth.eckwms_movfast.ui.screens.MainScreen
-import com.xelth.eckwms_movfast.ui.screens.PairingScreen
 import com.xelth.eckwms_movfast.ui.screens.RestockScreen
 import com.xelth.eckwms_movfast.ui.screens.ScanScreen
 import com.xelth.eckwms_movfast.ui.screens.DatabaseViewerScreen
@@ -81,11 +80,11 @@ class MainActivity : ComponentActivity() {
                     android.util.Log.e("AUTO_PAIR", "navCommand: $navCommand")
                     when (navCommand) {
                         com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.TO_PAIRING -> {
-                            android.util.Log.e("AUTO_PAIR", "Executing TO_PAIRING - navigating to pairingScreen")
-                            navController.navigate("pairingScreen")
-                            android.util.Log.e("AUTO_PAIR", "Navigation to pairingScreen completed")
+                            // Pairing now runs in place — the dedicated Pairing Console
+                            // screen was removed; feedback streams into the main hex
+                            // console and status shows on the network half-button. Kept
+                            // as a harmless no-op for any legacy posters of this command.
                             viewModel.resetNavigationCommand()
-                            android.util.Log.e("AUTO_PAIR", "Navigation command reset")
                         }
                         com.xelth.eckwms_movfast.ui.viewmodels.NavigationCommand.BACK -> {
                             android.util.Log.e("AUTO_PAIR", "Executing BACK - calling popBackStack()")
@@ -142,8 +141,16 @@ class MainActivity : ComponentActivity() {
                             // Handle camera barcode scan results (same path as hardware scanner)
                             savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
                                 val barcode = data["barcode"] ?: return@let
-                                android.util.Log.d("MainMenu", "Camera barcode received: $barcode")
-                                viewModel.onCameraBarcode(barcode)
+                                if (data["scanMode"] == "pairing") {
+                                    // In-place pairing: a QR scanned via the network
+                                    // half-button returns here — route it to the pairing
+                                    // handler, NOT the general/item scan path.
+                                    android.util.Log.d("MainMenu", "Pairing QR received: $barcode")
+                                    viewModel.handlePairingQrCode(barcode)
+                                } else {
+                                    android.util.Log.d("MainMenu", "Camera barcode received: $barcode")
+                                    viewModel.onCameraBarcode(barcode)
+                                }
                                 savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
                             }
                         }
@@ -159,8 +166,12 @@ class MainActivity : ComponentActivity() {
                             savedStateHandle.get<Map<String, String>>("scanned_barcode_data")?.let { data ->
                                 val barcode = data["barcode"] ?: return@let
                                 val type = data["type"] ?: "UNKNOWN"
-                                // Centralized scan handling in ViewModel
-                                viewModel.handleGeneralScanResult(barcode, type)
+                                if (data["scanMode"] == "pairing") {
+                                    viewModel.handlePairingQrCode(barcode)
+                                } else {
+                                    // Centralized scan handling in ViewModel
+                                    viewModel.handleGeneralScanResult(barcode, type)
+                                }
                                 // Clear the result after processing
                                 savedStateHandle.remove<Map<String, String>>("scanned_barcode_data")
                             }
@@ -310,12 +321,6 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    composable("pairingScreen") {
-                        PairingScreen(
-                            viewModel = viewModel,
-                            navController = navController
-                        )
-                    }
 
                     composable("restockScreen") {
                         RestockScreen(navController = navController)

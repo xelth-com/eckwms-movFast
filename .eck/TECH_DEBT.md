@@ -11,15 +11,49 @@
 
 ## Structural Issues
 
-2. **SyncWorker runs on fixed schedule** — Background sync uses JobScheduler with fixed intervals. No event-driven sync (e.g. trigger sync immediately when WiFi reconnects).
+2. ~~**SyncWorker runs on fixed schedule**~~ ✅ **FIXED 2026-06-28.**
+   `SyncManager.registerConnectivityTrigger()` registers a
+   `ConnectivityManager.NetworkCallback` (NET_CAPABILITY_INTERNET) whose
+   `onAvailable` calls `scheduleSync()` — so a sync fires the moment connectivity
+   returns instead of waiting up to 15 min for the next periodic run. Registered
+   in `EckwmsApp.onCreate`. `scheduleSync` uses `ExistingWorkPolicy.KEEP`, so a
+   flapping network can't pile up jobs, and the worker no-ops cheaply when nothing
+   is pending. Added `ACCESS_NETWORK_STATE` permission. (The periodic 15-min run
+   stays as a backstop.)
 
 3. **Repair slot photos stored on-device only** — Photos in `filesDir/repair_photos/slot_N.webp` are uploaded to server but not backed up. If app data is cleared, photos are lost even if they were uploaded.
 
-4. **No mesh relay sync on Android** — PDA only communicates via direct HTTP to the server URL set during pairing. It does not participate in relay-based mesh sync. If the paired server is unreachable, data sits in local queue.
+4. ~~**Relay-forwarded pairing fell back to a single hardcoded FREE relay**~~
+    ✅ **FIXED 2026-06-30.** `registerViaRelay` used `SettingsManager.getRelayUrl()`
+    (default `https://9eck.com`) and dispatched `device_register` to that one relay
+    with no failover — so paid pairings leaked onto the free relay and any relay
+    hiccup aborted pairing. The `orderedEckNodes()` deterministic-polygon helper
+    already existed but was **dead code** (never called).
+    - **Polygon from the QR** (`ScanRecoveryViewModel.handlePairingWithEckProtocol`):
+      paid `ECK$3$…` ⇒ `SettingsManager.orderedEckNodes(meshId)` (baked-in eckN,
+      ordered by `compute_primary_index`); free `ECK$2$…` ⇒ the non-LAN relay URL(s)
+      carried IN the QR (`candidates.filterNot { isLanOrLinkLocal(it) }`). No hardcoded
+      free fallback.
+    - **Skip-to-next walk**: `RelayClient.meshDispatch` returns
+      `RelayDispatch { Ok | Retryable | Fatal }` (transport/5xx → next, 4xx/parse →
+      stop, 2xx → ack-wait then next-on-timeout). `registerViaRelay` sweeps the whole
+      polygon; `awaitRelayResult` polls ~45 s per relay.
+    - **Anchor**: saves the working relay as `relay_url`; only a paid eckN (real WMS)
+      is also promoted to `server_url`. See ROADMAP Phase 11.
+    - **`normalizeRelayBase`** strips a trailing `/E` because `RelayClient` re-appends
+      `/E/m/…` (eckN defaults ship `https://eckN.com/E`).
 
 5. **UserManager singleton coupling** — UserManager uses companion object singleton pattern which makes testing difficult. Should use Hilt/DI injection.
 
-6. **Pairing code detection still uses `startsWith("ECK")`** — In `ScanRecoveryViewModel.handleGeneralScanResult()`, the pairing code detection (`effectiveCode.startsWith("ECK") && !isLinkBarcode`) still assumes pairing codes start with "ECK". This should be configurable if self-hosted instances use different pairing prefixes.
+6. ~~**Pairing code detection still uses `startsWith("ECK")`**~~ ✅ **FIXED 2026-06-28.**
+   Prefix extracted to `SettingsManager.getPairingPrefix()` (default `"ECK"`);
+   `ScanRecoveryViewModel.handleGeneralScanResult()` now matches against it.
+   `ScanApiService` absorbs a server-pushed `pairing_prefix` from `/api/status`
+   (same mechanism as `repair_order_prefix`), so a self-hosted instance can set
+   its own prefix for re-pairing / additional devices. **Bootstrap caveat:** the
+   very first pairing happens *before* any server is known, so `"ECK"` must remain
+   the default fallback; a blank stored value is coerced back to the default so
+   `startsWith("")` can never match every code.
 
 7. ~~**ExplorerScreen still parses entity IDs as Long**~~ ✅ **FIXED 2026-06-21.**
    Migrated the whole screen to String ids (the WMS returns `record::id(id)` String ids;
@@ -71,6 +105,36 @@
      newest in git; the older `1.1.x` line is also in `app/libs/` but unused) — a
      newer XCheng SDK may handle coexistence natively. The bug was intermittent;
      keep watching. If it recurs, grab `dumpsys media.camera` at the moment of death.
+
+10. ~~**`registered_device` keyed by legacy `Settings.Secure.ANDROID_ID`, not UUID.**~~
+    ✅ **FIXED 2026-06-28** (two-repo change: Rust server `eckwms` + this app).
+    Canonical device id is now a **server-minted UUID**; the Ed25519 `public_key` is
+    the stable identity anchor (survives factory reset / ANDROID_ID change), and
+    `android_id` is kept as a secondary lookup hint.
+    - **Server** (`wms/src/handlers/device.rs`): `register_device` verifies the
+      signature, resolves the device by `public_key` → record key → `android_id`
+      (all ignoring tombstones), reuses the matched row's UUID or mints a fresh
+      `Uuid::new_v4()`, persists under the UUID key with `android_id`, sets the JWT
+      subject to the UUID, and returns `device_uuid`. `DeviceRecord` /
+      `RegisteredDevice` gained an `android_id` field.
+    - **Transition safety** (`wms/src/handlers/pda.rs`): `resolve_device` falls back
+      from record-key lookup to `WHERE android_id = …`, so a device still
+      authenticating with its pre-migration ANDROID_ID subject keeps resolving;
+      `/api/status` echoes `device_uuid` so already-paired devices adopt their UUID
+      on the next heartbeat — no re-pairing.
+    - **Migration** (`migrator --devices`): SurrealDB-only, idempotent re-key of every
+      legacy ANDROID_ID-keyed row to a UUID (old id → `android_id`, old row
+      tombstoned for sync). **The user must run it on prod after deploying the new
+      server:** `migrator --devices` (env `SURREAL_DB_PATH`).
+    - **App**: `SettingsManager.getDeviceUuid()/saveDeviceUuid()` + canonical
+      `getDeviceId()` (UUID if known, else ANDROID_ID); `ScanApiService` adopts
+      `device_uuid` from register + `/api/status`, and `registerDevice` sends the
+      signed id explicitly (`signedDeviceId`) so the signature still matches.
+    - **Deploy order**: ship + deploy the UUID-aware server, run `migrator --devices`,
+      then roll out the app. Devices re-resolve via the `public_key` anchor, so order
+      is forgiving. **Out of scope (follow-up):** `instance_id` is still
+      `pda_<android_id>` for existing installs (mesh node identity, separate from
+      `registered_device`).
 
 ## Resolved (2026-06-18)
 

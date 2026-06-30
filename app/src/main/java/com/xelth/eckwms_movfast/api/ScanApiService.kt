@@ -3,7 +3,6 @@ package com.xelth.eckwms_movfast.api
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -82,15 +81,12 @@ class ScanApiService(private val context: Context) {
     // Ссылка на ScannerManager для получения информации о типе штрих-кода
     private var scannerManager: ScannerManager? = null
 
-    // Уникальный идентификатор устройства
-    private val deviceId: String by lazy {
-        try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting Android ID: ${e.message}")
-            UUID.randomUUID().toString()
-        }
-    }
+    // Canonical device identifier for server attribution: the server-minted UUID
+    // once known, else the raw ANDROID_ID (see SettingsManager.getDeviceId). A
+    // property getter (not a cached `by lazy`) so it picks up the UUID the instant
+    // the server assigns it via register-device / /api/status.
+    private val deviceId: String
+        get() = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(context)
 
     // Установка ScannerManager извне
     fun setScannerManager(manager: ScannerManager) {
@@ -909,7 +905,12 @@ class ScanApiService(private val context: Context) {
         publicKeyBase64: String,
         signature: String,
         timestamp: Long,
-        inviteToken: String? = null
+        inviteToken: String? = null,
+        // The exact id the caller signed over in `{"deviceId":..,"devicePublicKey":..}`.
+        // MUST match what we put in the body or the server rejects the signature.
+        // Defaults to the canonical `deviceId` (what performSilentAuth signs); the
+        // pairing flows pass their raw ANDROID_ID here since that's what they sign.
+        signedDeviceId: String = deviceId
     ): ScanResult = withContext(Dispatchers.IO) {
         val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl()
         Log.d(TAG, "Registering device with server: $serverUrl")
@@ -922,13 +923,17 @@ class ScanApiService(private val context: Context) {
             connection.setRequestProperty("Accept", "application/json")
             connection.doOutput = true
 
-            // Go server expects: deviceId, deviceName, devicePublicKey, signature
+            // Server expects: deviceId, deviceName, devicePublicKey, signature.
+            // `deviceId` here is the SIGNED id (signedDeviceId) so the server's
+            // Ed25519 check over {"deviceId":..,"devicePublicKey":..} passes; the
+            // server resolves it to the canonical device UUID via the public-key
+            // anchor and returns `device_uuid`.
             val jsonRequest = JSONObject().apply {
-                put("deviceId", deviceId)
+                put("deviceId", signedDeviceId)
                 put("deviceName", android.os.Build.MODEL)  // Added: device model name
                 put("devicePublicKey", publicKeyBase64)
                 put("signature", signature)
-                // Note: timestamp not used by Go server, but included for compatibility
+                // Note: timestamp not used by server, but included for compatibility
                 put("timestamp", timestamp)
                 if (inviteToken != null) {
                     put("inviteToken", inviteToken)
@@ -949,7 +954,7 @@ class ScanApiService(private val context: Context) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.d(TAG, "Device registration successful: $response")
 
-                // SECURE KEY SYNC: Extract enc_key from registration response
+                // SECURE KEY SYNC: Extract enc_key + canonical device UUID from response
                 try {
                     val json = JSONObject(response)
                     val encKey = json.optString("enc_key", "")
@@ -957,8 +962,15 @@ class ScanApiService(private val context: Context) {
                         Log.i(TAG, "🔐 Received encryption key from server during registration")
                         com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
                     }
+                    // Adopt the server-minted canonical UUID — from here on getDeviceId()
+                    // returns it (uploads/scans/trips/JWT subject all key off the UUID).
+                    val deviceUuid = json.optString("device_uuid", "")
+                    if (deviceUuid.isNotEmpty()) {
+                        Log.i(TAG, "🆔 Server assigned device UUID: $deviceUuid")
+                        com.xelth.eckwms_movfast.utils.SettingsManager.saveDeviceUuid(deviceUuid)
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to parse enc_key from registration", e)
+                    Log.e(TAG, "Failed to parse enc_key/device_uuid from registration", e)
                 }
 
                 return@withContext ScanResult.Success(
@@ -1017,6 +1029,17 @@ class ScanApiService(private val context: Context) {
                                 com.xelth.eckwms_movfast.utils.SettingsManager.saveEncKey(encKey)
                             }
                         }
+                        // Canonical device UUID — lets an already-paired device that
+                        // still authenticates with its legacy ANDROID_ID adopt its
+                        // server-minted UUID on the next heartbeat (no re-pairing).
+                        val deviceUuid = json.optString("device_uuid", "")
+                        if (deviceUuid.isNotEmpty()) {
+                            val currentUuid = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceUuid()
+                            if (deviceUuid != currentUuid) {
+                                Log.i(TAG, "🆔 Device UUID assigned/updated by server: $deviceUuid")
+                                com.xelth.eckwms_movfast.utils.SettingsManager.saveDeviceUuid(deviceUuid)
+                            }
+                        }
                         // Dynamic repair order prefix from server config
                         val repairPrefix = json.optString("repair_order_prefix", "")
                         if (repairPrefix.isNotEmpty()) {
@@ -1024,6 +1047,15 @@ class ScanApiService(private val context: Context) {
                             if (repairPrefix != currentPrefix) {
                                 Log.i(TAG, "📋 Repair order prefix updated: $currentPrefix → $repairPrefix")
                                 com.xelth.eckwms_movfast.utils.SettingsManager.saveRepairOrderPrefix(repairPrefix)
+                            }
+                        }
+                        // Dynamic pairing-code prefix from server config (default "ECK")
+                        val pairingPrefix = json.optString("pairing_prefix", "")
+                        if (pairingPrefix.isNotEmpty()) {
+                            val currentPairing = com.xelth.eckwms_movfast.utils.SettingsManager.getPairingPrefix()
+                            if (pairingPrefix != currentPairing) {
+                                Log.i(TAG, "🔗 Pairing prefix updated: $currentPairing → $pairingPrefix")
+                                com.xelth.eckwms_movfast.utils.SettingsManager.savePairingPrefix(pairingPrefix)
                             }
                         }
                         // Dynamic QR prefixes from server config

@@ -94,3 +94,57 @@ Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
 - [ ] FULL Play-ready free flavor also needs the xelixir agent (AccessibilityService + MediaProjection FGS) flavor-gated out — only the battery permission is split so far
 - [ ] On-device cell resolution (offline OpenCelliD DACH extract) — end-state where coordinates never leave the phone
 - [ ] Visit creation UI on the dashboard (orders already geocoded; currently visits are created via POST /api/visits)
+
+## Phase 10: Device Identity — ANDROID_ID → UUID ✅ DONE 2026-06-28
+**Context**: `registered_device` was keyed by the legacy `Settings.Secure.ANDROID_ID`
+(16-hex), a weak/unstable identity that also couldn't be told apart from UUID-keyed
+node-self rows. Now PDA devices are keyed by a **UUID** like everything else, with the
+Ed25519 `public_key` as the identity anchor.
+
+- [x] **UUID is the canonical device id**; `android_id` kept as a secondary lookup
+  field. App sends its current id (ANDROID_ID on first pairing) → server resolves via
+  the public-key anchor → returns `device_uuid` → app adopts it (register response +
+  `/api/status` heartbeat). `register_device` signs/sends an explicit `signedDeviceId`
+  so the signature still matches. (`wms/src/handlers/device.rs`, app
+  `SettingsManager` + `ScanApiService`.)
+- [x] **Migration**: `migrator --devices` (SurrealDB-only, idempotent) re-keys every
+  legacy ANDROID_ID row to a UUID, moves the old id to `android_id`, tombstones the
+  old row. ⚠️ **Run once on prod after deploying the new server.**
+- [x] **Transition safety**: `resolve_device` falls back to `WHERE android_id = …`,
+  so devices keep working across the deploy/migration window.
+- [ ] **Follow-up**: `instance_id` (mesh node id) is still `pda_<android_id>` for
+  existing installs — separate from `registered_device`; migrate later if needed.
+- [ ] 9eck.com mesh `claim-home` can now rely on device rows being UUID-keyed (see
+  9eck.com [[project_sync_ownership]]).
+
+## Phase 11: Pairing relay-failover & free-tier onboarding (2026-06-30)
+**Context**: Relay-forwarded pairing (used when the master is behind NAT and no LAN
+WMS is directly reachable) used to dispatch `device_register` to a SINGLE hardcoded
+**free** relay (`9eck.com`), so paid pairings leaked onto the free relay and any
+relay hiccup aborted pairing. ТЗ: paid pairing must sweep the eckN polygon; the free
+relay must never be the authoritative path for a paid mesh.
+
+- [x] **One app, two tiers, decided from the QR** — no separate paid/free build for
+  pairing. `ECK$3$…` (paid) ⇒ relay polygon = baked-in eckN service nodes; `ECK$2$…`
+  (free) ⇒ relay polygon = the public relay URL(s) carried INSIDE the QR. Nothing
+  hardcoded as a free fallback.
+- [x] **Deterministic polygon order** — paid meshes order eckN by
+  `SettingsManager.orderedEckNodes(meshId)` (`compute_primary_index` = u32 BE of
+  `sha256(mesh_id)[..4] % n`, then rotate), so phone and master independently pick the
+  same primary relay. Previously this helper was dead code.
+- [x] **Skip-to-next failover** — `RelayClient.meshDispatch` now returns a classified
+  `RelayDispatch { Ok | Retryable | Fatal }`: transport error / 5xx → next relay;
+  4xx / unparseable 2xx → authoritative stop; 2xx → wait for the master ack, and on
+  ack-timeout advance to the next relay, sweeping the WHOLE polygon (mirrors Rust
+  `relay_client` `payload_order` / `relay_is_down`).
+- [x] **Relay ≠ authoritative server for free meshes** — a successful relay pairing
+  saves the working relay as `relay_url`; only a PAID eckN node (also a real WMS) is
+  additionally promoted to `server_url`. A free blind relay is never treated as the
+  WMS.
+- [ ] **PDAs onboarded via 9eck.com acting as a SERVER (temporary-code entry)** —
+  future: let a phone attach to `9eck.com` as its WMS server (not just a blind relay)
+  using the same temporary-code / invite-token mechanism as QR pairing — type a
+  short-lived code instead of scanning a QR. Reuses the relay-forwarded
+  `device_register` envelope + invite-token auto-approve; the code resolves to the
+  target master UUID + (free) relay polygon. Enables free-tier onboarding without a
+  printed QR.

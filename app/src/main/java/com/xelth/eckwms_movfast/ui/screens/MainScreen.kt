@@ -95,6 +95,14 @@ fun MainScreen(
     val consoleLogs by mainViewModel.consoleLogs.observeAsState(emptyList())
     val scannerEnabled by mainViewModel.scannerEnabled.observeAsState(true)
 
+    // Pairing log → main hex console bridge. The dedicated Pairing Console screen was
+    // removed: pairing now runs in place and its feedback streams into this console,
+    // while ok/fail shows on the network half-button color. The forward counter lives
+    // in MainScreenViewModel (not a Compose `remember`) so it survives MainScreen
+    // leaving/re-entering composition during the camera round-trip.
+    val pairingLog by viewModel.pairingLog.observeAsState(emptyList())
+    LaunchedEffect(pairingLog) { mainViewModel.forwardPairingLog(pairingLog) }
+
     // Repair mode state
     val isRepairMode by mainViewModel.isRepairMode.observeAsState(false)
     val repairStatus by mainViewModel.repairStatus.observeAsState("")
@@ -899,7 +907,11 @@ fun MainScreen(
                         showNetworkPanel = true
                     },
                     onNetworkIndicatorLongClick = {
-                        navController.navigate("pairingScreen")
+                        // Pair in place: jump straight to the QR scanner; the result
+                        // routes through handlePairingQrCode and the log streams into
+                        // this console (no dedicated Pairing Console screen anymore).
+                        viewModel.clearPairingLog()
+                        navController.navigate("cameraScanScreen?scan_mode=pairing")
                     },
                     // 🎤 GLOBAL push-to-talk (action "voice_command"), pinned in
                     // every mode. Hold to talk. Trip mode feeds the live search
@@ -980,7 +992,8 @@ fun MainScreen(
             onRefresh = { viewModel.triggerManualHealthCheck() },
             onRePair = {
                 showNetworkPanel = false
-                navController.navigate("pairingScreen")
+                viewModel.clearPairingLog()
+                navController.navigate("cameraScanScreen?scan_mode=pairing")
             }
         )
     }

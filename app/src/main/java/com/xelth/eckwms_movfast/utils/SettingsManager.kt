@@ -84,18 +84,28 @@ object SettingsManager {
     // ── Paid mesh: the eckN service nodes are baked-in DEFAULTS (kept OUT of the
     // pairing QR to keep it short). The device orders them by mod3(mesh_id) so no
     // single node is everyone's default, and fails over across them. ──
-    val ECK_DEFAULT_NODES = listOf("https://eck1.com/E", "https://eck2.com/E", "https://eck3.com/E")
+    //
+    // These are the DIRECT relay ports (plain HTTP on :320N), NOT the :443 web-UI.
+    // `https://eckN.com` (:443) is the WMS SPA — it 301→index.html, which is why
+    // dispatching there returned `<!doctype html>`. The Axum relay (mesh queue
+    // /E/m/*, /E/register, /E/health) is bound directly to :320N with no proxy/SPA.
+    // Cleartext is fine: the app already sets usesCleartextTraffic=true (LAN HTTP).
+    val ECK_DEFAULT_NODES = listOf("http://eck1.com:3201", "http://eck2.com:3202", "http://eck3.com:3203")
 
-    /** eckN defaults rotated so this mesh's mod3 primary comes first. Matches the
-     *  server `compute_primary_index`: u32 BE of sha256(mesh)[..4] % n. */
+    /** eckN defaults rotated so this mesh's mod3 primary comes first. Mirrors the
+     *  server: sort by host (ignoring scheme/port), then start at
+     *  `compute_primary_index` = u32 BE of sha256(mesh)[..4] % n and rotate. */
     fun orderedEckNodes(meshId: String): List<String> {
         val n = ECK_DEFAULT_NODES.size
         if (n == 0) return emptyList()
+        val ordered = ECK_DEFAULT_NODES.sortedBy { url ->
+            url.replace(Regex("(?i)^https?://"), "").substringBefore("/").substringBefore(":").lowercase()
+        }
         val h = java.security.MessageDigest.getInstance("SHA-256").digest(meshId.toByteArray(Charsets.UTF_8))
         val v = ((h[0].toLong() and 0xFF) shl 24) or ((h[1].toLong() and 0xFF) shl 16) or
                 ((h[2].toLong() and 0xFF) shl 8) or (h[3].toLong() and 0xFF)
         val primary = (v % n).toInt()
-        return (0 until n).map { ECK_DEFAULT_NODES[(primary + it) % n] }
+        return (0 until n).map { ordered[(primary + it) % n] }
     }
 
     // Full ordered failover list (active first, then siblings) for the mesh.
@@ -243,6 +253,23 @@ object SettingsManager {
     fun getRepairOrderPrefix(): String = prefs.getString(KEY_REPAIR_ORDER_PREFIX, DEFAULT_REPAIR_ORDER_PREFIX) ?: DEFAULT_REPAIR_ORDER_PREFIX
     fun saveRepairOrderPrefix(prefix: String) = prefs.edit().putString(KEY_REPAIR_ORDER_PREFIX, prefix.trim()).commit()
 
+    // Dynamic pairing-code prefix (fetched from server /api/status, like the
+    // repair order prefix). NOTE: pairing QRs are detected BEFORE any server is
+    // paired (chicken-and-egg), so "ECK" must remain the bootstrap fallback. A
+    // self-hosted instance can push its own prefix via `pairing_prefix`, which
+    // then applies to re-pairing and additional devices. A blank stored value is
+    // coerced back to the default so `startsWith("")` can never match everything.
+    private const val KEY_PAIRING_PREFIX = "pairing_prefix"
+    private const val DEFAULT_PAIRING_PREFIX = "ECK"
+    fun getPairingPrefix(): String =
+        (prefs.getString(KEY_PAIRING_PREFIX, DEFAULT_PAIRING_PREFIX) ?: DEFAULT_PAIRING_PREFIX)
+            .ifBlank { DEFAULT_PAIRING_PREFIX }
+    fun savePairingPrefix(prefix: String) {
+        val clean = prefix.trim()
+        if (clean.isEmpty()) return  // never store an empty prefix
+        prefs.edit().putString(KEY_PAIRING_PREFIX, clean).commit()
+    }
+
     // Dynamic QR prefixes + tenant suffix (fetched from server /api/status)
     // Hardcoded fallbacks: 9eck.com/ and xelth.com/ (relay domains, always valid)
     private const val KEY_QR_PREFIXES = "qr_prefixes"
@@ -295,8 +322,31 @@ object SettingsManager {
         return getPermissions().contains(permission)
     }
 
-    fun getDeviceId(context: Context): String {
+    // Raw Settings.Secure.ANDROID_ID — the bootstrap pairing handle. Weak/unstable
+    // identity (changes on factory reset, differs by signing key on Android 8+), so
+    // it is NOT the canonical id; it's only what the device presents on first
+    // pairing until the server mints it a UUID.
+    fun getAndroidId(context: Context): String {
         return android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
+    }
+
+    // Canonical server-minted device UUID, anchored server-side to this device's
+    // Ed25519 public key (so it survives a factory reset / ANDROID_ID change).
+    // Empty until the server returns one via register-device or /api/status.
+    private const val KEY_DEVICE_UUID = "device_uuid"
+    fun getDeviceUuid(): String = prefs.getString(KEY_DEVICE_UUID, "") ?: ""
+    fun saveDeviceUuid(uuid: String) {
+        val clean = uuid.trim()
+        if (clean.isEmpty()) return
+        prefs.edit().putString(KEY_DEVICE_UUID, clean).commit()
+    }
+
+    // Canonical device id for all server attribution (uploads, scans, trips, JWT
+    // subject): the server-minted UUID once known, else the raw ANDROID_ID for the
+    // bootstrap handshake.
+    fun getDeviceId(context: Context): String {
+        val uuid = getDeviceUuid()
+        return if (uuid.isNotEmpty()) uuid else getAndroidId(context)
     }
 
     // Connection history for smart recovery (circular buffer of last 5 successful URLs)

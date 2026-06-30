@@ -3891,6 +3891,28 @@ class MainScreenViewModel : ViewModel() {
         _consoleLogs.postValue(emptyList())
     }
 
+    // --- PAIRING LOG BRIDGE ---
+    // The dedicated Pairing Console screen was removed; pairing now runs in place and
+    // its feedback streams into this console. The forward counter lives in the VM (not
+    // a Compose `remember`) so it survives MainScreen leaving/re-entering composition
+    // during the camera round-trip — otherwise the new pairing lines get skipped.
+    private var pairingForwarded = 0
+
+    /** Forward only the NEW lines of the cumulative pairing log into the console.
+     *  A shrink (clearPairingLog) re-baselines so the next session starts clean. */
+    fun forwardPairingLog(pairingLog: List<String>) {
+        if (pairingLog.size < pairingForwarded) {
+            pairingForwarded = pairingLog.size
+            return
+        }
+        if (pairingLog.size > pairingForwarded) {
+            for (i in pairingForwarded until pairingLog.size) {
+                pairingLog[i].takeIf { it.isNotBlank() }?.let { addLog(it) }
+            }
+            pairingForwarded = pairingLog.size
+        }
+    }
+
     fun toggleScanner() {
         val current = _scannerEnabled.value ?: true
         _scannerEnabled.postValue(!current)

@@ -52,6 +52,11 @@ class EckwmsApp : Application() {
         SyncManager.schedulePeriodicSync(this)
         Log.d(TAG, "Periodic sync scheduled")
 
+        // Event-driven sync: trigger an immediate sync the moment connectivity
+        // returns, instead of waiting up to 15 min for the next periodic run.
+        SyncManager.registerConnectivityTrigger(this)
+        Log.d(TAG, "Connectivity sync trigger registered")
+
         // Re-arm trip auto-detection on EVERY launch. The ActivityRecognition
         // transition registration is process-level and is lost when the OS kills
         // the app; it was previously only (re)armed on reboot or a manual toggle.
