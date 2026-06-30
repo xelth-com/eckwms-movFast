@@ -103,6 +103,31 @@ fun MainScreen(
     val pairingLog by viewModel.pairingLog.observeAsState(emptyList())
     LaunchedEffect(pairingLog) { mainViewModel.forwardPairingLog(pairingLog) }
 
+    // Log transport switches (direct ↔ relay ↔ offline) to the console — these were
+    // silent before, only the half-button color changed.
+    LaunchedEffect(networkHealthState) {
+        val st = networkHealthState
+        // Ignore the transient checking/restoring states — they aren't a real transport
+        // and would spam a false "connection lost" every poll.
+        if (st !is NetworkHealthState.Checking && st !is NetworkHealthState.Restoring) {
+            // Tag with the mesh's first UUID segment (e.g. "7e6fe40d"), else the home node's.
+            val mesh = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeMeshId()
+                ?.substringBefore("-")?.takeIf { it.isNotBlank() }
+                ?: com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+                    .substringBefore("-").takeIf { it.isNotBlank() }
+                ?: "—"
+            val (transport, label) = when {
+                !st.isConnected() ->
+                    "offline" to "🔴 Connection lost (mesh $mesh) — no server reachable"
+                st.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP ->
+                    "direct" to "🟢 Switched to DIRECT — mesh $mesh (local server)"
+                else ->
+                    "relay" to "🟠 Switched to RELAY — mesh $mesh"
+            }
+            mainViewModel.noteTransport(transport, label)
+        }
+    }
+
     // Repair mode state
     val isRepairMode by mainViewModel.isRepairMode.observeAsState(false)
     val repairStatus by mainViewModel.repairStatus.observeAsState("")

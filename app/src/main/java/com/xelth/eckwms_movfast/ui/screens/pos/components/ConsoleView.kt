@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -54,10 +54,12 @@ fun ConsoleView(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 reverseLayout = true
             ) {
-                items(
+                // Key by index, not by content: log lines can repeat (e.g. the
+                // pairing "━━━" separators), and a duplicate key crashes LazyColumn.
+                itemsIndexed(
                     items = logs,
-                    key = { it }
-                ) { log ->
+                    key = { index, _ -> index }
+                ) { _, log ->
                     val isSelected = selectedLog.value == log
 
                     Text(

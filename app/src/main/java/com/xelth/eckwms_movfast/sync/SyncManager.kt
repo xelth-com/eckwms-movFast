@@ -93,6 +93,10 @@ object SyncManager {
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "Connectivity regained → scheduling immediate sync")
                 scheduleSync(appContext)
+                // Re-arm the health monitor's preferred-local sniff so a return to the
+                // kiosk LAN switches back to the direct server within one health cycle
+                // (instead of waiting out the 5-min cooldown).
+                com.xelth.eckwms_movfast.utils.NetworkHealthMonitor.onConnectivityChanged()
             }
         }
         try {

@@ -754,7 +754,9 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
      */
     private suspend fun performHealthCheck() {
         addLog("Performing network health check...")
-        _networkHealthState.postValue(NetworkHealthState.Checking)
+        // Don't flash the transient "Checking" state on periodic re-checks — it would
+        // turn the half-button red for ~5s every cycle and spam a false "connection lost".
+        // The button keeps its last color until the new result lands.
 
         val localUrl = SettingsManager.getServerUrl()
         val globalUrl = SettingsManager.getGlobalServerUrl()
@@ -1979,6 +1981,10 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         // Save Home Instance ID for Smart Routing
         SettingsManager.saveHomeInstanceId(instanceId)
         addPairingLog("✅ Home Instance ID saved: $instanceId")
+        // Remember the tier so the health monitor can fall back to the eckN relay polygon
+        // for a paid mesh (≥3 relays), vs. only the QR-carried relay for a free mesh.
+        SettingsManager.savePaidMesh(version == "3")
+        pairedMeshId?.let { SettingsManager.saveHomeMeshId(it) }
 
         SettingsManager.saveServerPublicKey(serverPublicKeyHex)
         addPairingLog("✅ Server public key saved")
@@ -2031,6 +2037,7 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
             addPairingLog("💾 Saved preferred local URL for future switchback: $preferredLocal")
         }
 
+        addPairingLog("⏳ Probing direct endpoints (≤6s)… else relay-forwarded")
         val reachableUrl = com.xelth.eckwms_movfast.utils.ConnectivityTester.findReachableUrl(sortedCandidates)
 
         if (reachableUrl == null) {
@@ -2290,7 +2297,11 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         // URL; a free blind relay is never treated as authoritative (spec point 4).
         SettingsManager.saveRelayUrl(relayBase)
         if (isPaidMesh) {
-            SettingsManager.saveServerUrl(relayBase)
+            // Save WITH the /E prefix: the health monitor probes `<server_url>/health`,
+            // and the relay only answers at /E/health (bare host /health is 404). Without
+            // /E the network half-button shows OFF even though we're paired and the relay
+            // is reachable. (relay_url stays bare — RelayClient re-appends /E itself.)
+            SettingsManager.saveServerUrl("$relayBase/E")
             // A relay-paired device has no directly reachable global WMS — clear any
             // stale value (e.g. a previous pairing's :443 web-UI URL) so the health
             // monitor doesn't chase a phantom global server.

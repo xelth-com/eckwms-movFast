@@ -11,7 +11,10 @@ import java.net.URL
 
 object ConnectivityTester {
     private const val TAG = "ConnectivityTester"
-    private const val TIMEOUT_MS = 30000L // 30 seconds timeout
+    // Snappy probe: a reachable server answers /health in well under a second, so a
+    // long timeout just stalls the UI on an unreachable host. Pairing falls back to the
+    // relay polygon if every direct candidate fails, so a short timeout is safe.
+    private const val TIMEOUT_MS = 6000L // 6 seconds
 
     suspend fun findReachableUrl(urls: List<String>): String? = withContext(Dispatchers.IO) {
         if (urls.isEmpty()) {
@@ -21,7 +24,7 @@ object ConnectivityTester {
 
         Log.d(TAG, "========================================")
         Log.d(TAG, "Testing connectivity for ${urls.size} URLs")
-        Log.d(TAG, "Timeout: ${TIMEOUT_MS}ms (30 seconds)")
+        Log.d(TAG, "Timeout: ${TIMEOUT_MS}ms")
         Log.d(TAG, "========================================")
         urls.forEachIndexed { index, url ->
             Log.d(TAG, "[${index + 1}/${urls.size}] $url")

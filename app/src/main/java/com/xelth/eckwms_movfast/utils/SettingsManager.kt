@@ -307,6 +307,12 @@ object SettingsManager {
     fun saveHomeInstanceId(id: String) = prefs.edit().putString(KEY_HOME_INSTANCE_ID, id.trim()).commit()
     fun getHomeInstanceId(): String = prefs.getString(KEY_HOME_INSTANCE_ID, "") ?: ""
 
+    // The mesh UUID from the v3 QR (display only — distinct from the sync mesh_id). Used to
+    // tag console transport lines with the mesh's first UUID segment, e.g. "7e6fe40d".
+    private const val KEY_HOME_MESH_ID = "home_mesh_id"
+    fun saveHomeMeshId(meshId: String) = prefs.edit().putString(KEY_HOME_MESH_ID, meshId.trim()).commit()
+    fun getHomeMeshId(): String? = prefs.getString(KEY_HOME_MESH_ID, null)
+
     private const val KEY_USER_ROLE = "user_role"
     private const val KEY_PERMISSIONS = "user_permissions"
 
@@ -723,6 +729,25 @@ object SettingsManager {
 
     fun saveRelayUrl(url: String) = prefs.edit().putString(KEY_RELAY_URL, url.trim()).commit()
     fun getRelayUrl(): String = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL
+    /** True only if a relay URL was actually set during pairing (not the bare default),
+     *  so the health monitor doesn't probe a relay on devices that never paired via one. */
+    fun hasRelayUrl(): Boolean = prefs.contains(KEY_RELAY_URL)
+
+    // Whether the device paired into a PAID (v3) mesh. Gates the eckN relay polygon as a
+    // fallback transport — paid devices always have the ≥3 eckN relays available.
+    private const val KEY_PAID_MESH = "paired_mesh_paid"
+    fun savePaidMesh(paid: Boolean) = prefs.edit().putBoolean(KEY_PAID_MESH, paid).commit()
+    fun isPaidMesh(): Boolean = prefs.getBoolean(KEY_PAID_MESH, false)
+
+    /** Ordered relay-fallback transports for a connectivity check: the relay we paired
+     *  through first (a customer's OWN relay, if that's what was used), then — for a paid
+     *  mesh — the baked-in eckN polygon (≥3). A free mesh gets only the relay carried in
+     *  its QR. Bare bases (no /E); the caller appends the health path. */
+    fun relayFallbackCandidates(): List<String> {
+        val paired = if (hasRelayUrl()) listOf(getRelayUrl()) else emptyList()
+        val polygon = if (isPaidMesh()) ECK_DEFAULT_NODES else emptyList()
+        return (paired + polygon).map { it.trimEnd('/') }.filter { it.isNotBlank() }.distinct()
+    }
 
     /**
      * Compute mesh_id from SYNC_NETWORK_KEY.

@@ -11,6 +11,43 @@
 
 
 
+## 2026-06-30 — Pairing relay-failover, in-place pairing UX & network indicator
+
+Driven interactively with live on-device verification (paid kiosk mesh `7e6fe40d…`).
+
+### Pairing relay-failover (closes the old ТЗ)
+- Relay-forwarded pairing now sweeps a **relay polygon** instead of one hardcoded free
+  relay (`9eck.com`): paid (v3) ⇒ baked-in eckN at their **direct relay ports**
+  `http://eckN.com:320N`, deterministically ordered by mesh_id; free (v2) ⇒ the public
+  relay URL(s) from the QR. `RelayClient.meshDispatch` → `RelayDispatch{Ok|Retryable|Fatal}`,
+  skip-to-next on transport/5xx/non-JSON-2xx, stop on 4xx, sweeping the whole polygon.
+- The earlier "`<!doctype html>`" was hitting `:443` (the WMS SPA); the relay lives on
+  `:320N`. No server change was needed.
+- **Verified live**: direct LAN pairing AND relay pairing via `eck3:3203` both reach
+  `status=active`.
+
+### In-place pairing UX
+- Deleted the dedicated `PairingScreen`. Pairing runs in place; the camera result routes
+  to `handlePairingQrCode` (fixed a bug where the pairing QR was mis-handled as an item
+  scan). Log streams into the main hex console via `MainScreenViewModel.forwardPairingLog`;
+  final line `🎉 Connected to mesh <id> via direct/relay … status=…`. Fixed a
+  `ConsoleView` duplicate-key `LazyColumn` crash (key by index, not content).
+
+### Network half-button + connectivity
+- Two-axis colors (bg = transport green/orange/red, text = mesh status), dark-text-on-
+  medium-bg system-half-button convention — see `.eck/UI_CONVENTIONS.md`.
+- Health check gains a **relay fallback** (yellow "relay" instead of Offline when only the
+  relay is reachable), walking `relayFallbackCandidates` (own relay first, then eckN for a
+  paid mesh). `server_url` saved WITH `/E` so `/health` → relay's `/E/health`.
+- Optimistic LAN switchback no longer suspends forever (5-min cooldown + re-arm on
+  connectivity change). Hysteresis + dropping the transient `Checking` post killed the
+  red-flicker / false "connection lost" spam. Transport switches are logged to the console
+  tagged with the mesh's first UUID segment.
+
+See ROADMAP Phase 11 for the full checklist.
+
+---
+
 ## 2026-03-27 — Agent Report
 
 # Agent Report

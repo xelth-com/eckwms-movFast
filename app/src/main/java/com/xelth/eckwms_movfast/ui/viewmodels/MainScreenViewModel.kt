@@ -3891,6 +3891,16 @@ class MainScreenViewModel : ViewModel() {
         _consoleLogs.postValue(emptyList())
     }
 
+    // --- TRANSPORT SWITCH LOG ---
+    // Surface direct ↔ relay ↔ offline transitions in the console (they were silent;
+    // only the half-button color changed). The last value lives in the VM so it survives
+    // MainScreen leaving/re-entering composition.
+    private var lastTransport: String? = null
+    fun noteTransport(transport: String, label: String) {
+        if (lastTransport != null && lastTransport != transport) addLog(label)
+        lastTransport = transport
+    }
+
     // --- PAIRING LOG BRIDGE ---
     // The dedicated Pairing Console screen was removed; pairing now runs in place and
     // its feedback streams into this console. The forward counter lives in the VM (not
@@ -3907,7 +3917,9 @@ class MainScreenViewModel : ViewModel() {
         }
         if (pairingLog.size > pairingForwarded) {
             for (i in pairingForwarded until pairingLog.size) {
-                pairingLog[i].takeIf { it.isNotBlank() }?.let { addLog(it) }
+                // Skip blank lines and pure "━━━" separators — noise in a shared console.
+                pairingLog[i].takeIf { line -> line.isNotBlank() && line.any { it != '━' } }
+                    ?.let { addLog(it) }
             }
             pairingForwarded = pairingLog.size
         }

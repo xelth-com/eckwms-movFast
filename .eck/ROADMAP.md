@@ -141,6 +141,48 @@ relay must never be the authoritative path for a paid mesh.
   saves the working relay as `relay_url`; only a PAID eckN node (also a real WMS) is
   additionally promoted to `server_url`. A free blind relay is never treated as the
   WMS.
+- [x] **eckN are reached on their DIRECT relay ports, not :443** — polygon defaults are
+  `http://eckN.com:320N` (eck1=3201/eck2=3202/eck3=3203), the bare Axum relay (mesh queue
+  `/E/m/*`, `/E/register`, `/E/health`). `:443` is the WMS SPA — dispatching there
+  returned `<!doctype html>`. `usesCleartextTraffic=true` already covers cleartext.
+  `orderedEckNodes` host-sorts before rotating to match the server exactly.
+- [x] **Verified end-to-end live (2026-06-30)**: direct LAN pairing (Phase 1) AND
+  relay-forwarded pairing through `eck3:3203` (kiosk mesh `7e6fe40d…`) both reach
+  `status=active`. Relay log on eck3 shows `kind=device_register target=<kiosk>`.
+
+### In-place pairing UX (no dedicated screen)
+- [x] **Removed the Pairing Console screen** (`PairingScreen.kt` deleted). Pairing runs
+  in place from the network half-button (long-press) / hardware-scanned ECK code; the
+  camera-scan result is routed to `handlePairingQrCode` (a `scanMode=="pairing"` guard
+  in the `mainMenu`/`scanScreen` result handlers — it used to be mis-routed as an item
+  scan). Status shows on the half-button color.
+- [x] **Pairing log → main hex console bridge** — `MainScreenViewModel.forwardPairingLog`
+  (forward counter in the VM so it survives the camera round-trip). Single summary line:
+  `🎉 Connected to mesh <id> via direct LAN (<url>) / via relay <relay> · status=…`.
+- [x] **`ConsoleView` keys by index, not by content** — repeated lines (the `━━━`
+  separators) previously crashed `LazyColumn` with a duplicate-key `IllegalArgumentException`.
+
+### Connectivity & network half-button (2026-06-30)
+- [x] **Optimistic switchback no longer suspends forever** — after 3 failed
+  preferred-local sniffs it cools down 5 min then re-arms (was permanent until app
+  restart); also re-arms immediately on a connectivity change (`SyncManager` network
+  callback → `NetworkHealthMonitor.onConnectivityChanged`).
+- [x] **Relay fallback in the health check** — when no direct/global server is reachable
+  but the mesh relay is, the indicator shows a (yellow) relay connection instead of
+  Offline. Walks the **relay polygon** (`relayFallbackCandidates`: the customer's own
+  relay first, then the eckN queue for a paid mesh; only the QR relay for a free mesh),
+  probed in parallel, first reachable wins. Gated by `isPaidMesh()` / `hasRelayUrl()`.
+  `server_url` is saved WITH `/E` on relay pairing so `<url>/health` hits the relay's
+  `/E/health` (bare host `/health` is 404).
+- [x] **Hysteresis** — a single dropped probe no longer flickers the button to red; the
+  last connected state is held until 2 consecutive offline checks. The transient
+  `Checking` state is no longer posted on periodic re-checks (it was flashing red +
+  spamming a false "connection lost" every 30 s).
+- [x] **Two-axis half-button colors** (see `.eck/UI_CONVENTIONS.md`) — background =
+  transport (green direct / orange relay / red none), text = mesh status (green active /
+  amber pending / red blocked). Dark text on a medium background (system-half-button
+  convention). Transport switches are logged to the console tagged with the mesh's first
+  UUID segment (`saveHomeMeshId`).
 - [ ] **PDAs onboarded via 9eck.com acting as a SERVER (temporary-code entry)** —
   future: let a phone attach to `9eck.com` as its WMS server (not just a blind relay)
   using the same temporary-code / invite-token mechanism as QR pairing — type a

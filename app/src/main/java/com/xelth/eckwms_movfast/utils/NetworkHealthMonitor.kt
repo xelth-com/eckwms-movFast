@@ -4,6 +4,7 @@ import android.util.Log
 import com.xelth.eckwms_movfast.ui.data.NetworkHealthState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.HttpURLConnection
@@ -17,8 +18,28 @@ import java.net.URL
 object NetworkHealthMonitor {
     private const val TAG = "NetworkHealthMonitor"
     private const val HEALTH_CHECK_TIMEOUT_MS = 5000L // 5 seconds per server
-    private const val MAX_PROBE_FAILURES = 3 // Stop probing after N consecutive failures
+    private const val MAX_PROBE_FAILURES = 3 // Cool down after N consecutive failures
+    private const val PROBE_COOLDOWN_MS = 5 * 60 * 1000L // re-arm the sniff 5 min after a cooldown
     private var probeFailCount = 0
+    private var probeNextRetryAt = 0L // earliest time to re-arm the sniff after a cooldown
+
+    // Hysteresis: a relay link over mobile can drop a single probe; don't flicker the
+    // indicator to Offline until N consecutive checks fail — hold the last good state.
+    private const val OFFLINE_GRACE_CHECKS = 2
+    private var lastConnectedState: NetworkHealthState? = null
+    private var consecutiveOffline = 0
+
+    /**
+     * Re-arm the optimistic preferred-local sniff immediately — call this when
+     * connectivity changes (e.g. WiFi connects) so a return to the kiosk LAN switches
+     * back to the direct server within one health cycle instead of waiting out the
+     * cooldown. Invoked from SyncManager's network callback.
+     */
+    fun onConnectivityChanged() {
+        if (probeFailCount > 0) Log.d(TAG, "🔄 Connectivity changed — re-arming preferred-local sniff")
+        probeFailCount = 0
+        probeNextRetryAt = 0L
+    }
 
     /**
      * Result of a server health check
@@ -44,6 +65,14 @@ object NetworkHealthMonitor {
         val preferredLocal = SettingsManager.getPreferredLocalUrl()
         var effectiveLocalUrl = localServerUrl
 
+        // Re-arm once the cooldown elapses — don't suspend forever; the worker may have
+        // just walked back onto the LAN since the last burst of failures.
+        val nowMs = System.currentTimeMillis()
+        if (probeFailCount >= MAX_PROBE_FAILURES && nowMs >= probeNextRetryAt) {
+            Log.d(TAG, "♻️ Probe cooldown elapsed — re-arming preferred-local sniff")
+            probeFailCount = 0
+        }
+
         if (!preferredLocal.isNullOrEmpty() && preferredLocal != localServerUrl && probeFailCount < MAX_PROBE_FAILURES) {
              Log.d(TAG, "🕵️ OPTIMISTIC CHECK: Sniffing preferred local: $preferredLocal (fails: $probeFailCount/$MAX_PROBE_FAILURES)")
              val probeResult = checkServerHealth(preferredLocal, "PROBE_LOCAL")
@@ -52,14 +81,17 @@ object NetworkHealthMonitor {
                  SettingsManager.saveServerUrl(preferredLocal)
                  effectiveLocalUrl = preferredLocal
                  probeFailCount = 0
+                 probeNextRetryAt = 0L
              } else {
                  probeFailCount++
                  if (probeFailCount >= MAX_PROBE_FAILURES) {
-                     Log.w(TAG, "🛑 PROBE_LOCAL failed $MAX_PROBE_FAILURES times, suspending probes for $preferredLocal")
+                     probeNextRetryAt = nowMs + PROBE_COOLDOWN_MS
+                     Log.w(TAG, "🛑 PROBE_LOCAL failed $MAX_PROBE_FAILURES times — cooling down ${PROBE_COOLDOWN_MS / 1000}s before retry")
                  }
              }
         } else if (probeFailCount >= MAX_PROBE_FAILURES) {
-             Log.d(TAG, "🛑 PROBE_LOCAL suspended (failed $probeFailCount times): $preferredLocal")
+             val leftS = ((probeNextRetryAt - nowMs).coerceAtLeast(0)) / 1000
+             Log.d(TAG, "🛑 PROBE_LOCAL cooling down (${leftS}s left): $preferredLocal")
         }
         // -----------------------------------
 
@@ -79,10 +111,10 @@ object NetworkHealthMonitor {
 
         // Check both servers in parallel
         val localHealthDeferred = async {
-            effectiveLocalUrl?.let { checkServerHealth(it, "LOCAL") }
+            effectiveLocalUrl?.takeIf { it.isNotBlank() }?.let { checkServerHealth(it, "LOCAL") }
         }
         val globalHealthDeferred = async {
-            globalServerUrl?.let { checkServerHealth(it, "GLOBAL") }
+            globalServerUrl?.takeIf { it.isNotBlank() }?.let { checkServerHealth(it, "GLOBAL") }
         }
 
         val localHealth = localHealthDeferred.await()
@@ -104,9 +136,50 @@ object NetworkHealthMonitor {
         }
 
         // Determine overall health state
-        val healthState = determineHealthState(localHealth, globalHealth)
+        var healthState = determineHealthState(localHealth, globalHealth)
+
+        // Relay fallback: if no direct/global server is reachable but the mesh relay is,
+        // surface a (yellow) relay connection instead of full Offline — the device can
+        // still reach its master via the /E/m/* queue. Only for devices that actually
+        // paired via a relay. The relay base is bare (no /E) and checkServerHealth appends
+        // /health, so probe "<relay>/E" to hit the relay's /E/health.
+        if (healthState is NetworkHealthState.Offline) {
+            // Walk the relay polygon (own relay first, then the eckN queue for a paid mesh),
+            // not a single relay — if one eckN is down the device is still reachable via a
+            // sibling. Probe in parallel; the first reachable (list order) wins.
+            val relays = SettingsManager.relayFallbackCandidates()
+            if (relays.isNotEmpty()) {
+                Log.d(TAG, "🛰️ All direct servers down — probing relay polygon (${relays.size}): $relays")
+                val relayHit = relays
+                    .map { base -> async { base to checkServerHealth("$base/E", "RELAY") } }
+                    .awaitAll()
+                    .firstOrNull { it.second.isReachable }
+                if (relayHit != null) {
+                    Log.i(TAG, "🛰️ Relay reachable — surfacing relay connection: ${relayHit.first}")
+                    // serverUrl = relay domain → connectionType GLOBAL_URL → relay (yellow).
+                    healthState = NetworkHealthState.ProxyGlobal(
+                        serverUrl = relayHit.first,
+                        latencyMs = relayHit.second.responseTimeMs
+                    )
+                }
+            }
+        }
 
         Log.d(TAG, "========================================")
+        // Hysteresis: hold the last connected state through a brief offline blip so the
+        // indicator doesn't flicker red on a single dropped relay probe.
+        if (healthState.isConnected()) {
+            lastConnectedState = healthState
+            consecutiveOffline = 0
+        } else {
+            consecutiveOffline++
+            val held = lastConnectedState
+            if (consecutiveOffline < OFFLINE_GRACE_CHECKS && held != null) {
+                Log.d(TAG, "🕯️ Offline check $consecutiveOffline/$OFFLINE_GRACE_CHECKS — holding ${held.displayName}")
+                healthState = held
+            }
+        }
+
         Log.d(TAG, "Health check complete: ${healthState.displayName}")
         Log.d(TAG, "========================================")
 

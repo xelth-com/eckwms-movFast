@@ -215,20 +215,23 @@ fun NetworkIndicatorButton(
     onClick: () -> Unit = {},
     onLongClick: () -> Unit = {}
 ) {
-    val isApproved = regStatus == "active" || regStatus == "running"
-
+    // System half-button convention: DARK text on a MEDIUM background (like the other hex
+    // buttons) so it reads without glaring — NOT the bright-on-dark of full mode buttons.
+    //  • Background = TRANSPORT: green = direct local server, orange = via relay/remote,
+    //    red = no connection.
+    //  • Text color = MESH STATUS: green = accepted (active), amber = waiting (pending),
+    //    red = rejected/removed (blocked), grey = unknown.
     val bgColor = when {
-        !isApproved -> Color(0xFF8B0000)
-        !networkState.isConnected() -> Color(0xFF3a3a3a)
-        networkState.connectionType == ConnectionType.LOCAL_IP -> Color(0xFF1B5E20)
-        else -> Color(0xFF5D4037)
+        !networkState.isConnected() -> Color(0xFFC62828)                            // medium red: no connection
+        networkState.connectionType == ConnectionType.LOCAL_IP -> Color(0xFF4CAF50) // medium green: direct local
+        else -> Color(0xFFF57C00)                                                   // orange (Receiving, a touch darker): relay/remote
     }
 
-    val textColor = when {
-        !isApproved -> Color(0xFFF44336)
-        !networkState.isConnected() -> Color(0xFF9E9E9E)
-        networkState.connectionType == ConnectionType.LOCAL_IP -> Color(0xFF4CAF50)
-        else -> Color(0xFFFFEB3B)
+    val textColor = when (regStatus) {
+        "active", "running" -> Color(0xFF006000)                                    // pure green: accepted
+        "pending" -> Color(0xFF6D4C00)                                              // dark amber: waiting
+        "blocked", "rejected", "deleted", "unregistered" -> Color(0xFF4A0000)       // dark red: rejected/removed
+        else -> Color(0xFF263238)                                                   // dark grey: unknown
     }
 
     Box(
