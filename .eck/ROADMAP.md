@@ -183,10 +183,24 @@ relay must never be the authoritative path for a paid mesh.
   amber pending / red blocked). Dark text on a medium background (system-half-button
   convention). Transport switches are logged to the console tagged with the mesh's first
   UUID segment (`saveHomeMeshId`).
-- [ ] **PDAs onboarded via 9eck.com acting as a SERVER (temporary-code entry)** —
-  future: let a phone attach to `9eck.com` as its WMS server (not just a blind relay)
-  using the same temporary-code / invite-token mechanism as QR pairing — type a
-  short-lived code instead of scanning a QR. Reuses the relay-forwarded
-  `device_register` envelope + invite-token auto-approve; the code resolves to the
-  target master UUID + (free) relay polygon. Enables free-tier onboarding without a
-  printed QR.
+- [x] **PDAs onboarded via 9eck.com by temporary code — Android side (2026-06-30)**.
+  Type a short code instead of scanning a QR; it resolves (via 9eck.com / xelth.com)
+  into a normal pairing QR, then the existing pairing flow runs (direct or
+  relay-forwarded). Enables free-tier onboarding without a printed QR.
+  - **UI = Network mode** (single-tap on the server half-button): the console shows the
+    live connection status (transport / server / mesh / reg), and the hex grid offers
+    📷 Scan QR · 🔑 Code · 🔄 Status · ✕ Exit. 🔑 Code opens a keyboard dialog →
+    `pairWithCode`. (The old bottom-sheet `NetworkPanelSheet` was removed — system
+    half-buttons drive everything via the console + hex grid, per `.eck/UI_CONVENTIONS.md`.)
+  - **Client**: `ScanApiService.resolvePairingCode(code)` walks
+    `SettingsManager.getOnboardingResolvers()` (default `https://9eck.com`,
+    `https://xelth.com`): transport/5xx → next resolver, **404 = invalid/expired** (stop),
+    2xx `{qr}` → run `ScanRecoveryViewModel.pairWithCode` → `handlePairingQrCode`.
+  - [ ] **Follow-up (Android)**: replace the soft-keyboard code dialog with an on-grid
+    HEX keypad (type the code on the hexagons), keeping the system Scan button as the
+    usual 🔲 square.
+  - [ ] **Server (9eck.com) TODO**: `POST /E/pair/code` `{"code":"<CODE>"}` →
+    `200 {"qr":"ECK$2$<master-uuid>$<key>$<relay-urls>$<invite-token>"}` (free QR carries
+    9eck.com in its relay URLs) / `404` invalid-or-expired. Mint short-lived codes per
+    master + invite-token; map code → that QR. Until this lands the Android side returns
+    "invalid/expired" (no resolver endpoint yet).

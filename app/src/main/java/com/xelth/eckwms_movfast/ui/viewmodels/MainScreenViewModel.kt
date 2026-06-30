@@ -278,6 +278,11 @@ class MainScreenViewModel : ViewModel() {
     private val _receivingStatus = MutableLiveData<String>("")
     val receivingStatus: LiveData<String> = _receivingStatus
 
+    // Network mode: single-tap on the server half-button. Console shows connection status,
+    // hex grid offers Scan QR / Code / Refresh / Exit (pairing itself runs in ScanRecoveryVM).
+    private val _isNetworkMode = MutableLiveData<Boolean>(false)
+    val isNetworkMode: LiveData<Boolean> = _isNetworkMode
+
     private var receivingSteps: List<Map<String, Any>> = emptyList()
     private var currentStepIndex: Int = 0
     val receivingData = mutableMapOf<String, Any>()
@@ -490,6 +495,8 @@ class MainScreenViewModel : ViewModel() {
             renderTripGrid()
         } else if (_isDeviceCheckMode.value == true) {
             renderDeviceCheckGrid()
+        } else if (_isNetworkMode.value == true) {
+            renderNetworkGrid()
         } else {
             initializeGrid()
         }
@@ -939,6 +946,10 @@ class MainScreenViewModel : ViewModel() {
             return handleDeviceCheckButtonClick(action)
         }
 
+        if (_isNetworkMode.value == true) {
+            return handleNetworkButtonClick(action)
+        }
+
         // Smart Context actions (main menu)
         if (action == "act_smart_cancel") {
             resetSmartContext()
@@ -1013,6 +1024,7 @@ class MainScreenViewModel : ViewModel() {
                     _isInventoryMode.value == true -> exitInventoryMode()
                     _isDeviceCheckMode.value == true -> exitDeviceCheckMode()
                     _isRestockMode.value == true -> exitRestockMode()
+                    _isNetworkMode.value == true -> exitNetworkMode()
                     else -> {}
                 }
                 "handled"
@@ -3873,6 +3885,45 @@ class MainScreenViewModel : ViewModel() {
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
 
         updateRenderCells()
+    }
+
+    // --- NETWORK MODE ---
+    // Console shows the live connection status; the hex grid offers Scan QR / Code /
+    // Refresh / Exit. The net_* grid actions are routed by MainScreen.onGridAction (they
+    // need navController + ScanRecoveryViewModel for the actual pairing).
+    fun enterNetworkMode() {
+        _isNetworkMode.value = true
+        addLog("🌐 Network mode")
+        renderNetworkGrid()
+    }
+
+    fun exitNetworkMode() {
+        _isNetworkMode.value = false
+        addLog("Exited Network mode")
+        initializeGrid()
+    }
+
+    private fun renderNetworkGrid() {
+        val uiItems = listOf(
+            mapOf("type" to "button", "label" to "🔑\nCode", "color" to "#FF9800", "action" to "net_enter_code"),
+            mapOf("type" to "button", "label" to "🔄\nStatus", "color" to "#607D8B", "action" to "net_refresh")
+        )
+        gridManager.clearAndReset()
+        // Pin the scan button (kept as the usual 🔲 square) to the pairing-QR scan; no
+        // photo button in this mode.
+        placeSystemButtons(scanAction = "net_scan_qr", photoAction = null)
+        gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
+        updateRenderCells()
+    }
+
+    private fun handleNetworkButtonClick(action: String): String {
+        return when (action) {
+            "act_exit" -> { exitNetworkMode(); "handled" }
+            // Routed by MainScreen.onGridAction (camera nav / code dialog / health check):
+            "net_scan_qr", "net_enter_code", "net_refresh" -> action
+            else -> "handled"
+        }
     }
 
     // --- COMMON ---

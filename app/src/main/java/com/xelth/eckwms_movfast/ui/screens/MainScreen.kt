@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -141,6 +142,9 @@ fun MainScreen(
     val isReceivingMode by mainViewModel.isReceivingMode.observeAsState(false)
     val receivingStatus by mainViewModel.receivingStatus.observeAsState("")
     val receivingModalJson by mainViewModel.showReceivingModal.observeAsState(null)
+
+    // Network mode (single-tap on the server half-button)
+    val isNetworkMode by mainViewModel.isNetworkMode.observeAsState(false)
 
     // Trip mode state (Fahrtenbuch)
     val isTripMode by mainViewModel.isTripMode.observeAsState(false)
@@ -265,6 +269,9 @@ fun MainScreen(
         ActivityResultContracts.RequestPermission()
     ) { /* granted → user presses the mic again to talk */ }
 
+    // Network-mode "Enter code" dialog (onboard via 9eck.com without a QR).
+    var showCodeDialog by remember { mutableStateOf(false) }
+
     // Dispatch a grid action — shared by button taps AND voice commands. Runs the
     // ViewModel handler, then performs the MainScreen-only side effects
     // (navigation, camera, dialogs, permission flows).
@@ -287,6 +294,13 @@ fun MainScreen(
             "navigate_explorer" -> navController.navigate("explorerScreen")
             "navigate_picking" -> navController.navigate("pickingList")
             "navigate_pos" -> navController.navigate("pos")
+            // Network mode actions
+            "net_scan_qr" -> {
+                viewModel.clearPairingLog()
+                navController.navigate("cameraScanScreen?scan_mode=pairing")
+            }
+            "net_enter_code" -> showCodeDialog = true
+            "net_refresh" -> viewModel.triggerManualHealthCheck()
             // Trip start/stop sub-menu (replaces the TripsScreen panel)
             "trip_start_business" -> tripStartWithPurpose("business")
             "trip_start_private" -> tripStartWithPurpose("private")
@@ -310,7 +324,6 @@ fun MainScreen(
 
     // State for the Intake Bottom Sheet
     var showIntakeSheet by remember { mutableStateOf(false) }
-    var showNetworkPanel by remember { mutableStateOf(false) }
     var intakeConfigJson by remember { mutableStateOf("{}") }
     var intakeLongPressAction by remember { mutableStateOf("") }
     val intakeFormState = remember { mutableStateMapOf<String, Any>() }
@@ -541,7 +554,44 @@ fun MainScreen(
                     .align(Alignment.TopCenter)
                     .background(Color.Black)
             ) {
-                if (isRepairMode) {
+                if (isNetworkMode) {
+                    // Live connection status (replaces the old bottom-sheet panel).
+                    val (tLabel, tColor) = when {
+                        !networkHealthState.isConnected() -> "OFFLINE" to Color(0xFFF44336)
+                        networkHealthState.connectionType == com.xelth.eckwms_movfast.ui.data.ConnectionType.LOCAL_IP ->
+                            "DIRECT · local server" to Color(0xFF4CAF50)
+                        else -> "RELAY · ${networkHealthState.serverHash}" to Color(0xFFFF9800)
+                    }
+                    val mesh = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeMeshId()
+                        ?.substringBefore("-")?.takeIf { it.isNotBlank() }
+                        ?: com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+                            .substringBefore("-").ifBlank { "—" }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(consoleHeight + overlap)
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .padding(bottom = overlap),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text("🌐 Network", color = Color.Gray, fontSize = 12.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Connection: $tLabel",
+                            color = tColor,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "Server: ${com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().ifEmpty { "—" }}",
+                            color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1
+                        )
+                        Text(
+                            "Mesh: $mesh   ·   Reg: ${deviceRegistrationStatus.uppercase()}",
+                            color = Color.White, fontSize = 12.sp
+                        )
+                    }
+                } else if (isRepairMode) {
                     val activeSlotPhoto by mainViewModel.activeSlotPhoto.observeAsState(null)
                     val activeSlotAction = mainViewModel.getActiveSlotAction()
                     Box(
@@ -929,7 +979,8 @@ fun MainScreen(
                         }
                     },
                     onNetworkIndicatorClick = {
-                        showNetworkPanel = true
+                        // Single tap → enter Network mode (status in console, hex actions).
+                        mainViewModel.enterNetworkMode()
                     },
                     onNetworkIndicatorLongClick = {
                         // Pair in place: jump straight to the QR scanner; the result
@@ -1008,17 +1059,35 @@ fun MainScreen(
         }
     }
 
-    // Network Status Bottom Sheet
-    if (showNetworkPanel) {
-        NetworkPanelSheet(
-            networkHealthState = networkHealthState,
-            deviceRegistrationStatus = deviceRegistrationStatus,
-            onDismiss = { showNetworkPanel = false },
-            onRefresh = { viewModel.triggerManualHealthCheck() },
-            onRePair = {
-                showNetworkPanel = false
-                viewModel.clearPairingLog()
-                navController.navigate("cameraScanScreen?scan_mode=pairing")
+    // Network mode: "Enter code" → onboard via 9eck.com by typing a short pairing code.
+    if (showCodeDialog) {
+        var pairCode by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showCodeDialog = false },
+            title = { Text("Connect via 9eck.com") },
+            text = {
+                Column {
+                    Text("Type the short pairing code from your administrator.")
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.material3.OutlinedTextField(
+                        value = pairCode,
+                        onValueChange = { pairCode = it.uppercase().trim() },
+                        singleLine = true,
+                        label = { Text("Pairing code") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCodeDialog = false
+                        viewModel.pairWithCode(pairCode)
+                    },
+                    enabled = pairCode.isNotBlank()
+                ) { Text("Connect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCodeDialog = false }) { Text("Cancel") }
             }
         )
     }

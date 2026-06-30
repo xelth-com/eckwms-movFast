@@ -901,6 +901,56 @@ class ScanApiService(private val context: Context) {
      * @param timestamp The timestamp used in the signature
      * @return Result of the registration operation
      */
+    /**
+     * Resolve a short-lived onboarding CODE (typed instead of scanning a QR) into a
+     * pairing QR payload, via the well-known onboarding resolver(s) (9eck.com, then
+     * xelth.com). The server maps an unexpired code → an `ECK$…` QR string; the caller
+     * then runs the normal pairing flow with it (direct or relay-forwarded).
+     *
+     * Walk semantics: transport error / 5xx → next resolver; **404 = invalid/expired**
+     * (authoritative, stop); 2xx with a non-blank `qr` → success. Returns the QR string,
+     * or null if the code is invalid/expired or every resolver is unreachable.
+     *
+     * Server contract: `POST {resolver}/E/pair/code` body `{"code":"<CODE>"}` →
+     * `200 {"qr":"ECK$2$…"}` (free onboarding QR carries 9eck.com in its relay URLs) /
+     * `404` invalid-or-expired.
+     */
+    suspend fun resolvePairingCode(code: String): String? = withContext(Dispatchers.IO) {
+        val resolvers = com.xelth.eckwms_movfast.utils.SettingsManager.getOnboardingResolvers()
+        for (base in resolvers) {
+            try {
+                val url = URL("${base.removeSuffix("/")}/E/pair/code")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.setRequestProperty("Accept", "application/json")
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 15_000
+                connection.doOutput = true
+                OutputStreamWriter(connection.outputStream, "UTF-8").use {
+                    it.write(JSONObject().put("code", code).toString())
+                }
+                val responseCode = connection.responseCode
+                when {
+                    responseCode == HttpURLConnection.HTTP_OK -> {
+                        val resp = connection.inputStream.bufferedReader().use { it.readText() }
+                        val qr = JSONObject(resp).optString("qr", "")
+                        Log.d(TAG, "Code resolved via $base (qr len=${qr.length})")
+                        return@withContext qr.ifBlank { null }
+                    }
+                    responseCode == HttpURLConnection.HTTP_NOT_FOUND -> {
+                        Log.w(TAG, "Pairing code rejected by $base (404 invalid/expired)")
+                        return@withContext null // authoritative — don't try the next resolver
+                    }
+                    else -> Log.w(TAG, "Code resolve $base HTTP $responseCode — trying next resolver")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Code resolve via $base failed: ${e.message} — trying next resolver")
+            }
+        }
+        return@withContext null
+    }
+
     suspend fun registerDevice(
         publicKeyBase64: String,
         signature: String,

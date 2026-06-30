@@ -729,6 +729,17 @@ object SettingsManager {
 
     fun saveRelayUrl(url: String) = prefs.edit().putString(KEY_RELAY_URL, url.trim()).commit()
     fun getRelayUrl(): String = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL
+
+    // Well-known public onboarding resolvers: a typed pairing code is POSTed to
+    // `{resolver}/E/pair/code` to fetch the pairing QR (bootstrap before any server is
+    // known). 9eck.com first, then xelth.com. Overridable but defaults to these.
+    private const val KEY_ONBOARDING_RESOLVERS = "onboarding_resolvers"
+    private val DEFAULT_ONBOARDING_RESOLVERS = listOf("https://9eck.com", "https://xelth.com")
+    fun getOnboardingResolvers(): List<String> {
+        val saved = (prefs.getString(KEY_ONBOARDING_RESOLVERS, "") ?: "")
+            .split(",").map { it.trim() }.filter { it.isNotBlank() }
+        return saved.ifEmpty { DEFAULT_ONBOARDING_RESOLVERS }
+    }
     /** True only if a relay URL was actually set during pairing (not the bare default),
      *  so the health monitor doesn't probe a relay on devices that never paired via one. */
     fun hasRelayUrl(): Boolean = prefs.contains(KEY_RELAY_URL)

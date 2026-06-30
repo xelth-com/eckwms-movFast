@@ -1825,6 +1825,34 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
     }
 
     /**
+     * Onboard by TYPING a short-lived code instead of scanning a QR. The code is resolved
+     * (via 9eck.com / xelth.com) into a pairing QR, then the normal pairing flow runs —
+     * so a phone can attach with no printed QR (free-tier onboarding). Feedback streams
+     * into the main hex console like a scanned pairing.
+     */
+    fun pairWithCode(code: String) {
+        val trimmed = code.trim().uppercase()
+        if (trimmed.isBlank()) return
+        _isPairing.postValue(true)
+        _pairingSuccess.postValue(false)
+        viewModelScope.launch {
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            addPairingLog("🔑 PAIRING BY CODE: $trimmed")
+            addPairingLog("━━━━━━━━━━━━━━━━━━━━━━━━")
+            _pairingStatus.postValue("Resolving code…")
+            val qr = scanApiService.resolvePairingCode(trimmed)
+            if (qr.isNullOrBlank()) {
+                addPairingLog("❌ Code invalid, expired, or no resolver reachable")
+                _pairingStatus.postValue("Error: invalid/expired code")
+                _isPairing.postValue(false)
+                return@launch
+            }
+            addPairingLog("✅ Code resolved → pairing")
+            handlePairingQrCode(qr) // reuses direct + relay-forwarded flow; manages isPairing
+        }
+    }
+
+    /**
      * Handles the pairing QR code scanned from the server
      * Supports:
      * - ECK-P1-ALPHA format: ECK$1$UUID$HEX_KEY (new string-based format)
