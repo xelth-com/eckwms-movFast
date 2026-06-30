@@ -1,69 +1,65 @@
 # Server spec — PDA onboarding by temporary code (for the 9eck.com coder)
 
-**Status:** Android client is DONE and live (commit `3306db0`). Only the **server
-resolver endpoint** below is missing. Once it exists, typing a code onboards a PDA with
-no printed QR. See ROADMAP Phase 11.
+**Status:** Android client is DONE and live (commit `3306db0`). Server side = a code
+**rendezvous on the EXISTING discovery board** (the one servers already use to find each
+other). **No** parallel stored-QR table, **no** mesh-synced `pair_code` table of pre-built
+strings, **nothing** hosting-specific. See ROADMAP Phase 11.
 
-## Goal
-Let a PDA attach to a mesh by **typing a short-lived code** instead of scanning a QR. The
-phone POSTs the code to a public resolver (`9eck.com`, then `xelth.com`), gets back a
-**normal pairing-QR string**, and runs the existing pairing flow (direct or
-relay-forwarded). Nothing else on the client changes.
+## Model (read this first — it's the whole point)
+The code is a **secret classified-ad on the rendezvous board**, NOT a key into a QR store:
 
-## The one endpoint to implement
-`POST {resolver}/E/pair/code` — on **9eck.com** (and ideally xelth.com).
+- A **master** that wants to onboard a PDA posts a short rendezvous entry
+  **`code → { master UUID, invite-token, reachable relay }`** on the board (short TTL,
+  single-use).
+- A **PDA types the same code** → looks it up on the board → gets the master's pairing
+  payload → runs the existing **relay-forwarded** pairing (`device_register` over the relay
+  queue `/E/m/*`). This is exactly how a server finds a peer — just initiated by a typed
+  secret instead of mesh gossip.
+- **Free tier → the public board** (the relay everyone already polls, e.g. 9eck.com).
+  **Paid tier → eckN.** Same split as the relay polygon.
+- **Reuse the existing discovery / node-advertisement mechanism.** Do **NOT** build a
+  parallel `pair_code` table that stores full `ECK$…` strings and needs its own mesh sync,
+  and there's nothing hosting-specific — it runs wherever the board already runs.
 
-**Request**
-```json
-{ "code": "ABC123" }
-```
-`code` = the user-typed code (the client already uppercases + trims it).
+## Why not the stored-QR approach
+Storing pre-built QR strings in a new synced table duplicates the QR concept and adds sync
+surface. The code only needs to let the PDA **find the master**; the board already does
+"find a node". Keep just an ephemeral rendezvous record (code → master + invite + relay +
+expiry), and build the pairing payload on the fly at resolve time if you want to reuse the
+existing `build_pairing_qr` field builder.
 
-**Responses**
+## Client contract (already built — keep it)
+`POST {board}/E/pair/code`  body `{ "code": "ABC123" }` (client uppercases/trims):
+
 | Code | Body | Client behaviour |
 |------|------|------------------|
-| `200` | `{ "qr": "ECK$2$<UUID>$<KEY>$<RELAY_URLS>$<INVITE_JWT>" }` | parse `qr` → run pairing |
-| `404` | — | **authoritative**: invalid / expired / already used → stop, show "invalid/expired" (does NOT try the next resolver) |
-| `5xx` / transport | — | try the next resolver in the list |
+| `200` | the master's pairing payload (see below) | run the normal pairing flow |
+| `404` | — | **authoritative**: unknown / expired / used → stop, show "invalid/expired" (does NOT try the next board) |
+| `5xx` / transport | — | try the next board (`9eck.com` → `xelth.com`) |
 
-- The `qr` is a **normal pairing-QR string** the client already parses
-  (`handlePairingQrCode`). Reuse the master's existing QR generator.
-- For **free** onboarding the `RELAY_URLS` field MUST include a public relay the phone can
-  reach (e.g. `https://9eck.com`) — the master is behind NAT, so pairing goes
-  **relay-forwarded** over `/E/m/*`. (A paid `ECK$3$…` QR is fine too if the code maps to a
-  paid mesh — then the client uses the baked-in eckN polygon.)
+**200 body — pick one:**
+- **Default (zero client change):** `{ "qr": "ECK$2$UUID$KEY$RELAY_URLS$INVITE_JWT" }` —
+  the pairing string **built on the fly from the rendezvous entry** (an *encoding of the
+  rendezvous result*, not a stored QR). `RELAY_URLS` must include a public relay reachable
+  by the NAT'd master (free). The client feeds it straight to `handlePairingQrCode`.
+- **Alternative:** `{ "master_uuid", "relay", "invite_token", "mesh", "paid" }` — if you
+  prefer structured fields, say so; it's a ~3-line client tweak (we'd call
+  `registerViaRelay` directly).
 
-## QR payload (existing format — do not invent a new one)
-- v2 (free): `ECK$2$UUID$KEY$URLS[$TOKEN]`
-- v3 (paid): `ECK$3$UUID$KEY$MESH$OWN_URLS[$TOKEN]`
+`INVITE_JWT` = the auto-approve token (`role=invite`) so the device lands `active` with no
+manual approval, exactly like a scanned invite QR.
 
-`$`-separated; UUID/KEY/MESH are compact uppercase. `TOKEN` = the **invite-JWT**
-(`role=invite`, auto-approve) so the device lands `active` without manual approval, exactly
-like a scanned invite QR.
-
-## Code lifecycle (server side)
-1. An admin / the master **mints** a short code bound to: target **master UUID**, **mesh**,
-   an **invite-token**, and the (free) **relay** to advertise in the QR.
-2. **Short-lived** (≈5–15 min TTL), ideally **single-use**.
-3. On resolve: look up the unexpired code → build the `ECK$…` QR (same generator as the
-   printed/scanned QR) → return `{ "qr": … }`. Optionally burn the code on success.
-
-## How the client consumes it (context)
-- `ScanApiService.resolvePairingCode(code)` walks
-  `SettingsManager.getOnboardingResolvers()` (default `https://9eck.com`,
-  `https://xelth.com`): transport/5xx → next resolver, `404` → stop, `2xx {qr}` → success.
-- `ScanRecoveryViewModel.pairWithCode(code)` → resolves → `handlePairingQrCode(qr)` → the
-  normal direct / relay-forwarded pairing runs (relay-forwarded `device_register` rides the
-  relay queue `/E/m/dispatch|poll|ack|result`).
-- UI: **Network mode** (single-tap the server half-button) → 🔑 **Code** → type → Connect.
+## Master side (mint)
+- Generate a short code (your call — e.g. 6-char Crockford base32), publish the rendezvous
+  entry on the board keyed by the code, TTL ≈10 min, single-use; burn on first successful
+  resolve. The master UI shows the code to read out / type into the PDA.
 
 ## Acceptance
-- `POST https://9eck.com/E/pair/code {"code":"<valid>"}` → `200` with a parseable
-  `ECK$2$…` QR whose relay URLs include a reachable public relay.
-- A PDA typing that code (Network mode → 🔑 Code) lands `status=active` on the target
-  master, **no printed QR**.
-- Expired / used / garbage code → `404` → PDA shows "invalid/expired".
+- A master posts a code; a PDA on mobile data types it (Network mode → 🔑 Code) and lands
+  `status=active` on that master via the relay — **no printed QR, no LAN**.
+- Free resolves on the public board, paid on eckN.
+- Unknown / expired / used code → `404` → PDA shows "invalid/expired".
 
 ## Out of scope (Android follow-up, not server)
-- Replace the soft-keyboard code dialog with an on-grid **hex keypad** (type the code on
-  the hexagons). The system Scan button stays the usual 🔲 square.
+- Replace the soft-keyboard code dialog with an on-grid **hex keypad**. System Scan button
+  stays the 🔲 square.
