@@ -177,6 +177,38 @@ class WarehouseRepository(
     }
 
     /**
+     * Queue a stocktake put-away for offline sync — the SyncWorker POSTs it to
+     * /api/warehouse/put-away when connectivity returns. `op` = "set" (counted
+     * on-hand) by default.
+     */
+    suspend fun queuePutAway(
+        itemBarcode: String,
+        shelfBarcode: String,
+        warehouse: String,
+        qty: Double,
+        op: String = "set"
+    ): Long = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("item_barcode", itemBarcode)
+            put("shelf_barcode", shelfBarcode)
+            put("warehouse", warehouse)
+            put("qty", qty)
+            put("op", op)
+            put("timestamp", System.currentTimeMillis())
+        }.toString()
+
+        val queueEntity = SyncQueueEntity(
+            type = "put_away",
+            payload = payload
+        )
+        val queueId = db.syncQueueDao().addToQueue(queueEntity)
+        Log.d(TAG, "Queued put_away #$queueId: $itemBarcode -> $shelfBarcode ($op $qty)")
+
+        SyncManager.scheduleSync(context)
+        queueId
+    }
+
+    /**
      * Fetch a CRM entity for display: network-first with Room cache fallback.
      * Successful fetches refresh the cache so the entity stays browsable offline.
      */

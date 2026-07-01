@@ -427,6 +427,20 @@ fun MainScreen(
         mainViewModel.onFetchLocationContents = { locationId ->
             scanApiService.fetchExplorerData("/api/explorer/locations/$locationId/contents")
         }
+        // Stocktake: soll = warehouse Exact reconcile; counted lines booked via put-away.
+        mainViewModel.onFetchExpectedSoll = { wh -> scanApiService.fetchReconcile(wh) }
+        mainViewModel.onPutAwayItem = { item, shelf, wh, qty ->
+            val outcome = try {
+                scanApiService.putAway(item, shelf, wh, qty, "set")
+            } catch (e: Exception) {
+                com.xelth.eckwms_movfast.api.SyncOutcome.FAILED
+            }
+            // Only a transport failure is retryable; a 4xx (e.g. unknown part) is permanent.
+            if (outcome == com.xelth.eckwms_movfast.api.SyncOutcome.FAILED) {
+                com.xelth.eckwms_movfast.data.WarehouseRepository.getInstance(context)
+                    .queuePutAway(item, shelf, wh, qty)
+            }
+        }
         // Multi-user callbacks
         mainViewModel.onFetchUsers = { scanApiService.fetchActiveUsers() }
         mainViewModel.onVerifyPin = { userId, pin -> scanApiService.verifyUserPin(userId, pin) }

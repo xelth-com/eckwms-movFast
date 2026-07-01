@@ -186,6 +186,10 @@ class MainScreenViewModel : ViewModel() {
     var onLookupProduct: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.ProductEntity?)? = null
     var onLookupLocation: (suspend (barcode: String) -> com.xelth.eckwms_movfast.data.local.entity.LocationEntity?)? = null
     var onFetchLocationContents: (suspend (locationId: String) -> com.xelth.eckwms_movfast.api.ScanResult)? = null
+    // Warehouse soll (Exact reconcile) — returns raw JSON `{lines:[{default_code,name,soll,…}]}`.
+    var onFetchExpectedSoll: (suspend (warehouse: String) -> String?)? = null
+    // Put-away one counted line to a shelf (optimistic; offline-queued on failure).
+    var onPutAwayItem: (suspend (itemBarcode: String, shelfBarcode: String, warehouse: String, qty: Double) -> Unit)? = null
     // Inventory records persistence (PDA = source of truth)
     var onSaveInventoryRecords: (suspend (locationBarcode: String, records: List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>) -> Unit)? = null
     var onLoadInventoryRecords: (suspend (locationBarcode: String) -> List<com.xelth.eckwms_movfast.data.local.entity.InventoryRecordEntity>)? = null
@@ -391,6 +395,10 @@ class MainScreenViewModel : ViewModel() {
         val reservedQty: Double
     )
     private val expectedInventory = mutableMapOf<String, ExpectedItem>()  // barcode -> ExpectedItem
+    // Exact scraped stock (soll), warehouse-level: default_code -> expected qty. Loaded
+    // once via reconcile; a scanned item's soll is copied into expectedInventory on demand.
+    private val sollMap = mutableMapOf<String, Double>()
+    private var inventoryWarehouse: String = "WH008"  // target WH for stocktake put-away + reconcile
 
     // Numpad state
     private var isNumpadActive = false
@@ -3262,6 +3270,12 @@ class MainScreenViewModel : ViewModel() {
                     if (entry.displayName == null) {
                         entry.displayName = expectedInventory[cleanCode]?.productName
                     }
+                    // Warehouse-level Exact soll: surface the expected qty for this scanned part.
+                    if (!expectedInventory.containsKey(cleanCode)) {
+                        sollMap[cleanCode]?.let { s ->
+                            expectedInventory[cleanCode] = ExpectedItem(0L, entry.displayName ?: "", cleanCode, cleanCode, s, 0.0)
+                        }
+                    }
 
                     // Try to load existing photo using decrypted internal ID
                     if (entry.photo == null && decryptedItemId != null) {
@@ -3384,6 +3398,9 @@ class MainScreenViewModel : ViewModel() {
             val itemCount = inventoryItems.size
             val loc = currentInventoryLocation
 
+            // Book the counted quantities into stock (put-away, offline-queued on failure).
+            pushPutAways(loc, inventoryItems.toMap())
+
             // Upload photos for items that have them
             inventoryItems.forEach { (barcode, entry) ->
                 if (entry.photo != null) {
@@ -3434,49 +3451,55 @@ class MainScreenViewModel : ViewModel() {
     }
 
     private fun fetchExpectedInventory() {
-        val locationId = decryptedLocationId?.substring(1)?.trimStart('0')
-        if (locationId.isNullOrEmpty()) {
-            android.util.Log.e("INVENTORY", "fetchExpected: no Odoo ID from decryptedLocationId=$decryptedLocationId")
-            return
-        }
-        android.util.Log.e("INVENTORY", "fetchExpected: locationId=$locationId, decryptedLocationId=$decryptedLocationId")
+        // Soll = warehouse-level Exact scraped stock (reconcile), not per-location. Loaded
+        // into sollMap; a scanned item's soll is copied into expectedInventory on demand
+        // (see the item-scan branch), so the per-session "NOT COUNTED" list stays clean.
         viewModelScope.launch {
             try {
-                val result = onFetchLocationContents?.invoke(locationId)
-                android.util.Log.e("INVENTORY", "fetchExpected result: ${result?.javaClass?.simpleName} ${if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) result.data.take(200) else if (result is com.xelth.eckwms_movfast.api.ScanResult.Error) result.message else "null"}")
-                if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
-                    val raw = result.data?.trim() ?: ""
-                    if (raw.isEmpty() || raw == "null" || raw == "[]") {
-                        addLog("📋 Location empty (no items on server)")
-                        updateInventoryConsole()
-                        return@launch
-                    }
-                    val arr = org.json.JSONArray(raw)
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.getJSONObject(i)
-                        val barcode = obj.optString("barcode", "")
-                        val defaultCode = obj.optString("default_code", "")
-                        val key = barcode.ifEmpty { defaultCode }
-                        if (key.isNotEmpty()) {
-                            expectedInventory[key] = ExpectedItem(
-                                productId = obj.optLong("product_id", 0),
-                                productName = obj.optString("product_name", "Unknown"),
-                                barcode = barcode,
-                                defaultCode = defaultCode,
-                                quantity = obj.optDouble("quantity", 0.0),
-                                reservedQty = obj.optDouble("reserved_qty", 0.0)
-                            )
+                val raw = onFetchExpectedSoll?.invoke(inventoryWarehouse)?.trim()
+                if (raw.isNullOrEmpty() || raw == "null") {
+                    android.util.Log.e("INVENTORY", "fetchExpected(reconcile): empty for $inventoryWarehouse")
+                    return@launch
+                }
+                val json = org.json.JSONObject(raw)
+                val arr = json.optJSONArray("lines") ?: org.json.JSONArray()
+                sollMap.clear()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val code = obj.optString("default_code", "")
+                    if (code.isNotEmpty()) sollMap[code] = obj.optDouble("soll", 0.0)
+                }
+                // Backfill expected for anything already counted this session.
+                inventoryItems.keys.forEach { code ->
+                    sollMap[code]?.let { s ->
+                        if (!expectedInventory.containsKey(code)) {
+                            expectedInventory[code] = ExpectedItem(0L, "", code, code, s, 0.0)
                         }
                     }
-                    addLog("📋 Expected: ${expectedInventory.size} products")
-                    updateInventoryConsole()
-                } else if (result is com.xelth.eckwms_movfast.api.ScanResult.Error) {
-                    android.util.Log.e("INVENTORY", "fetchExpected failed: ${result.message}")
-                    // Don't show error to user — just no expected data
                 }
+                addLog("📋 Soll (Exact $inventoryWarehouse): ${sollMap.size}")
+                updateInventoryConsole()
             } catch (e: Exception) {
-                android.util.Log.e("INVENTORY", "fetchExpected exception", e)
+                android.util.Log.e("INVENTORY", "fetchExpected(reconcile) exception", e)
             }
+        }
+    }
+
+    /** Push each counted line to its shelf as a put-away (op=set = the counted
+     *  on-hand). Optimistic; the callback offline-queues on failure. Iterates a
+     *  snapshot so the session clear that follows submit can't race it. */
+    private fun pushPutAways(shelf: String, items: Map<String, InventoryEntry>) {
+        if (shelf.isEmpty() || items.isEmpty()) return
+        val wh = inventoryWarehouse
+        viewModelScope.launch {
+            items.forEach { (code, entry) ->
+                try {
+                    onPutAwayItem?.invoke(code, shelf, wh, entry.quantity.toDouble())
+                } catch (e: Exception) {
+                    android.util.Log.e("INVENTORY", "put-away failed for $code", e)
+                }
+            }
+            addLog("📦 ${items.size} → put-away @ ${shelf.takeLast(12)}")
         }
     }
 
@@ -3579,6 +3602,9 @@ class MainScreenViewModel : ViewModel() {
 
         val itemCount = inventoryItems.size
         val loc = currentInventoryLocation
+
+        // Book the counted quantities into stock (put-away, offline-queued on failure).
+        pushPutAways(loc, inventoryItems.toMap())
 
         // Upload photos for items that have them
         inventoryItems.forEach { (barcode, entry) ->

@@ -184,6 +184,17 @@ class SyncWorker(
                     val outcome = apiService.validatePicking(p.getString("picking_id"))
                     handleSyncOutcome(job, outcome, "Picking validate")
                 }
+                "put_away" -> {
+                    val p = JSONObject(job.payload)
+                    val outcome = apiService.putAway(
+                        p.getString("item_barcode"),
+                        p.getString("shelf_barcode"),
+                        p.optString("warehouse", "WH008"),
+                        p.getDouble("qty"),
+                        p.optString("op", "set")
+                    )
+                    handleSyncOutcome(job, outcome, "Put-away")
+                }
                 "visit_event" -> {
                     val result = apiService.pushVisitEvent(job.payload)
                     if (result) {

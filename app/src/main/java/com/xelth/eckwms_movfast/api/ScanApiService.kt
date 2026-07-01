@@ -2601,6 +2601,70 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    /**
+     * Put-away (stocktake): record the counted on-hand of a part on a shelf.
+     * `op` = "set" (absolute counted qty, default) or "add" (increment). Mirrors
+     * the picking-confirm write path (2xx ok / 4xx reject / else retry).
+     */
+    suspend fun putAway(itemBarcode: String, shelfBarcode: String, warehouse: String, qty: Double, op: String = "set"): SyncOutcome = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/warehouse/put-away")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("item_barcode", itemBarcode)
+                put("shelf_barcode", shelfBarcode)
+                put("warehouse", warehouse)
+                put("qty", qty)
+                put("op", op)
+            }
+            connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
+
+            val outcome = classifyWrite(connection.responseCode)
+            when (outcome) {
+                SyncOutcome.SUCCESS -> Log.i(TAG, "Put-away $itemBarcode -> $shelfBarcode ($op $qty)")
+                SyncOutcome.REJECTED -> Log.w(TAG, "Put-away REJECTED (no retry): HTTP ${connection.responseCode}")
+                SyncOutcome.FAILED -> Log.w(TAG, "Put-away failed (retryable): HTTP ${connection.responseCode}")
+            }
+            return@withContext outcome
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in put-away", e)
+            return@withContext SyncOutcome.FAILED
+        }
+    }
+
+    /**
+     * Fetch the soll/ist reconciliation for a warehouse (Exact scraped stock vs
+     * counted bins). Returns the raw JSON body (`{warehouse, summary, lines:[…]}`)
+     * for the caller to parse, or null on failure.
+     */
+    suspend fun fetchReconcile(warehouse: String): String? = withContext(Dispatchers.IO) {
+        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$baseUrl/api/warehouse/reconcile?warehouse=" + java.net.URLEncoder.encode(warehouse, "UTF-8"))
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                return@withContext connection.inputStream.bufferedReader().use { it.readText() }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching reconcile", e)
+        }
+        return@withContext null
+    }
+
     /** Map an HTTP status to a sync outcome: 2xx ok, 4xx permanent reject, else retry. */
     private fun classifyWrite(code: Int): SyncOutcome = when {
         code in 200..299 -> SyncOutcome.SUCCESS
