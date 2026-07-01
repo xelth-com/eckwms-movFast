@@ -415,6 +415,7 @@ class MainScreenViewModel : ViewModel() {
     private var lastScannedInventoryItem: String = ""  // for photo attachment
     private var waitingForManualLocation: Boolean = false  // SET LOC was pressed, next scan = location
     private var inventoryBoxMode: Boolean = false  // toggle: false=items, true=boxes (for external barcodes)
+    private var inventoryAutoPhoto: Boolean = false  // auto-open camera on new item; OFF for bulk counting (Compose focus-crash + not needed)
 
     // Enhanced: track last scanned type for photo attachment
     private var lastScannedType: String = ""  // "place" or "item"
@@ -3289,9 +3290,14 @@ class MainScreenViewModel : ViewModel() {
                     lastScannedInventoryItem = cleanCode
                     _inventoryItemPhoto.value = entry.photo
 
-                    // --- AUTO-PHOTO: open camera + long vibrate to alert ---
+                    // --- AUTO-PHOTO: open camera + long vibrate on a new item ---
+                    // Gated OFF by default for stocktake counting: the camera round-trip
+                    // leaves the Compose focus system in an invalidated state, and the next
+                    // hardware-scanner key event then crashes in
+                    // FocusOwnerImpl.dispatchInterceptedSoftKeyboardEvent (a Compose bug).
+                    // Bulk counting doesn't need a photo per part; the photo button still works.
                     android.util.Log.e("AUTO_PHOTO", "Check: qty=${entry.quantity}, photo=${entry.photo != null}, barcode=$cleanCode")
-                    if (entry.quantity == 1 && entry.photo == null) {
+                    if (inventoryAutoPhoto && entry.quantity == 1 && entry.photo == null) {
                         entry.needsPhoto = true
                         addLog("📸 New item — take photo!")
                         android.util.Log.e("AUTO_PHOTO", ">>> TRIGGERING camera + vibrate for: $cleanCode")

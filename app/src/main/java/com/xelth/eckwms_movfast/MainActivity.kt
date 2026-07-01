@@ -68,7 +68,8 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        setContent {
+        val composeView = androidx.compose.ui.platform.ComposeView(this)
+        composeView.setContent {
             val isSunlightMode by SunlightModeManager.isSunlightMode.collectAsState()
             EckwmsmovFastTheme(highContrast = isSunlightMode) {
                 val navController = rememberNavController()
@@ -413,6 +414,28 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // Host Compose inside a container that catches a pre-IME key event dispatched
+        // during a focus transition. A hardware-scanner / IME key arriving while the
+        // Compose focus system is invalidated (e.g. right after a stocktake submit
+        // recomposes) otherwise crashes in
+        // FocusOwnerImpl.dispatchInterceptedSoftKeyboardEvent — a known Compose bug.
+        setContentView(
+            object : android.widget.FrameLayout(this) {
+                override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean =
+                    try {
+                        super.dispatchKeyEventPreIme(event)
+                    } catch (e: IllegalStateException) {
+                        android.util.Log.w("MainActivity", "Swallowed Compose focus key-dispatch crash: ${e.message}")
+                        false
+                    }
+            }.apply {
+                layoutParams = android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                addView(composeView)
+            }
+        )
     }
 
     /**

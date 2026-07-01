@@ -70,6 +70,18 @@ object XCScannerWrapper {
         isInitialized = true
         Log.d(TAG, "Scanner initialization complete")
 
+        // Deliver scans ONLY via the SDK callback above — force output to NONE so the
+        // scanner does NOT also emit keyboard (IME) events. The default keyboard-fill
+        // output injects soft-keyboard key events that crash Jetpack Compose
+        // (IllegalStateException in FocusOwnerImpl.dispatchInterceptedSoftKeyboardEvent)
+        // when they arrive during a focus transition / recomposition.
+        try {
+            XcBarcodeScanner.setOutputMethod(OutputMethod.NONE)
+            Log.d(TAG, "Output method forced to NONE (SDK-callback only, no keyboard events)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to force OutputMethod.NONE: ${e.message}")
+        }
+
         // Проверка состояния лицензии
         val licenseState = XcBarcodeScanner.getLicenseState()
         Log.d(TAG, "⭐ License state: ${getLicenseStateString(licenseState)}")
