@@ -220,6 +220,8 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         com.xelth.eckwms_movfast.trips.VehicleManager.refresh(context)
         tripVehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
+        // Feed known plates to the Kennzeichen field sub-menu as quick-pick hexes.
+        mainViewModel.tripKnownPlates = tripVehicles.mapNotNull { it.plate?.takeIf { p -> p.isNotBlank() } }.distinct()
     }
 
     // Debounced live search across ALL tickets while typing/dictating
