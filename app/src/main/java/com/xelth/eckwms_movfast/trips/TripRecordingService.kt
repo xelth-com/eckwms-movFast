@@ -68,10 +68,15 @@ class TripRecordingService : Service() {
         private const val NOTIFICATION_ID = 7302
         private const val SAMPLE_INTERVAL_MS = 30_000L
         private const val GRACEFUL_STOP_DELAY_MS = 3 * 60_000L
+        // Periodic mid-trip upload so an in-progress trip is visible in the WMS
+        // within a few minutes even off-LAN (delivered via the relay mesh-queue
+        // when the LAN master is unreachable — see ScanApiService.uploadTrip).
+        private const val CHECKPOINT_INTERVAL_MS = 5 * 60_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var samplingJob: Job? = null
+    private var checkpointJob: Job? = null
     private var gracefulStopJob: Job? = null
     private var fusedClient: FusedLocationProviderClient? = null
     private var locationCallback: LocationCallback? = null
@@ -149,6 +154,30 @@ class TripRecordingService : Service() {
             if (trip.purpose != "private") {
                 startCellSampling()
                 startFusedUpdates()
+                startCheckpoints(trip.id)
+            }
+        }
+    }
+
+    // ── Periodic mid-trip checkpoint upload ──────────────────────────────────
+
+    /** Every [CHECKPOINT_INTERVAL_MS] push the current (open) trip to the server.
+     *  `uploadTrip` tries direct HTTP first, then the relay mesh-queue, so the
+     *  trip becomes visible in the WMS within minutes even when the driver is on
+     *  mobile data. Private trips never get here (no positions to share). */
+    private fun startCheckpoints(id: String) {
+        checkpointJob?.cancel()
+        checkpointJob = scope.launch {
+            // delay() (outside the try) throws on cancel → the loop ends cleanly.
+            while (true) {
+                delay(CHECKPOINT_INTERVAL_MS)
+                try {
+                    val json = TripManager.buildUploadJson(applicationContext, id) ?: continue
+                    val ok = apiService.uploadTrip(json)
+                    Log.i(TAG, "checkpoint upload for trip $id: ok=$ok")
+                } catch (e: Exception) {
+                    Log.w(TAG, "checkpoint upload failed: ${e.message}")
+                }
             }
         }
     }
@@ -307,6 +336,7 @@ class TripRecordingService : Service() {
     private fun finalizeAndStop() {
         val memberId = tripId
         samplingJob?.cancel()
+        checkpointJob?.cancel()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
         tripId = null
 

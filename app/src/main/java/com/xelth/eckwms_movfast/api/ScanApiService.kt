@@ -2174,7 +2174,64 @@ class ScanApiService(private val context: Context) {
      */
     suspend fun uploadTrip(payload: String): Boolean = withContext(Dispatchers.IO) {
         val result = authenticatedPostWithFailover("/api/trips", payload)
-        return@withContext result is ScanResult.Success
+        if (result is ScanResult.Success) return@withContext true
+        // Off-LAN (driver on mobile data): the LAN master is unreachable over
+        // HTTP, so deliver the trip through the relay mesh-queue instead — same
+        // channel pairing uses. Works for periodic open checkpoints AND the final
+        // ended trip; the master's trip_upload handler also drives the live marker.
+        return@withContext uploadTripViaRelay(payload)
+    }
+
+    /** Deliver a trip payload to the (NAT'd) master via the relay polygon as a
+     *  `trip_upload` mesh-task. Returns true on the master's ok ack. Adds the
+     *  device JWT as `token` for auth parity with the HTTP path. */
+    private suspend fun uploadTripViaRelay(payload: String): Boolean {
+        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+        if (master.isEmpty()) return false
+        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
+        if (polygon.isEmpty()) return false
+        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
+        val body = try { JSONObject(payload) } catch (e: Exception) { return false }
+        val token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+        if (token.isNotEmpty()) body.put("token", token)
+
+        for (raw in polygon) {
+            val relayBase = raw.trimEnd('/')
+            val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId)
+            when (val outcome = relay.meshDispatch(master, "trip_upload", body)) {
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
+                    val res = pollRelayResult(relay, outcome.taskId)
+                    if (res != null && res.optBoolean("ok", false)) {
+                        Log.i(TAG, "Trip delivered via relay $relayBase")
+                        return true
+                    }
+                    Log.w(TAG, "Trip relay via $relayBase: no ok ack — next relay")
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
+                    Log.w(TAG, "Trip relay rejected by $relayBase: ${outcome.message}")
+                    return false
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
+                    Log.w(TAG, "Trip relay $relayBase unavailable (${outcome.message}) — next relay")
+                }
+            }
+        }
+        return false
+    }
+
+    /** Poll a dispatched relay task for the master's ack (null on timeout). */
+    private suspend fun pollRelayResult(
+        relay: com.xelth.eckwms_movfast.sync.RelayClient,
+        taskId: String,
+        timeoutMs: Long = 30_000
+    ): JSONObject? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val r = relay.meshResult(taskId).getOrNull()
+            if (r != null) return r
+            kotlinx.coroutines.delay(2000)
+        }
+        return null
     }
 
     /** Fire-and-forget live position of an in-progress BUSINESS trip → the
