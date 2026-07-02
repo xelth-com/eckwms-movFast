@@ -415,7 +415,7 @@ class MainScreenViewModel : ViewModel() {
     private var lastScannedInventoryItem: String = ""  // for photo attachment
     private var waitingForManualLocation: Boolean = false  // SET LOC was pressed, next scan = location
     private var inventoryBoxMode: Boolean = false  // toggle: false=items, true=boxes (for external barcodes)
-    private var inventoryAutoPhoto: Boolean = false  // auto-open camera on new item; OFF for bulk counting (Compose focus-crash + not needed)
+    private var inventoryAutoPhoto: Boolean = true  // auto-open camera on new item (torch-lit); Compose focus-crash now caught by the MainActivity pre-IME guard
 
     // Enhanced: track last scanned type for photo attachment
     private var lastScannedType: String = ""  // "place" or "item"

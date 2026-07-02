@@ -346,12 +346,18 @@ fun ImageCapturePreviewScreen(
                         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             cameraSelector,
                             preview,
                             captureUseCase
                         )
+                        // Illumination for fast, well-lit photos: turn the torch ON
+                        // while the camera screen is open. It auto-turns-off when the
+                        // camera unbinds as this screen leaves the lifecycle.
+                        if (camera.cameraInfo.hasFlashUnit()) {
+                            camera.cameraControl.enableTorch(true)
+                        }
                     } catch (exc: Exception) {
                         Log.e(TAG, "Use case binding failed", exc)
                     }
