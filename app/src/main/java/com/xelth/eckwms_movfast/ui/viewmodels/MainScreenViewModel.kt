@@ -1564,6 +1564,12 @@ class MainScreenViewModel : ViewModel() {
     //   yellow= auto (system pulled a previous value, not user-confirmed)
     //   green = user (explicitly set/typed/OCR'd this trip)
     private var tripFieldMenu: String? = null   // null | "plate" | "km" | "purpose"
+    // ⛽ Fuel entry lives ON the hexes (no modal): the numeric keypad edits the
+    // odometer (shared tripEntryBuffer), the global 📷 becomes the receipt capture,
+    // a hex OCRs the exact odometer, and Save writes the fuel event.
+    private var tripFuelMenu = false
+    private var tripFuelSource = "estimated"     // estimated | manual | scanned
+    private var tripFuelReceiptOk = false
     private var tripKeyPage = 0
     private var tripEntryBuffer = ""
     private var tripPlate: String? = null;   private var tripPlateSource = "empty"
@@ -1646,6 +1652,29 @@ class MainScreenViewModel : ViewModel() {
         _tripStatus.value = "${fieldName(f)}: ${tripEntryBuffer}▮"
     }
 
+    // ── ⛽ Fuel hex sub-menu (no modal) ────────────────────────────────────────
+    /** Open the fuel hex sub-menu, prefilling the odometer with the track estimate. */
+    fun openFuelMenu(estimate: String?) {
+        tripFuelMenu = true
+        tripEntryBuffer = estimate ?: ""
+        tripFuelSource = "estimated"
+        tripFuelReceiptOk = false
+        if (_isTripMode.value == true) renderTripGrid()
+    }
+    /** Odometer scanned (km OCR) → overwrite the buffer, mark it exact. */
+    fun setFuelOdometer(km: String) {
+        tripEntryBuffer = km
+        tripFuelSource = "scanned"
+        if (_isTripMode.value == true) renderTripGrid()
+    }
+    /** Receipt photo captured (turns the 📷 button into "✓ Receipt"). */
+    fun setFuelReceiptOk(ok: Boolean) {
+        tripFuelReceiptOk = ok
+        if (_isTripMode.value == true) renderTripGrid()
+    }
+    fun currentFuelOdometer(): Double? = tripEntryBuffer.trim().toDoubleOrNull()
+    fun currentFuelSource(): String = tripFuelSource
+
     /** Field sub-menu on hexes. Two shapes:
      *  • KM (number only): a numeric hex keypad (0-9 + dot) — big, fixed-position
      *    keys are fine for digits. OK carries the live buffer so typing is visible.
@@ -1674,12 +1703,30 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
+    /** ⛽ Fuel sub-menu on hexes (mirrors the km field keypad + a Save + odometer
+     *  OCR). The receipt capture rides the global 📷 button (relabelled below). */
+    private fun renderTripFuelMenu(uiItems: MutableList<Map<String, Any>>) {
+        // Save — green, shows the current odometer buffer.
+        uiItems.add(mapOf("type" to "button",
+            "label" to "⛽\nSave\n" + tripEntryBuffer.ifBlank { "?" } + " km",
+            "color" to "#2E7D32", "action" to "trip_fuel_save"))
+        uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
+        // OCR the exact odometer into the buffer.
+        uiItems.add(mapOf("type" to "button", "label" to "📷\nScan odo", "color" to "#37474F", "action" to "trip_fuel_ocr"))
+        // Numeric keypad (same digits as the km field).
+        keySetFor("km").forEach { k ->
+            uiItems.add(mapOf("type" to "button", "label" to k, "color" to "#263238", "action" to "trip_key:$k"))
+        }
+    }
+
     private fun renderTripGrid() {
         val auto = _tripAutoDetect.value == true
         val recording = _tripRecording.value == true
         val uiItems = mutableListOf<Map<String, Any>>()
 
-        if (tripFieldMenu != null) {
+        if (tripFuelMenu) {
+            renderTripFuelMenu(uiItems)
+        } else if (tripFieldMenu != null) {
             renderTripFieldMenu(uiItems, tripFieldMenu!!)
         } else if (tripStartMenu) {
             // ── Start/Stop sub-menu (on hexes, no separate panel) ──
@@ -1790,8 +1837,16 @@ class MainScreenViewModel : ViewModel() {
         val ocrField = tripFieldMenu == "plate" || tripFieldMenu == "km"
         placeSystemButtons(
             scanAction = "act_scan",
-            photoAction = if (ocrField) "trip_ocr" else "act_photo",
-            photoLabel = if (ocrField) "📷\nOCR" else "📷\nPhoto"
+            photoAction = when {
+                tripFuelMenu -> "trip_fuel_receipt"
+                ocrField -> "trip_ocr"
+                else -> "act_photo"
+            },
+            photoLabel = when {
+                tripFuelMenu -> if (tripFuelReceiptOk) "🧾\n✓Receipt" else "🧾\nReceipt"
+                ocrField -> "📷\nOCR"
+                else -> "📷\nPhoto"
+            }
         )
         gridManager.placeItems(uiItems, priority = 100)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
@@ -1805,6 +1860,7 @@ class MainScreenViewModel : ViewModel() {
             // all cities, otherwise leave trip mode.
             action == "act_exit" -> {
                 when {
+                    tripFuelMenu -> { tripFuelMenu = false; renderTripGrid() }
                     tripFieldMenu != null -> { tripFieldMenu = null; renderTripGrid() }
                     tripStartMenu -> { tripStartMenu = false; renderTripGrid() }
                     tripSettingsMenu -> { tripSettingsMenu = false; renderTripGrid() }
@@ -1840,13 +1896,19 @@ class MainScreenViewModel : ViewModel() {
             }
             action.startsWith("trip_key:") -> {
                 tripEntryBuffer += action.removePrefix("trip_key:")   // km keypad → digits
-                // Re-render so the buffer shows on the OK hex (numeric keypad only).
+                if (tripFuelMenu) tripFuelSource = "manual"           // typed over the estimate
+                // Re-render so the buffer shows on the OK/Save hex (numeric keypad).
                 updateFieldStatus(); renderTripGrid(); "handled"
             }
             action == "trip_key_bs" -> {
                 if (tripEntryBuffer.isNotEmpty()) tripEntryBuffer = tripEntryBuffer.dropLast(1)
+                if (tripFuelMenu) tripFuelSource = "manual"
                 updateFieldStatus(); renderTripGrid(); "handled"
             }
+            // ── ⛽ Fuel sub-menu actions (MainScreen owns camera + logFuel) ──
+            action == "trip_fuel_ocr" -> "trip_fuel_ocr"          // OCR exact odometer
+            action == "trip_fuel_receipt" -> "trip_fuel_receipt"  // capture receipt
+            action == "trip_fuel_save" -> { tripFuelMenu = false; renderTripGrid(); "trip_fuel_save" }
             action == "trip_key_page" -> { tripKeyPage++; renderTripGrid(); "handled" }
             // ⌨ Keyboard on a text field → MainScreen opens the Android soft keyboard
             // (with 🎤 dictate). It calls applyTripFieldValue(field, text) on confirm.
