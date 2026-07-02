@@ -1528,6 +1528,7 @@ class MainScreenViewModel : ViewModel() {
     fun exitTripMode() {
         _isTripMode.value = false
         tripStartMenu = false
+        tripSettingsMenu = false
         addLog("Exited Trip Mode")
         initializeGrid()
     }
@@ -1550,6 +1551,9 @@ class MainScreenViewModel : ViewModel() {
     // Trip START/STOP sub-menu (replaces the old TripsScreen panel — everything
     // on hexagons now). `🚗 Fahrt` opens it; ◀ goes back.
     private var tripStartMenu = false
+    // Trip SETTINGS sub-menu — holds the auto-detect + live-server toggles so
+    // they aren't fat-fingered on the main grid. `⚙️ Settings` opens it; ◀ back.
+    private var tripSettingsMenu = false
 
     private fun renderTripGrid() {
         val auto = _tripAutoDetect.value == true
@@ -1567,13 +1571,10 @@ class MainScreenViewModel : ViewModel() {
             }
             // Odometer + vehicle (the OdometerDialog carries the Kfz selector).
             uiItems.add(mapOf("type" to "button", "label" to "🔢\nKm/Kfz", "color" to "#37474F", "action" to "trip_odometer"))
-        } else {
-            // LEFTMOST: auto-detect trigger — deliberately the leftmost key so a
-            // right-hander does not hit it by accident.
-            // Two settings toggles in the (deliberately hard-to-reach) top-left so
-            // they aren't fat-fingered: auto-detect, and live server tracking.
-            // Both grey (green is reserved for the active Fahrt state), state shown
-            // by a ✓/✕ on top with the label below — same shape as every key.
+        } else if (tripSettingsMenu) {
+            // ── Settings sub-menu (on hexes): the two toggles live here now so
+            // they aren't fat-fingered on the main trip grid. ✓/✕ shows state. ──
+            uiItems.add(mapOf("type" to "button", "label" to "◀\nZurück", "color" to "#455A64", "action" to "trip_settings_back"))
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to if (auto) "✓ Auto\nStart" else "✕ Auto\nStart",
@@ -1581,15 +1582,24 @@ class MainScreenViewModel : ViewModel() {
                 "action" to "trip_toggle_autodetect"
             ))
             // Live server tracking (consent to be watched live on the dashboard).
-            // Default OFF; this is the opt-in the driver flips when they want to be
-            // visible. Toggling only sets the flag — no location leaves the device
-            // unless a business trip is actually recording.
+            // Default OFF; flipping only sets the flag — no location leaves the
+            // device unless a business trip is actually recording.
             val liveShare = com.xelth.eckwms_movfast.utils.SettingsManager.getTripLiveShare()
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to if (liveShare) "✓ Live\nServer" else "✕ Live\nServer",
                 "color" to "#455A64",
                 "action" to "trip_toggle_liveshare"
+            ))
+        } else {
+            // LEFTMOST: a Settings hex (where Auto-Start used to be, deliberately
+            // the hard-to-reach left key) opens the sub-menu with the auto-detect
+            // + live-server toggles.
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to "⚙️\nSettings",
+                "color" to "#455A64",
+                "action" to "trip_open_settings"
             ))
             // 📍 Recenter the map on the current position (keeps zoom). A hex here —
             // no overlay button on the map (plenty of free hexes).
@@ -1639,6 +1649,7 @@ class MainScreenViewModel : ViewModel() {
             action == "act_exit" -> {
                 when {
                     tripStartMenu -> { tripStartMenu = false; renderTripGrid() }
+                    tripSettingsMenu -> { tripSettingsMenu = false; renderTripGrid() }
                     tripSelectedCity != null -> refreshTripDestinations()
                     else -> exitTripMode()
                 }
@@ -1654,6 +1665,9 @@ class MainScreenViewModel : ViewModel() {
             // Open / close the start-stop sub-menu (stays in the grid).
             action == "trip_open_start" -> { tripStartMenu = true; renderTripGrid(); "handled" }
             action == "trip_submenu_back" -> { tripStartMenu = false; renderTripGrid(); "handled" }
+            // Open / close the settings sub-menu (auto-detect + live-server toggles).
+            action == "trip_open_settings" -> { tripSettingsMenu = true; renderTripGrid(); "handled" }
+            action == "trip_settings_back" -> { tripSettingsMenu = false; renderTripGrid(); "handled" }
             // Start/stop/odometer need MainScreen (TripManager + dialogs +
             // permissions) — return the action and drop back to the main grid.
             action == "trip_start_business" || action == "trip_start_private" ||
