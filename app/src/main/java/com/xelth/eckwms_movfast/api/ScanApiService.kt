@@ -119,7 +119,7 @@ class ScanApiService(private val context: Context) {
         var result = internalProcessScan(activeUrl, barcode, barcodeType, orderId)
 
         // 2. If failed (Network Error) AND Active != Global, try Global immediately
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Scan to $activeUrl failed. Failover to Global: $globalUrl")
             result = internalProcessScan(globalUrl, barcode, barcodeType, orderId)
 
@@ -301,7 +301,7 @@ class ScanApiService(private val context: Context) {
         var result = internalProcessScanWithId(activeUrl, barcode, barcodeType, msgId)
 
         // 2. If failed AND Active != Global, try Global immediately
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ ScanWithID to $activeUrl failed. Failover to Global: $globalUrl")
             result = internalProcessScanWithId(globalUrl, barcode, barcodeType, msgId)
 
@@ -480,7 +480,7 @@ class ScanApiService(private val context: Context) {
         }
 
         // Failover to Global
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ pullSync failed on $activeUrl. Failover to Global.")
             result = internalPullSync(globalUrl, since, entityTypes)
         }
@@ -567,7 +567,7 @@ class ScanApiService(private val context: Context) {
         }
 
         // 2. Failover to Global
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ UploadFile failed. Failover to Global. ImageID: $imageId")
             result = internalUploadFileStream(globalUrl, file, deviceId, scanMode, barcodeData, orderId, imageId, avatarPath)
 
@@ -762,7 +762,7 @@ class ScanApiService(private val context: Context) {
         }
 
         // 2. If failed AND Active != Global, try Global immediately with SAME imageId
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global. ImageID: $imageId")
             // Retry with SAME imageId - critical for deduplication!
             result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
@@ -1457,7 +1457,7 @@ class ScanApiService(private val context: Context) {
 
         var result = internalGetShipments(activeUrl, limit)
 
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ getShipments failed on $activeUrl. Failover to Global.")
             result = internalGetShipments(globalUrl, limit)
         }
@@ -1712,7 +1712,7 @@ class ScanApiService(private val context: Context) {
         }
 
         // Failover to Global
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Repair event to $activeUrl failed. Failover to Global.")
             result = internalSendRepairEvent(globalUrl, targetDeviceId, eventType, data)
 
@@ -1793,7 +1793,7 @@ class ScanApiService(private val context: Context) {
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
 
         var result = internalFetchProducts(activeUrl)
-        if (result.isEmpty() && activeUrl != globalUrl) {
+        if (result.isEmpty() && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "fetchProducts failed on $activeUrl, failover to global")
             result = internalFetchProducts(globalUrl)
         }
@@ -1861,7 +1861,7 @@ class ScanApiService(private val context: Context) {
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
 
         var result = internalFetchLocations(activeUrl)
-        if (result.isEmpty() && activeUrl != globalUrl) {
+        if (result.isEmpty() && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "fetchLocations failed on $activeUrl, failover to global")
             result = internalFetchLocations(globalUrl)
         }
@@ -1963,7 +1963,7 @@ class ScanApiService(private val context: Context) {
         }
 
         // Failover to Global
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Analysis failed on $activeUrl. Failover to Global.")
             result = internalAnalyzeImage(globalUrl, imageId)
         }
@@ -2061,7 +2061,7 @@ class ScanApiService(private val context: Context) {
         val body = org.json.JSONObject().apply { put("status", "reviewed"); put("notes", notes) }.toString()
 
         var result = authenticatedPut("$activeUrl/api/inventory/discrepancies/$id/review", body)
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             result = authenticatedPut("$globalUrl/api/inventory/discrepancies/$id/review", body)
         }
         result
@@ -2086,7 +2086,7 @@ class ScanApiService(private val context: Context) {
             }
         }
 
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ API call to $activeUrl failed, failover to $globalUrl")
             result = authenticatedGet("$globalUrl$apiPath")
         }
@@ -2132,7 +2132,7 @@ class ScanApiService(private val context: Context) {
             }
         }
 
-        if (result is ScanResult.Error && activeUrl != globalUrl) {
+        if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ API POST to $activeUrl failed, failover to $globalUrl")
             result = authenticatedPost("$globalUrl$apiPath", jsonBody)
         }
