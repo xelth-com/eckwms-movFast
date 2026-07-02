@@ -1759,6 +1759,13 @@ class MainScreenViewModel : ViewModel() {
                     "color" to "#00695C",
                     "action" to "trip_checkpoint"
                 ))
+                // Log a refuel (odometer + receipt photo) on this trip.
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to "⛽\nFuel",
+                    "color" to "#00695C",
+                    "action" to "trip_fuel"
+                ))
             }
             // City buttons (cities with waiting tickets). Tap → console shows that
             // city's tickets. "All" clears the filter.
@@ -1878,6 +1885,8 @@ class MainScreenViewModel : ViewModel() {
             // Drop a checkpoint on the open trip — MainScreen calls TripManager
             // (needs the app context + the current purpose as the stop label).
             action == "trip_checkpoint" -> "trip_checkpoint"
+            // Refuel event — MainScreen owns the camera (receipt/odometer) + dialog.
+            action == "trip_fuel" -> "trip_fuel"
             // Live server tracking: a pure consent flag — flip it here, no
             // permission needed (the recording service re-reads it per fix).
             action == "trip_toggle_liveshare" -> {

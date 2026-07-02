@@ -374,6 +374,45 @@ fun MainScreen(
         catch (e: Exception) { mainViewModel.addLog("No speech app installed") }
     }
 
+    // ── Refuel (⛽) dialog: receipt photo + odometer (estimated from track,
+    // editable, or scanned exact) → TripManager.logFuel on the open trip. ──
+    var showFuelDialog by remember { mutableStateOf(false) }
+    var fuelOdoText by remember { mutableStateOf("") }
+    var fuelOdoSource by remember { mutableStateOf("estimated") }
+    var fuelReceiptPhotoId by remember { mutableStateOf<String?>(null) }
+    var fuelBusy by remember { mutableStateOf(false) }
+    val fuelReceiptLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: android.graphics.Bitmap? ->
+        tripScanMgr?.resumeScanService()
+        if (bitmap != null) {
+            fuelBusy = true
+            tripScope.launch {
+                val photoId = java.util.UUID.randomUUID().toString()
+                try {
+                    val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
+                    val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(context)
+                    val res = api.uploadImage(bitmap, deviceId, "fuel_receipt", null, quality = 75, existingImageId = photoId)
+                    if (res is com.xelth.eckwms_movfast.api.ScanResult.Success) fuelReceiptPhotoId = photoId
+                    else mainViewModel.addLog("Receipt upload failed")
+                } catch (e: Exception) { android.util.Log.w("MainScreen", "receipt upload: ${e.message}") }
+                fuelBusy = false
+            }
+        }
+    }
+    val fuelOdoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: android.graphics.Bitmap? ->
+        tripScanMgr?.resumeScanService()
+        if (bitmap != null) {
+            tripScope.launch {
+                val km = com.xelth.eckwms_movfast.utils.OdometerOcr.recognizeKm(bitmap)
+                if (km != null) { fuelOdoText = km.toInt().toString(); fuelOdoSource = "scanned" }
+                else mainViewModel.addLog("Odometer OCR: nothing recognised")
+            }
+        }
+    }
+
     // Network-mode "Enter code" dialog (onboard via 9eck.com without a QR).
     var showCodeDialog by remember { mutableStateOf(false) }
 
@@ -419,6 +458,17 @@ fun MainScreen(
                     context, mainViewModel.pendingTripPurposeText()
                 )
                 mainViewModel.addLog("📍 Checkpoint dropped")
+            }
+            // ⛽ Refuel: open the fuel dialog, prefilling the odometer estimate.
+            "trip_fuel" -> {
+                fuelReceiptPhotoId = null
+                fuelOdoSource = "estimated"
+                fuelOdoText = ""
+                showFuelDialog = true
+                tripScope.launch {
+                    val est = com.xelth.eckwms_movfast.trips.TripManager.estimateCurrentOdometer(context)
+                    if (est != null && fuelOdoText.isEmpty()) fuelOdoText = est.toInt().toString()
+                }
             }
             // 📷 OCR on the Plate/Km field hex-menu → capture a photo, ML Kit reads
             // it, applyTripFieldValue fills the field (green). Suspend the hardware
@@ -1230,6 +1280,52 @@ fun MainScreen(
             },
             dismissButton = {
                 TextButton(onClick = { tripKbdField = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Refuel dialog (⛽): odometer (estimated/editable/scanned) + receipt photo.
+    if (showFuelDialog) {
+        AlertDialog(
+            onDismissRequest = { showFuelDialog = false },
+            title = { Text("Refuel") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = fuelOdoText,
+                        onValueChange = { fuelOdoText = it.filter { c -> c.isDigit() }; fuelOdoSource = "manual" },
+                        label = { Text(if (fuelOdoSource == "scanned") "Odometer km (scanned)" else "Odometer km (est.)") },
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = { tripScanMgr?.suspendScanService(); fuelOdoLauncher.launch(null) }
+                    ) { Text("📷 Scan odometer") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = { tripScanMgr?.suspendScanService(); fuelReceiptLauncher.launch(null) },
+                            enabled = !fuelBusy
+                        ) { Text(if (fuelBusy) "Uploading…" else "📷 Receipt") }
+                        if (fuelReceiptPhotoId != null) {
+                            Spacer(Modifier.width(8.dp)); Text("✓ Receipt", color = Color(0xFF81C784))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    com.xelth.eckwms_movfast.trips.TripManager.logFuel(
+                        context, fuelOdoText.toDoubleOrNull(), fuelOdoSource, fuelReceiptPhotoId
+                    )
+                    mainViewModel.addLog("⛽ Fuel logged")
+                    showFuelDialog = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFuelDialog = false }) { Text("Cancel") }
             }
         )
     }

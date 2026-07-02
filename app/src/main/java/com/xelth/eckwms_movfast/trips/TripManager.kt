@@ -98,6 +98,49 @@ object TripManager {
         }
     }
 
+    /** Log a refuel on the OPEN trip: a `fuel` point with the odometer (estimated
+     *  or scanned) + receipt photo id. The server promotes it to a durable
+     *  fuel_events row (Tankbeleg). */
+    fun logFuel(context: Context, odometerKm: Double?, source: String, photoId: String?) {
+        val intent = Intent(context, TripRecordingService::class.java).apply {
+            action = TripRecordingService.ACTION_FUEL
+            odometerKm?.let { putExtra(TripRecordingService.EXTRA_ODO_KM, it) }
+            putExtra(TripRecordingService.EXTRA_ODO_SOURCE, source)
+            if (!photoId.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_PHOTO_ID, photoId)
+        }
+        try {
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "logFuel: service not running (${e.message})")
+        }
+    }
+
+    /** Estimate the current odometer = trip start reading + summed track distance
+     *  (haversine over resolved points). Rough by design (noisy cell/fused fixes);
+     *  the driver can override with an exact odometer OCR at the fuel stop. Null if
+     *  no open trip or no start reading to add onto. */
+    suspend fun estimateCurrentOdometer(context: Context): Double? {
+        val db = AppDatabase.getInstance(context)
+        val trip = db.tripDao().getOpenTrip() ?: return null
+        val start = trip.startOdometerKm ?: return null
+        val pts = db.tripDao().getPoints(trip.id).filter { it.lat != null && it.lng != null }
+        var dist = 0.0
+        for (i in 1 until pts.size) {
+            dist += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+        }
+        return start + dist
+    }
+
+    private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+
     // ── Auto-detection (Activity Recognition Transition API) ────────────────
 
     fun hasActivityPermission(context: Context): Boolean =

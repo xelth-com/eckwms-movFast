@@ -61,8 +61,14 @@ class TripRecordingService : Service() {
         // — records the current position as a `manual` point and forces an immediate
         // checkpoint upload, so one trip can hold several stops without stop/restart.
         const val ACTION_CHECKPOINT = "trip_checkpoint"
+        // Refuel event on the OPEN trip: records a `fuel` point (odometer + receipt
+        // photo id) — a Tankbeleg the server promotes to a durable fuel_events row.
+        const val ACTION_FUEL = "trip_fuel"
         const val EXTRA_MANUAL = "manual"
         const val EXTRA_LABEL = "label"
+        const val EXTRA_ODO_KM = "odo_km"
+        const val EXTRA_ODO_SOURCE = "odo_source"
+        const val EXTRA_PHOTO_ID = "photo_id"
         const val EXTRA_PURPOSE = "purpose"
         const val EXTRA_PURPOSE_REF = "purpose_ref"
         const val EXTRA_PURPOSE_LABEL = "purpose_label"
@@ -127,6 +133,11 @@ class TripRecordingService : Service() {
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
             ACTION_STOP -> finalizeAndStop()
             ACTION_CHECKPOINT -> recordManualCheckpoint(intent.getStringExtra(EXTRA_LABEL))
+            ACTION_FUEL -> recordFuelEvent(
+                intent.getDoubleExtra(EXTRA_ODO_KM, Double.NaN).let { if (it.isNaN()) null else it },
+                intent.getStringExtra(EXTRA_ODO_SOURCE),
+                intent.getStringExtra(EXTRA_PHOTO_ID)
+            )
             else -> {
                 // Sticky restart after an OOM kill delivers a NULL intent (no
                 // action). A *started* FGS MUST call startForeground within ~5 s
@@ -278,6 +289,48 @@ class TripRecordingService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "manual checkpoint upload failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Refuel event on the OPEN trip: records a `fuel` point at the current
+     *  position carrying the odometer reading (estimated from the track or scanned)
+     *  and the receipt photo CAS id, then uploads immediately. The server promotes
+     *  it to a durable fuel_events row (survives point pruning — it's a tax doc). */
+    @SuppressLint("MissingPermission")
+    private fun recordFuelEvent(odometerKm: Double?, source: String?, photoId: String?) {
+        val id = tripId ?: run { Log.w(TAG, "fuel ignored: no open trip"); return }
+        scope.launch {
+            val loc = lastLoc ?: try {
+                if (hasLocationPermission()) fusedClient?.lastLocation?.let { task ->
+                    com.google.android.gms.tasks.Tasks.await(task)
+                } else null
+            } catch (e: Exception) { null }
+            val db = AppDatabase.getInstance(applicationContext)
+            db.tripDao().insertPoint(
+                TripPointEntity(
+                    tripId = id,
+                    seq = seq.incrementAndGet(),
+                    ts = System.currentTimeMillis(),
+                    source = if (loc != null) "fused" else "manual",
+                    lat = loc?.latitude,
+                    lng = loc?.longitude,
+                    accuracyM = loc?.accuracy?.toDouble(),
+                    kind = "fuel",
+                    label = source,          // "estimated" | "scanned"
+                    odometerKm = odometerKm,
+                    photoId = photoId
+                )
+            )
+            Log.i(TAG, "fuel event for trip $id (odo=${odometerKm ?: "-"}, src=$source, photo=${photoId != null})")
+            try {
+                val json = TripManager.buildUploadJson(applicationContext, id)
+                if (json != null) {
+                    val ok = apiService.uploadTrip(json)
+                    Log.i(TAG, "fuel upload for trip $id: ok=$ok")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "fuel upload failed: ${e.message}")
             }
         }
     }
