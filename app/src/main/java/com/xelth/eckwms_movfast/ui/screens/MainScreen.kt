@@ -253,14 +253,19 @@ fun MainScreen(
             // trip. If neither was set, fall back to the odometer/vehicle dialog.
             val pPlate = mainViewModel.pendingTripPlate()
             val pKm = mainViewModel.pendingTripKm()
+            // OCR photos are already saved to CAS at capture time; here we link them
+            // to the trip alongside the recognised value (never write a bogus 0 km
+            // just to carry a photo — the shot survives in CAS regardless).
+            val pKmPhoto = mainViewModel.pendingTripKmPhotoId()
+            val pPlatePhoto = mainViewModel.pendingTripPlatePhotoId()
             if (pPlate != null || pKm != null) {
                 tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
                     val target = db.tripDao().getOpenTrip()?.id
                     if (target != null) {
-                        if (pKm != null) db.tripDao().setStartOdometer(target, pKm, "manual", null)
+                        if (pKm != null) db.tripDao().setStartOdometer(target, pKm, "manual", pKmPhoto)
                         if (pPlate != null) com.xelth.eckwms_movfast.trips.VehicleManager.resolveAndAttach(
-                            context, target, null, pPlate, null
+                            context, target, null, pPlate, pPlatePhoto
                         )
                         com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
                     }
@@ -321,6 +326,20 @@ fun MainScreen(
                     mainViewModel.applyTripFieldValue(field, text)
                 } else {
                     mainViewModel.addLog("OCR: nothing recognised")
+                }
+                // Save the shot to CAS regardless of OCR success (evidence). The id
+                // is stashed on the field and attached to the trip at start.
+                val photoId = java.util.UUID.randomUUID().toString()
+                try {
+                    val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
+                    val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(context)
+                    val kind = if (field == "plate") "plate_photo" else "odometer_photo"
+                    val res = api.uploadImage(bitmap, deviceId, kind, null, quality = 75, existingImageId = photoId)
+                    if (res is com.xelth.eckwms_movfast.api.ScanResult.Success) {
+                        mainViewModel.setTripFieldPhotoId(field, photoId)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MainScreen", "field OCR photo upload failed: ${e.message}")
                 }
             }
         }

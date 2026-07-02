@@ -1569,6 +1569,10 @@ class MainScreenViewModel : ViewModel() {
     private var tripPlate: String? = null;   private var tripPlateSource = "empty"
     private var tripKm: String? = null;      private var tripKmSource = "empty"
     private var tripPurpose: String? = null; private var tripPurposeSource = "empty"
+    // CAS ids of the OCR photos captured for plate/km (evidence). Uploaded when
+    // the photo is taken; attached to the trip at start so the shot isn't lost.
+    private var tripPlatePhotoId: String? = null
+    private var tripKmPhotoId: String? = null
     // Known/previous values shown as quick-pick hexes (populated from MainScreen).
     var tripKnownPlates: List<String> = emptyList()
     var tripKnownPurposes: List<String> = emptyList()
@@ -1616,6 +1620,13 @@ class MainScreenViewModel : ViewModel() {
     fun pendingTripPlate() = tripPlate
     fun pendingTripKm() = tripKm?.toDoubleOrNull()
     fun pendingTripPurposeText() = tripPurpose
+    fun pendingTripPlatePhotoId() = tripPlatePhotoId
+    fun pendingTripKmPhotoId() = tripKmPhotoId
+    /** CAS id of an OCR photo just uploaded for a field (evidence), stored so it
+     *  can be attached to the trip at start. */
+    fun setTripFieldPhotoId(field: String, photoId: String) {
+        when (field) { "plate" -> tripPlatePhotoId = photoId; "km" -> tripKmPhotoId = photoId }
+    }
     /** Set a field from OCR/known-value (called by MainScreen), marks it user-set. */
     fun applyTripFieldValue(field: String, value: String) {
         setTripField(field, value.trim(), "user")
@@ -1635,17 +1646,15 @@ class MainScreenViewModel : ViewModel() {
         _tripStatus.value = "${fieldName(f)}: ${tripEntryBuffer}▮"
     }
 
-    /** Field sub-menu on hexes: Zurück / OK / ⌫ / Photo→OCR (plate,km) + known
-     *  values as quick-pick + a PAGED hex-keyboard (all remaining hexes are keys).
-     *  The current entry buffer is shown live in the trip status line. */
+    /** Field sub-menu on hexes: OK / ⌫ / known values as quick-pick + a PAGED
+     *  hex-keyboard (all remaining hexes are keys). There is NO dedicated OCR hex —
+     *  inside a plate/km field menu the global 📷 system button becomes "OCR"
+     *  (see renderTripGrid). The current entry buffer shows in the status line. */
     private fun renderTripFieldMenu(uiItems: MutableList<Map<String, Any>>, field: String) {
         // No full Back hex — the ✕ half-button (set at the end of renderTripGrid)
         // already steps back out of the field menu.
         uiItems.add(mapOf("type" to "button", "label" to "✓\nOK", "color" to "#2E7D32", "action" to "trip_field_ok"))
         uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
-        if (field != "purpose") {
-            uiItems.add(mapOf("type" to "button", "label" to "📷\nOCR", "color" to "#37474F", "action" to "trip_ocr"))
-        }
         val known = fieldKnown(field).take(6)
         known.forEach { v ->
             uiItems.add(mapOf("type" to "button", "label" to v, "color" to "#1565C0", "action" to "trip_pick:$v"))
@@ -1654,7 +1663,7 @@ class MainScreenViewModel : ViewModel() {
         // 3 pinned system buttons (Scan/Photo/Mic) − the controls above; if the key
         // set overflows the budget, reserve one slot for the ▶ Page cycler.
         val usable = try { gridManager.contentGrid.getUsableSlots().size } catch (e: Exception) { 18 }
-        val controls = 2 + (if (field != "purpose") 1 else 0) + known.size   // OK + Del [+ OCR] + picks
+        val controls = 2 + known.size   // OK + Del + picks
         val budget = (usable - 3 - controls).coerceAtLeast(3)
         val keys = keySetFor(field)
         val needsPaging = keys.size > budget
@@ -1765,7 +1774,15 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(scanAction = "act_scan", photoAction = "act_photo")
+        // Inside a plate/km field menu the global 📷 button doubles as the OCR
+        // trigger (saves one hex — the photo is uploaded either way). Elsewhere it
+        // stays the normal Photo capture.
+        val ocrField = tripFieldMenu == "plate" || tripFieldMenu == "km"
+        placeSystemButtons(
+            scanAction = "act_scan",
+            photoAction = if (ocrField) "trip_ocr" else "act_photo",
+            photoLabel = if (ocrField) "📷\nOCR" else "📷\nPhoto"
+        )
         gridManager.placeItems(uiItems, priority = 100)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
         updateRenderCells()
