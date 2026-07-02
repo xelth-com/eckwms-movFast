@@ -1749,6 +1749,17 @@ class MainScreenViewModel : ViewModel() {
                 "color" to if (recording) "#2E7D32" else "#455A64",
                 "action" to "trip_open_start"
             ))
+            // While recording, a one-tap "drop a stop" — records the current
+            // position as a manual checkpoint on THIS trip (multi-stop trip, no
+            // stop/restart) and uploads it immediately.
+            if (recording) {
+                uiItems.add(mapOf(
+                    "type" to "button",
+                    "label" to "📍\nCheckpoint",
+                    "color" to "#00695C",
+                    "action" to "trip_checkpoint"
+                ))
+            }
             // City buttons (cities with waiting tickets). Tap → console shows that
             // city's tickets. "All" clears the filter.
             if (tripSelectedCity != null) {
@@ -1864,6 +1875,9 @@ class MainScreenViewModel : ViewModel() {
             action == "trip_toggle_autodetect" -> "trip_toggle_autodetect"
             // Map recenter — handled in MainScreen (it owns the map view).
             action == "trip_recenter" -> "trip_recenter"
+            // Drop a checkpoint on the open trip — MainScreen calls TripManager
+            // (needs the app context + the current purpose as the stop label).
+            action == "trip_checkpoint" -> "trip_checkpoint"
             // Live server tracking: a pure consent flag — flip it here, no
             // permission needed (the recording service re-reads it per fix).
             action == "trip_toggle_liveshare" -> {

@@ -83,6 +83,21 @@ object TripManager {
         }
     }
 
+    /** Drop a checkpoint (a stop within a multi-stop trip) on the OPEN trip: the
+     *  service records the current position as a `manual` point and uploads it now.
+     *  No-op if no trip is recording (the service logs it). */
+    fun checkpointNow(context: Context, label: String? = null) {
+        val intent = Intent(context, TripRecordingService::class.java).apply {
+            action = TripRecordingService.ACTION_CHECKPOINT
+            if (!label.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_LABEL, label)
+        }
+        try {
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "checkpointNow: service not running (${e.message})")
+        }
+    }
+
     // ── Auto-detection (Activity Recognition Transition API) ────────────────
 
     fun hasActivityPermission(context: Context): Boolean =
@@ -179,6 +194,12 @@ object TripManager {
                     put("seq", p.seq)
                     put("ts", iso(p.ts))
                     put("source", p.source)
+                    // Trip-event fields — only emitted for non-plain points so the
+                    // payload stays lean (server defaults kind to "auto").
+                    if (p.kind != "auto") put("kind", p.kind)
+                    p.label?.let { put("label", it) }
+                    p.odometerKm?.let { put("odometer_km", it) }
+                    p.photoId?.let { put("photo_id", it) }
                 }
                 // On-device resolution: if this cell is in the local tower cache,
                 // attach coordinates HERE and DROP the raw cell identity — the

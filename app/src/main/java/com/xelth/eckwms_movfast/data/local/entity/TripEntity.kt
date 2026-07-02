@@ -1,5 +1,6 @@
 package com.xelth.eckwms_movfast.data.local.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -62,5 +63,12 @@ data class TripPointEntity(
     val mnc: Int? = null,
     val tac: Int? = null,
     val cid: Long? = null,                   // Long: 5G NR NCI exceeds Int
-    val signalDbm: Int? = null
+    val signalDbm: Int? = null,
+    // ── Trip-event fields (multi-stop trips + fuel receipts) ──────────────────
+    // kind: "auto" (sampled track point) | "manual" (driver-dropped stop) |
+    //       "fuel" (refuel event with an odometer + receipt photo).
+    @ColumnInfo(defaultValue = "auto") val kind: String = "auto",
+    val label: String? = null,               // stop note / customer / "fuel"
+    val odometerKm: Double? = null,          // fuel event: reading (OCR or estimated)
+    val photoId: String? = null              // fuel event: receipt photo CAS uuid
 )

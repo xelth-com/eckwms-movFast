@@ -412,6 +412,14 @@ fun MainScreen(
             "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
             "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
             "trip_recenter" -> mapRecenterTick++    // pan map to current position
+            // Drop a stop on the current trip (multi-stop). Uses the current Purpose
+            // as the stop label if one is set.
+            "trip_checkpoint" -> {
+                com.xelth.eckwms_movfast.trips.TripManager.checkpointNow(
+                    context, mainViewModel.pendingTripPurposeText()
+                )
+                mainViewModel.addLog("📍 Checkpoint dropped")
+            }
             // 📷 OCR on the Plate/Km field hex-menu → capture a photo, ML Kit reads
             // it, applyTripFieldValue fills the field (green). Suspend the hardware
             // scanner first (it shares the ISP with the camera app).

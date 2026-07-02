@@ -57,7 +57,12 @@ class TripRecordingService : Service() {
         const val ACTION_START = "trip_start"
         const val ACTION_STOP = "trip_stop"
         const val ACTION_STOP_GRACEFUL = "trip_stop_graceful"
+        // Driver-dropped waypoint on the OPEN trip (a stop within a multi-stop trip)
+        // — records the current position as a `manual` point and forces an immediate
+        // checkpoint upload, so one trip can hold several stops without stop/restart.
+        const val ACTION_CHECKPOINT = "trip_checkpoint"
         const val EXTRA_MANUAL = "manual"
+        const val EXTRA_LABEL = "label"
         const val EXTRA_PURPOSE = "purpose"
         const val EXTRA_PURPOSE_REF = "purpose_ref"
         const val EXTRA_PURPOSE_LABEL = "purpose_label"
@@ -87,6 +92,9 @@ class TripRecordingService : Service() {
     private var locationCallback: LocationCallback? = null
 
     private var tripId: String? = null
+    // Most recent fused fix, so a driver-dropped checkpoint has a position even
+    // between the 30 s fused updates.
+    @Volatile private var lastLoc: android.location.Location? = null
     private val seq = AtomicInteger(0)
     private val apiService by lazy { com.xelth.eckwms_movfast.api.ScanApiService(applicationContext) }
 
@@ -118,6 +126,7 @@ class TripRecordingService : Service() {
             }
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
             ACTION_STOP -> finalizeAndStop()
+            ACTION_CHECKPOINT -> recordManualCheckpoint(intent.getStringExtra(EXTRA_LABEL))
             else -> {
                 // Sticky restart after an OOM kill delivers a NULL intent (no
                 // action). A *started* FGS MUST call startForeground within ~5 s
@@ -230,6 +239,49 @@ class TripRecordingService : Service() {
         }
     }
 
+    /** Driver dropped a checkpoint (a stop within a multi-stop trip). Record the
+     *  current position as a `manual` point (with an optional label) and push an
+     *  immediate checkpoint upload so the stop is in the WMS at once and survives an
+     *  OOM kill. Falls back to the fused client's last known fix if we have no
+     *  cached one yet; a manual point with no position is still recorded (time-only)
+     *  so the stop is never lost. */
+    @SuppressLint("MissingPermission")
+    private fun recordManualCheckpoint(label: String?) {
+        val id = tripId ?: run { Log.w(TAG, "checkpoint ignored: no open trip"); return }
+        scope.launch {
+            val loc = lastLoc ?: try {
+                if (hasLocationPermission()) fusedClient?.lastLocation?.let { task ->
+                    com.google.android.gms.tasks.Tasks.await(task)
+                } else null
+            } catch (e: Exception) { null }
+            val db = AppDatabase.getInstance(applicationContext)
+            db.tripDao().insertPoint(
+                TripPointEntity(
+                    tripId = id,
+                    seq = seq.incrementAndGet(),
+                    ts = System.currentTimeMillis(),
+                    source = if (loc != null) "fused" else "manual",
+                    lat = loc?.latitude,
+                    lng = loc?.longitude,
+                    accuracyM = loc?.accuracy?.toDouble(),
+                    kind = "manual",
+                    label = label?.takeIf { it.isNotBlank() }
+                )
+            )
+            Log.i(TAG, "manual checkpoint for trip $id (label=${label ?: "-"}, pos=${loc != null})")
+            // Force an immediate upload so the stop reaches the WMS now.
+            try {
+                val json = TripManager.buildUploadJson(applicationContext, id)
+                if (json != null) {
+                    val ok = apiService.uploadTrip(json)
+                    Log.i(TAG, "manual checkpoint upload for trip $id: ok=$ok")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "manual checkpoint upload failed: ${e.message}")
+            }
+        }
+    }
+
     // ── Cell sampling ────────────────────────────────────────────────────────
 
     private fun startCellSampling() {
@@ -319,6 +371,7 @@ class TripRecordingService : Service() {
                 override fun onLocationResult(result: LocationResult) {
                     val id = tripId ?: return
                     val loc = result.lastLocation ?: return
+                    lastLoc = loc
                     scope.launch {
                         AppDatabase.getInstance(applicationContext).tripDao().insertPoint(
                             TripPointEntity(

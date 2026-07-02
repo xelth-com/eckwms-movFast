@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.xelth.eckwms_movfast.data.local.dao.AttachmentDao
 import com.xelth.eckwms_movfast.data.local.dao.FileResourceDao
 import com.xelth.eckwms_movfast.data.local.dao.PickingDao
@@ -58,7 +59,7 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         CellTowerEntity::class,
         VehicleEntity::class
     ],
-    version = 17,  // Fahrtenbuch vehicle registry + trip vehicleId/vehiclePlate
+    version = 18,  // trip_points: kind/label/odometerKm/photoId (multi-stop + fuel)
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -92,12 +93,16 @@ abstract class AppDatabase : RoomDatabase() {
         // migration the app now FAILS LOUD instead of erasing the driver's data,
         // which for a GoBD logbook is the correct trade-off.
         val MIGRATIONS: Array<Migration> = arrayOf(
-            // Example for the next bump (17 → 18):
-            // object : Migration(17, 18) {
-            //     override fun migrate(db: SupportSQLiteDatabase) {
-            //         db.execSQL("ALTER TABLE trips ADD COLUMN purpose_late INTEGER NOT NULL DEFAULT 0")
-            //     }
-            // },
+            // 17 → 18: trip-event fields on trip_points. Additive ALTER TABLE only,
+            // so every existing (unsynced Fahrtenbuch) point is preserved.
+            object : Migration(17, 18) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE trip_points ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto'")
+                    db.execSQL("ALTER TABLE trip_points ADD COLUMN label TEXT")
+                    db.execSQL("ALTER TABLE trip_points ADD COLUMN odometerKm REAL")
+                    db.execSQL("ALTER TABLE trip_points ADD COLUMN photoId TEXT")
+                }
+            },
         )
 
         fun getInstance(context: Context): AppDatabase {
