@@ -1584,6 +1584,16 @@ class MainScreenViewModel : ViewModel() {
     private fun fieldName(field: String) = when (field) {
         "plate" -> "Plate"; "km" -> "Km"; else -> "Purpose"
     }
+    /** Label for a field button on the start sub-menu. Once a value is set the hex
+     *  shows the VALUE (icon + value) instead of the "Plate/Km/Purpose" caption —
+     *  yellow/green buttons carry data, so the caption is redundant. Long values are
+     *  truncated to what fits on a hex. */
+    private fun fieldButtonLabel(field: String, icon: String, name: String): String {
+        val v = fieldValue(field)?.trim()
+        if (v.isNullOrBlank()) return "$icon\n$name"
+        val shown = if (v.length > 10) v.take(9) + "…" else v
+        return "$icon\n$shown"
+    }
     private fun fieldKnown(field: String) = when (field) {
         "plate" -> tripKnownPlates; "purpose" -> tripKnownPurposes; else -> emptyList()
     }
@@ -1672,7 +1682,7 @@ class MainScreenViewModel : ViewModel() {
             renderTripFieldMenu(uiItems, tripFieldMenu!!)
         } else if (tripStartMenu) {
             // ── Start/Stop sub-menu (on hexes, no separate panel) ──
-            uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_submenu_back"))
+            // No full Back hex — the ✕ half-button already steps out of this menu.
             if (recording) {
                 uiItems.add(mapOf("type" to "button", "label" to "⏹\nStop", "color" to "#C62828", "action" to "trip_stop"))
             } else {
@@ -1683,18 +1693,18 @@ class MainScreenViewModel : ViewModel() {
             // green user-set); each opens its own hex sub-menu (known values +
             // Photo→OCR + paged hex-keyboard). Replaces the old Km/Kfz dialog.
             uiItems.add(mapOf("type" to "button",
-                "label" to "🔖\nPlate${tripPlate?.let { "\n" + it } ?: ""}",
+                "label" to fieldButtonLabel("plate", "🔖", "Plate"),
                 "color" to fieldColor(tripPlateSource), "action" to "trip_field:plate"))
             uiItems.add(mapOf("type" to "button",
-                "label" to "🔢\nKm${tripKm?.let { "\n" + it } ?: ""}",
+                "label" to fieldButtonLabel("km", "🔢", "Km"),
                 "color" to fieldColor(tripKmSource), "action" to "trip_field:km"))
             uiItems.add(mapOf("type" to "button",
-                "label" to "🎯\nPurpose${tripPurpose?.let { "\n" + it.take(8) } ?: ""}",
+                "label" to fieldButtonLabel("purpose", "🎯", "Purpose"),
                 "color" to fieldColor(tripPurposeSource), "action" to "trip_field:purpose"))
         } else if (tripSettingsMenu) {
             // ── Settings sub-menu (on hexes): the two toggles live here now so
             // they aren't fat-fingered on the main trip grid. ✓/✕ shows state. ──
-            uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_settings_back"))
+            // No full Back hex — the ✕ half-button already steps out of this menu.
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to if (auto) "✓ Auto\nStart" else "✕ Auto\nStart",

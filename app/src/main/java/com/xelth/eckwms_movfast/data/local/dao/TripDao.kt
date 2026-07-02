@@ -28,6 +28,10 @@ interface TripDao {
     @Query("SELECT * FROM trip_points WHERE tripId = :tripId ORDER BY seq ASC")
     suspend fun getPoints(tripId: String): List<TripPointEntity>
 
+    // Distinct recent free-text purposes → quick-pick hexes on the Purpose field menu.
+    @Query("SELECT purposeLabel FROM trips WHERE purposeLabel IS NOT NULL AND purposeLabel != '' GROUP BY purposeLabel ORDER BY MAX(startedAt) DESC LIMIT :limit")
+    suspend fun recentPurposeLabels(limit: Int = 8): List<String>
+
     @Query("SELECT COUNT(*) FROM trip_points WHERE tripId = :tripId")
     suspend fun pointCount(tripId: String): Int
 

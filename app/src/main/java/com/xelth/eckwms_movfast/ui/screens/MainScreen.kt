@@ -222,6 +222,13 @@ fun MainScreen(
         tripVehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
         // Feed known plates to the Kennzeichen field sub-menu as quick-pick hexes.
         mainViewModel.tripKnownPlates = tripVehicles.mapNotNull { it.plate?.takeIf { p -> p.isNotBlank() } }.distinct()
+        // Feed recent free-text purposes to the Purpose field sub-menu as quick-picks.
+        try {
+            val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+            mainViewModel.tripKnownPurposes = db.tripDao().recentPurposeLabels()
+        } catch (e: Exception) {
+            android.util.Log.w("MainScreen", "recentPurposeLabels failed: ${e.message}")
+        }
     }
 
     // Debounced live search across ALL tickets while typing/dictating
@@ -294,6 +301,31 @@ fun MainScreen(
         ActivityResultContracts.RequestPermission()
     ) { /* granted → user presses the mic again to talk */ }
 
+    // Trip field OCR (📷 on the Plate/Km hex sub-menu). Which field the capture is
+    // for; the camera returns a preview bitmap → ML Kit OCR → applyTripFieldValue.
+    var tripOcrField by remember { mutableStateOf<String?>(null) }
+    val tripScanMgr = (context.applicationContext as? com.xelth.eckwms_movfast.EckwmsApp)?.scannerManager
+    val tripFieldOcrLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: android.graphics.Bitmap? ->
+        tripScanMgr?.resumeScanService()   // camera returned → re-acquire scan engine
+        val field = tripOcrField
+        tripOcrField = null
+        if (bitmap != null && field != null) {
+            tripScope.launch {
+                val text = if (field == "plate")
+                    com.xelth.eckwms_movfast.utils.OdometerOcr.recognizePlate(bitmap)
+                else
+                    com.xelth.eckwms_movfast.utils.OdometerOcr.recognizeKm(bitmap)?.toInt()?.toString()
+                if (!text.isNullOrBlank()) {
+                    mainViewModel.applyTripFieldValue(field, text)
+                } else {
+                    mainViewModel.addLog("OCR: nothing recognised")
+                }
+            }
+        }
+    }
+
     // Network-mode "Enter code" dialog (onboard via 9eck.com without a QR).
     var showCodeDialog by remember { mutableStateOf(false) }
 
@@ -332,6 +364,14 @@ fun MainScreen(
             "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
             "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
             "trip_recenter" -> mapRecenterTick++    // pan map to current position
+            // 📷 OCR on the Plate/Km field hex-menu → capture a photo, ML Kit reads
+            // it, applyTripFieldValue fills the field (green). Suspend the hardware
+            // scanner first (it shares the ISP with the camera app).
+            "trip_ocr:plate", "trip_ocr:km" -> {
+                tripOcrField = result.removePrefix("trip_ocr:")
+                tripScanMgr?.suspendScanService()
+                tripFieldOcrLauncher.launch(null)
+            }
 
             "trip_toggle_autodetect" -> {
                 val tm = com.xelth.eckwms_movfast.trips.TripManager

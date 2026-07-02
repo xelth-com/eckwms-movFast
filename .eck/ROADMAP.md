@@ -205,3 +205,42 @@ relay must never be the authoritative path for a paid mesh.
     master + invite-token; map code → that QR. Until this lands the Android side returns
     "invalid/expired" (no resolver endpoint yet). **Full spec for the 9eck coder:
     `.eck/PAIR_CODE_ONBOARDING.md`.**
+
+## Hexagon-menu redesign: Settings submenu + Fahrt field buttons + hex-keyboard — PROPOSED 2026-07-02 (owner)
+
+All input moves into nested HEXAGON submenus (no bottom text keyboard). Two parts:
+
+### 1. Settings hex submenu (replaces the standalone Autostart button)
+- Where the **Autostart** button currently sits, put a **"Settings"** hex button.
+- Tapping **Settings** opens another hexagon submenu containing the two toggles:
+  **Autostart** and **Live Server** (both currently top-level → move them in here).
+
+### 2. Fahrt menu — three field buttons (English labels) with state colours
+Add three buttons to the Fahrt (trip) menu:
+- **Kennzeichen** (plate)
+- **Kilometerstand** (odometer)
+- **Purpose / Zweck** (trip purpose)
+
+Colour state per button:
+- **RED** — nothing selected/entered yet.
+- **YELLOW** — the system auto-pulled a previous value (not user-confirmed).
+- (green/normal once the user explicitly picks/confirms — same convention as the
+  existing field buttons.)
+
+Tapping a field button opens a **hexagon submenu**:
+- **Kennzeichen**: known/previous Kennzeichen shown as hex buttons to pick; the
+  usual **Photo** button becomes an **OCR** action (recognise the plate — reuse
+  OdometerOcr.recognizePlate). Instead of a manual text field at the bottom, all
+  the FREE hex slots act as a **keyboard** (paged — multiple pages of keys), so
+  typing happens via hexes too.
+- **Kilometerstand**: same pattern — Photo→OCR (odometer OCR already exists) +
+  hex-keyboard pages for manual digits.
+- **Purpose**: same pattern — known/planned purposes (Level A candidates) as hex
+  buttons + hex-keyboard pages for free text (Level B).
+
+Notes: reuse the existing hex components (HexagonalButton, SelectionAreaSheet,
+renderTripGrid) + OCR (OdometerOcr) + purpose candidates
+(ScanApiService.fetchPurposeCandidates). The "all free buttons become a paged
+keyboard" is the new reusable primitive to build. See TRIP_MODE_UI.md.
+Sequenced AFTER the 2026-07-02 trip-mesh work (per-plate colour/fade + merkle
+relay-fallback).
