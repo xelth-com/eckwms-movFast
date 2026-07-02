@@ -72,6 +72,11 @@ class TripRecordingService : Service() {
         // within a few minutes even off-LAN (delivered via the relay mesh-queue
         // when the LAN master is unreachable — see ScanApiService.uploadTrip).
         private const val CHECKPOINT_INTERVAL_MS = 5 * 60_000L
+        // First checkpoint fires SOON after start so even a short-lived (OOM-prone)
+        // process delivers a position/track before it may be killed; then the steady
+        // interval above. Matters on memory-starved PDAs where the FGS gets culled
+        // every few minutes during a drive (Android Auto etc. exhausting swap).
+        private const val CHECKPOINT_FIRST_MS = 75_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -113,8 +118,48 @@ class TripRecordingService : Service() {
             }
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
             ACTION_STOP -> finalizeAndStop()
+            else -> {
+                // Sticky restart after an OOM kill delivers a NULL intent (no
+                // action). A *started* FGS MUST call startForeground within ~5 s
+                // or the OS crashes it (the "process is bad" loop seen on the
+                // memory-starved Ranger2), and without this the open trip's
+                // recording + checkpoints would NOT resume until the next
+                // IN_VEHICLE transition. So resume the open trip right here.
+                if (tripId == null) resumeAfterRestart()
+            }
         }
         return START_STICKY
+    }
+
+    /** Resume the open trip after a process/OOM kill (sticky restart, null intent).
+     *  Calls startForeground immediately (FGS 5 s contract), then re-arms sampling +
+     *  checkpoints for the open trip, or stops cleanly if there is nothing to resume. */
+    private fun resumeAfterRestart() {
+        if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
+            stopSelf(); return
+        }
+        // Prompt FGS immediately with a neutral (business) notification; the async
+        // block refines it for a private trip, or stops if there's no open trip.
+        startForegroundWithNotification(false)
+        scope.launch {
+            val db = AppDatabase.getInstance(applicationContext)
+            val trip = db.tripDao().getOpenTrip()
+            if (trip == null) {
+                Log.i(TAG, "Sticky restart with no open trip — stopping")
+                stopSelf()
+                return@launch
+            }
+            if (trip.purpose == "private") startForegroundWithNotification(true)
+            tripId = trip.id
+            seq.set(db.tripDao().pointCount(trip.id))
+            TripManager.publishActiveTrip(trip)
+            Log.i(TAG, "Resumed open trip ${trip.id} after sticky restart (post-kill)")
+            if (trip.purpose != "private") {
+                startCellSampling()
+                startFusedUpdates()
+                startCheckpoints(trip.id)
+            }
+        }
     }
 
     private fun startRecording(
@@ -168,9 +213,12 @@ class TripRecordingService : Service() {
     private fun startCheckpoints(id: String) {
         checkpointJob?.cancel()
         checkpointJob = scope.launch {
+            // First checkpoint soon (CHECKPOINT_FIRST_MS), then the steady interval.
             // delay() (outside the try) throws on cancel → the loop ends cleanly.
+            var wait = CHECKPOINT_FIRST_MS
             while (true) {
-                delay(CHECKPOINT_INTERVAL_MS)
+                delay(wait)
+                wait = CHECKPOINT_INTERVAL_MS
                 try {
                     val json = TripManager.buildUploadJson(applicationContext, id) ?: continue
                     val ok = apiService.uploadTrip(json)
