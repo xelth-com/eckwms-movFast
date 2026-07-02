@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -345,6 +347,33 @@ fun MainScreen(
         }
     }
 
+    // Trip text-field entry via the normal Android keyboard (⌨ on the plate/purpose
+    // field menu). tripKbdField = which field; tripKbdText = the live text. A 🎤
+    // button dictates straight into the field (Google's speech UI, decoupled from
+    // the trip destination search that push-to-talk drives).
+    var tripKbdField by remember { mutableStateOf<String?>(null) }
+    var tripKbdText by remember { mutableStateOf("") }
+    val tripKbdSpeechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val spoken = res.data
+            ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+        if (!spoken.isNullOrBlank()) {
+            tripKbdText = if (tripKbdField == "plate") spoken.uppercase() else spoken
+        }
+    }
+    val launchKbdSpeech: () -> Unit = {
+        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT,
+                if (tripKbdField == "plate") "Kennzeichen" else "Purpose")
+        }
+        try { tripKbdSpeechLauncher.launch(intent) }
+        catch (e: Exception) { mainViewModel.addLog("No speech app installed") }
+    }
+
     // Network-mode "Enter code" dialog (onboard via 9eck.com without a QR).
     var showCodeDialog by remember { mutableStateOf(false) }
 
@@ -390,6 +419,13 @@ fun MainScreen(
                 tripOcrField = result.removePrefix("trip_ocr:")
                 tripScanMgr?.suspendScanService()
                 tripFieldOcrLauncher.launch(null)
+            }
+            // ⌨ Keyboard on a text field → open the Android soft keyboard (prefilled).
+            "trip_kbd:plate", "trip_kbd:purpose" -> {
+                val f = result.removePrefix("trip_kbd:")
+                tripKbdText = if (f == "plate") (mainViewModel.pendingTripPlate() ?: "")
+                              else (mainViewModel.pendingTripPurposeText() ?: "")
+                tripKbdField = f
             }
 
             "trip_toggle_autodetect" -> {
@@ -1155,6 +1191,39 @@ fun MainScreen(
                 )
             }
         }
+    }
+
+    // Trip field: normal Android keyboard for plate/purpose (⌨ Keyboard hex). The
+    // text field auto-focuses to raise the soft keyboard; 🎤 dictates into it.
+    tripKbdField?.let { f ->
+        val kbdFocus = remember { FocusRequester() }
+        AlertDialog(
+            onDismissRequest = { tripKbdField = null },
+            title = { Text(if (f == "plate") "Kennzeichen" else "Purpose") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = tripKbdText,
+                        onValueChange = { tripKbdText = if (f == "plate") it.uppercase() else it },
+                        singleLine = f == "plate",
+                        label = { Text(if (f == "plate") "Plate" else "Purpose") },
+                        modifier = Modifier.fillMaxWidth().focusRequester(kbdFocus)
+                    )
+                    TextButton(onClick = launchKbdSpeech) { Text("🎤 Dictate") }
+                }
+                LaunchedEffect(Unit) { kbdFocus.requestFocus() }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val t = tripKbdText.trim()
+                    if (t.isNotEmpty()) mainViewModel.applyTripFieldValue(f, t)
+                    tripKbdField = null
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { tripKbdField = null }) { Text("Cancel") }
+            }
+        )
     }
 
     // Network mode: "Enter code" → onboard via 9eck.com by typing a short pairing code.

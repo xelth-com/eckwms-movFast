@@ -1646,39 +1646,31 @@ class MainScreenViewModel : ViewModel() {
         _tripStatus.value = "${fieldName(f)}: ${tripEntryBuffer}▮"
     }
 
-    /** Field sub-menu on hexes: OK / ⌫ / known values as quick-pick + a PAGED
-     *  hex-keyboard (all remaining hexes are keys). There is NO dedicated OCR hex —
-     *  inside a plate/km field menu the global 📷 system button becomes "OCR"
-     *  (see renderTripGrid). The current entry buffer shows in the status line. */
+    /** Field sub-menu on hexes. Two shapes:
+     *  • KM (number only): a numeric hex keypad (0-9 + dot) — big, fixed-position
+     *    keys are fine for digits. OK carries the live buffer so typing is visible.
+     *  • PLATE / PURPOSE (text): NO hex keyboard (unfamiliar key positions are
+     *    confusing for words). Known values as quick-pick + a ⌨ Keyboard hex that
+     *    opens the normal Android soft keyboard (with a 🎤 dictate option).
+     *  Plate/km also get OCR via the global 📷 button relabelled in renderTripGrid. */
     private fun renderTripFieldMenu(uiItems: MutableList<Map<String, Any>>, field: String) {
         // No full Back hex — the ✕ half-button (set at the end of renderTripGrid)
         // already steps back out of the field menu.
-        uiItems.add(mapOf("type" to "button", "label" to "✓\nOK", "color" to "#2E7D32", "action" to "trip_field_ok"))
-        uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
-        val known = fieldKnown(field).take(6)
-        known.forEach { v ->
-            uiItems.add(mapOf("type" to "button", "label" to v, "color" to "#1565C0", "action" to "trip_pick:$v"))
-        }
-        // Fill ALL remaining full hexes with keys. Budget = usable full slots − the
-        // 3 pinned system buttons (Scan/Photo/Mic) − the controls above; if the key
-        // set overflows the budget, reserve one slot for the ▶ Page cycler.
-        val usable = try { gridManager.contentGrid.getUsableSlots().size } catch (e: Exception) { 18 }
-        val controls = 2 + known.size   // OK + Del + picks
-        val budget = (usable - 3 - controls).coerceAtLeast(3)
-        val keys = keySetFor(field)
-        val needsPaging = keys.size > budget
-        val perPage = if (needsPaging) (budget - 1).coerceAtLeast(1) else budget
-        val pages = if (needsPaging) (keys.size + perPage - 1) / perPage else 1
-        if (needsPaging) {
+        if (field == "km") {
+            // OK shows the current buffer so the number being typed is visible.
             uiItems.add(mapOf("type" to "button",
-                "label" to "▶\nPage\n${(tripKeyPage % pages) + 1}/$pages",
-                "color" to "#455A64", "action" to "trip_key_page"))
-        }
-        val startIdx = (tripKeyPage % maxOf(pages, 1)) * perPage
-        keys.drop(startIdx).take(perPage).forEach { k ->
-            uiItems.add(mapOf("type" to "button",
-                "label" to if (k == " ") "␣" else k,
-                "color" to "#263238", "action" to "trip_key:$k"))
+                "label" to "✓\n" + tripEntryBuffer.ifBlank { "OK" },
+                "color" to "#2E7D32", "action" to "trip_field_ok"))
+            uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
+            keySetFor("km").forEach { k ->
+                uiItems.add(mapOf("type" to "button", "label" to k, "color" to "#263238", "action" to "trip_key:$k"))
+            }
+        } else {
+            // Text field: known picks + open the Android keyboard (no hex keys).
+            fieldKnown(field).take(6).forEach { v ->
+                uiItems.add(mapOf("type" to "button", "label" to v, "color" to "#1565C0", "action" to "trip_pick:$v"))
+            }
+            uiItems.add(mapOf("type" to "button", "label" to "⌨\nKeyboard", "color" to "#00695C", "action" to "trip_kbd"))
         }
     }
 
@@ -1829,15 +1821,18 @@ class MainScreenViewModel : ViewModel() {
                 renderTripGrid(); "handled"
             }
             action.startsWith("trip_key:") -> {
-                val c = action.removePrefix("trip_key:")
-                tripEntryBuffer += if (tripFieldMenu == "plate") c.uppercase() else c
-                updateFieldStatus(); "handled"   // buffer shows in status; grid unchanged
+                tripEntryBuffer += action.removePrefix("trip_key:")   // km keypad → digits
+                // Re-render so the buffer shows on the OK hex (numeric keypad only).
+                updateFieldStatus(); renderTripGrid(); "handled"
             }
             action == "trip_key_bs" -> {
                 if (tripEntryBuffer.isNotEmpty()) tripEntryBuffer = tripEntryBuffer.dropLast(1)
-                updateFieldStatus(); "handled"
+                updateFieldStatus(); renderTripGrid(); "handled"
             }
             action == "trip_key_page" -> { tripKeyPage++; renderTripGrid(); "handled" }
+            // ⌨ Keyboard on a text field → MainScreen opens the Android soft keyboard
+            // (with 🎤 dictate). It calls applyTripFieldValue(field, text) on confirm.
+            action == "trip_kbd" -> "trip_kbd:${tripFieldMenu ?: "purpose"}"
             action == "trip_field_ok" -> {
                 tripFieldMenu?.let { f ->
                     val v = tripEntryBuffer.trim()
