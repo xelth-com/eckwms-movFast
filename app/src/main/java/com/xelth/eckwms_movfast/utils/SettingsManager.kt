@@ -2,6 +2,8 @@ package com.xelth.eckwms_movfast.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.xelth.eckwms_movfast.BuildConfig
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -11,18 +13,68 @@ import java.io.FileOutputStream
 
 object SettingsManager {
     private const val PREFS_NAME = "eckwms_settings"
+    private const val SECURE_PREFS_NAME = "eckwms_secure"
     private const val KEY_RESOLUTION = "image_resolution"
     private const val KEY_QUALITY = "image_quality"
     private const val KEY_SERVER_URL = "server_url"
     private const val DEFAULT_SERVER_URL = ""  // Empty until paired via relay
     private lateinit var prefs: SharedPreferences
 
+    // Keystore-backed store for credentials (JWT, enc_key, sync-network key,
+    // xelixir tokens). Kept separate from `prefs` so secrets never touch the
+    // plaintext SharedPreferences xml (which was cloud-backed up + adb-backupable).
+    // Null only if EncryptedSharedPreferences fails to initialize on a device
+    // (rare Keystore fault) — then secret accessors fall back to `prefs` so the
+    // app still functions (logged).
+    private var securePrefs: SharedPreferences? = null
+
     private lateinit var appContext: Context
+
+    /** The credential store — encrypted if available, else the plaintext prefs. */
+    private fun sec(): SharedPreferences = securePrefs ?: prefs
 
     fun init(context: Context) {
         appContext = context.applicationContext
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        securePrefs = try {
+            val masterKey = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                appContext,
+                SECURE_PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            Log.e("SettingsManager", "EncryptedSharedPreferences init failed — secrets fall back to plaintext prefs", e)
+            null
+        }
         migrateServerUrls()
+        migrateSecrets()
+    }
+
+    /**
+     * One-time move of credential values out of the plaintext `prefs` into the
+     * Keystore-backed `securePrefs`. Runs on every init but is a no-op once the
+     * plaintext copies are gone. If the secure store is unavailable, secrets stay
+     * in plaintext (the accessors read from there too via [sec]).
+     */
+    private fun migrateSecrets() {
+        val sp = securePrefs ?: return
+        val secretKeys = listOf(
+            KEY_AUTH_TOKEN, KEY_ENC_KEY, KEY_SYNC_NETWORK_KEY, KEY_XELIXIR_TOKEN, KEY_XELIXIR_LICENSE
+        )
+        for (k in secretKeys) {
+            if (prefs.contains(k)) {
+                if (!sp.contains(k)) {
+                    val v = prefs.getString(k, null)
+                    if (v != null) sp.edit().putString(k, v).commit()
+                }
+                prefs.edit().remove(k).commit()
+            }
+        }
     }
 
     /**
@@ -135,19 +187,19 @@ object SettingsManager {
     // WS auth token the agent connects with. Either a master WS_AUTH_TOKEN dropped
     // in for bring-up, or the access_token cached from a successful license claim
     // (see XelixirTokenProvider). Empty until set/claimed.
-    fun saveXelixirToken(token: String) = prefs.edit().putString(KEY_XELIXIR_TOKEN, token.trim()).commit()
-    fun getXelixirToken(): String = prefs.getString(KEY_XELIXIR_TOKEN, "") ?: ""
+    fun saveXelixirToken(token: String) = sec().edit().putString(KEY_XELIXIR_TOKEN, token.trim()).commit()
+    fun getXelixirToken(): String = sec().getString(KEY_XELIXIR_TOKEN, "") ?: ""
 
     // Provisioned license token (the gating secret) — POSTed to /api/licensing/claim
     // to obtain the WS access_token, exactly like dno2 devices / the kiosk. Issued by
     // an admin per customer batch. Empty until provisioned.
     private const val KEY_XELIXIR_LICENSE = "xelixir_license_token"
-    fun saveXelixirLicenseToken(token: String) = prefs.edit().putString(KEY_XELIXIR_LICENSE, token.trim()).commit()
+    fun saveXelixirLicenseToken(token: String) = sec().edit().putString(KEY_XELIXIR_LICENSE, token.trim()).commit()
     // Prefer an explicitly provisioned override; otherwise fall back to the token
     // baked into the APK at build time (BuildConfig.XELIXIR_LICENSE_TOKEN, from the
     // gitignored local.properties). Empty only on unprovisioned dev builds.
     fun getXelixirLicenseToken(): String {
-        val override = prefs.getString(KEY_XELIXIR_LICENSE, "") ?: ""
+        val override = sec().getString(KEY_XELIXIR_LICENSE, "") ?: ""
         return if (override.isNotEmpty()) override else BuildConfig.XELIXIR_LICENSE_TOKEN
     }
 
@@ -203,8 +255,8 @@ object SettingsManager {
     // DEV key from .env - MUST match server's ENC_KEY
     private const val DEFAULT_ENC_KEY = "d34dac7ad4264dd83dde2b70f4b1b5c065d03723aa0debd2"
 
-    fun getEncKey(): String = prefs.getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
-    fun saveEncKey(key: String) = prefs.edit().putString(KEY_ENC_KEY, key.trim()).commit()
+    fun getEncKey(): String = sec().getString(KEY_ENC_KEY, DEFAULT_ENC_KEY) ?: DEFAULT_ENC_KEY
+    fun saveEncKey(key: String) = sec().edit().putString(KEY_ENC_KEY, key.trim()).commit()
 
     // ── Trip recording (Fahrtenbuch) ────────────────────────────────────────
     // Owner decision 2026-06-17: trips are ON by default (opt-out) — the user
@@ -298,9 +350,9 @@ object SettingsManager {
 
     // Authentication token for API requests
     private const val KEY_AUTH_TOKEN = "auth_token"
-    fun saveAuthToken(token: String) = prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
-    fun getAuthToken(): String = prefs.getString(KEY_AUTH_TOKEN, "") ?: ""
-    fun clearAuthToken() = prefs.edit().remove(KEY_AUTH_TOKEN).commit()
+    fun saveAuthToken(token: String) = sec().edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
+    fun getAuthToken(): String = sec().getString(KEY_AUTH_TOKEN, "") ?: ""
+    fun clearAuthToken() = sec().edit().remove(KEY_AUTH_TOKEN).commit()
 
     // Home Instance ID for Smart Routing (extracted from pairing QR code)
     private const val KEY_HOME_INSTANCE_ID = "home_instance_id"
@@ -721,11 +773,11 @@ object SettingsManager {
     fun getMeshId(): String? = prefs.getString(KEY_MESH_ID, null)
 
     fun saveSyncNetworkKey(key: String) {
-        prefs.edit().putString(KEY_SYNC_NETWORK_KEY, key.trim()).commit()
+        sec().edit().putString(KEY_SYNC_NETWORK_KEY, key.trim()).commit()
         // Recompute mesh_id when key changes
         saveMeshId(computeMeshId(key.trim()))
     }
-    fun getSyncNetworkKey(): String? = prefs.getString(KEY_SYNC_NETWORK_KEY, null)
+    fun getSyncNetworkKey(): String? = sec().getString(KEY_SYNC_NETWORK_KEY, null)
 
     fun saveRelayUrl(url: String) = prefs.edit().putString(KEY_RELAY_URL, url.trim()).commit()
     fun getRelayUrl(): String = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL

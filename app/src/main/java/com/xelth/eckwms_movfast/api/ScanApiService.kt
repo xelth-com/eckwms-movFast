@@ -75,9 +75,6 @@ enum class SyncOutcome { SUCCESS, REJECTED, FAILED }
 class ScanApiService(private val context: Context) {
     private val TAG = "ScanApiService"
 
-    // API Key for authentication with the server buffer
-    private val API_KEY = "[REDACTED_GENERIC_SECRET]"
-
     // Ссылка на ScannerManager для получения информации о типе штрих-кода
     private var scannerManager: ScannerManager? = null
 
@@ -151,7 +148,6 @@ class ScanApiService(private val context: Context) {
             connection.readTimeout = 10000
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("X-API-Key", API_KEY)
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
@@ -334,7 +330,6 @@ class ScanApiService(private val context: Context) {
             connection.readTimeout = 10000
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("X-API-Key", API_KEY)
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
 
@@ -1314,7 +1309,6 @@ class ScanApiService(private val context: Context) {
             connection.readTimeout = 25000
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("X-API-Key", API_KEY)
             connection.setRequestProperty(
                 "Authorization",
                 "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
@@ -1365,7 +1359,6 @@ class ScanApiService(private val context: Context) {
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("X-API-Key", API_KEY)
             connection.doOutput = true
 
             val jsonRequest = JSONObject().apply {
@@ -1415,7 +1408,6 @@ class ScanApiService(private val context: Context) {
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("X-API-Key", API_KEY)
             // Add auth token for protected endpoint
             connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
             connection.doOutput = true
