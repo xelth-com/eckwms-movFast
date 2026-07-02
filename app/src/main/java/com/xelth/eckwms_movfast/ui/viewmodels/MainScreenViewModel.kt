@@ -1612,6 +1612,14 @@ class MainScreenViewModel : ViewModel() {
         tripFieldMenu = null
         if (_isTripMode.value == true) renderTripGrid()
     }
+    /** After a trip starts, keep the values but demote user→auto so next trip
+     *  shows them YELLOW ("system pulled a previous value") until re-confirmed. */
+    fun markTripFieldsAuto() {
+        if (tripPlateSource == "user") tripPlateSource = "auto"
+        if (tripKmSource == "user") tripKmSource = "auto"
+        if (tripPurposeSource == "user") tripPurposeSource = "auto"
+        if (_isTripMode.value == true) renderTripGrid()
+    }
     private fun updateFieldStatus() {
         val f = tripFieldMenu ?: return
         _tripStatus.value = "${fieldName(f)}: ${tripEntryBuffer}▮"

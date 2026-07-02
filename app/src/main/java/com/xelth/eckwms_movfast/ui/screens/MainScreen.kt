@@ -242,7 +242,26 @@ fun MainScreen(
                 purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
                 purposeSource = tripPendingSource
             )
-            tripOdometerStart = true
+            // Apply Plate/Km pre-set on the hex field menus to the just-opened
+            // trip. If neither was set, fall back to the odometer/vehicle dialog.
+            val pPlate = mainViewModel.pendingTripPlate()
+            val pKm = mainViewModel.pendingTripKm()
+            if (pPlate != null || pKm != null) {
+                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                    val target = db.tripDao().getOpenTrip()?.id
+                    if (target != null) {
+                        if (pKm != null) db.tripDao().setStartOdometer(target, pKm, "manual", null)
+                        if (pPlate != null) com.xelth.eckwms_movfast.trips.VehicleManager.resolveAndAttach(
+                            context, target, null, pPlate, null
+                        )
+                        com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
+                    }
+                }
+                mainViewModel.markTripFieldsAuto()
+            } else {
+                tripOdometerStart = true
+            }
         }
     }
     // Destination-based start (from a ticket / typed address) → always business.
