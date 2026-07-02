@@ -256,10 +256,14 @@ fun MainScreen(
             )
         )
     }
-    // Hex sub-menu start (no destination): business or private.
+    // Hex sub-menu start (no destination): business or private. A free-text
+    // Purpose typed on the Purpose field hex-menu rides along as the label.
     val tripStartWithPurpose: (String) -> Unit = { purpose ->
         tripPendingPurpose = purpose
-        tripPendingRef = null; tripPendingLabel = null; tripPendingSource = "manual"
+        val purposeText = mainViewModel.pendingTripPurposeText()
+        tripPendingRef = null
+        tripPendingLabel = if (purpose == "private") null else purposeText
+        tripPendingSource = if (purpose != "private" && purposeText != null) "text" else "manual"
         tripStartLauncher.launch(
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,

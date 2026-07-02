@@ -523,7 +523,7 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
             MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT),
             MainMenuButton("pos", "💶\nPOS", "#4CAF50", "navigate_pos", PRIORITIES.DEFAULT),
-            MainMenuButton("trips", "🚗\nFahrt", "#607D8B", "navigate_trips", PRIORITIES.DEFAULT)
+            MainMenuButton("trips", "🚗\nTrips", "#607D8B", "navigate_trips", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -1538,7 +1538,7 @@ class MainScreenViewModel : ViewModel() {
     fun setTripRecording(recording: Boolean) {
         if (_tripRecording.value != recording) {
             _tripRecording.value = recording
-            _tripStatus.value = if (recording) "🚗 Fahrt läuft" else "Fahrten"
+            _tripStatus.value = if (recording) "🚗 Trip running" else "Trips"
             if (_isTripMode.value == true) renderTripGrid()
         }
     }
@@ -1582,7 +1582,7 @@ class MainScreenViewModel : ViewModel() {
         "plate" -> tripPlate; "km" -> tripKm; else -> tripPurpose
     }
     private fun fieldName(field: String) = when (field) {
-        "plate" -> "Kennzeichen"; "km" -> "Kilometerstand"; else -> "Purpose"
+        "plate" -> "Plate"; "km" -> "Km"; else -> "Purpose"
     }
     private fun fieldKnown(field: String) = when (field) {
         "plate" -> tripKnownPlates; "purpose" -> tripKnownPurposes; else -> emptyList()
@@ -1621,9 +1621,9 @@ class MainScreenViewModel : ViewModel() {
      *  values as quick-pick + a PAGED hex-keyboard (all remaining hexes are keys).
      *  The current entry buffer is shown live in the trip status line. */
     private fun renderTripFieldMenu(uiItems: MutableList<Map<String, Any>>, field: String) {
-        uiItems.add(mapOf("type" to "button", "label" to "◀\nZurück", "color" to "#455A64", "action" to "trip_field_back"))
+        uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_field_back"))
         uiItems.add(mapOf("type" to "button", "label" to "✓\nOK", "color" to "#2E7D32", "action" to "trip_field_ok"))
-        uiItems.add(mapOf("type" to "button", "label" to "⌫\nLösch", "color" to "#546E7A", "action" to "trip_key_bs"))
+        uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
         if (field != "purpose") {
             uiItems.add(mapOf("type" to "button", "label" to "📷\nOCR", "color" to "#37474F", "action" to "trip_ocr"))
         }
@@ -1634,7 +1634,7 @@ class MainScreenViewModel : ViewModel() {
         val pages = (keys.size + KEYS_PER_PAGE - 1) / KEYS_PER_PAGE
         if (pages > 1) {
             uiItems.add(mapOf("type" to "button",
-                "label" to "▶\nSeite\n${(tripKeyPage % pages) + 1}/$pages",
+                "label" to "▶\nPage\n${(tripKeyPage % pages) + 1}/$pages",
                 "color" to "#455A64", "action" to "trip_key_page"))
         }
         val startIdx = (tripKeyPage % maxOf(pages, 1)) * KEYS_PER_PAGE
@@ -1654,29 +1654,29 @@ class MainScreenViewModel : ViewModel() {
             renderTripFieldMenu(uiItems, tripFieldMenu!!)
         } else if (tripStartMenu) {
             // ── Start/Stop sub-menu (on hexes, no separate panel) ──
-            uiItems.add(mapOf("type" to "button", "label" to "◀\nZurück", "color" to "#455A64", "action" to "trip_submenu_back"))
+            uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_submenu_back"))
             if (recording) {
                 uiItems.add(mapOf("type" to "button", "label" to "⏹\nStop", "color" to "#C62828", "action" to "trip_stop"))
             } else {
                 uiItems.add(mapOf("type" to "button", "label" to "🚗\nStart", "color" to "#2E7D32", "action" to "trip_start_business"))
-                uiItems.add(mapOf("type" to "button", "label" to "🔒\nPrivat", "color" to "#546E7A", "action" to "trip_start_private"))
+                uiItems.add(mapOf("type" to "button", "label" to "🔒\nPrivate", "color" to "#546E7A", "action" to "trip_start_private"))
             }
             // Three field buttons — colour shows state (red empty / yellow auto /
             // green user-set); each opens its own hex sub-menu (known values +
             // Photo→OCR + paged hex-keyboard). Replaces the old Km/Kfz dialog.
             uiItems.add(mapOf("type" to "button",
-                "label" to "🔖\nKennz.${tripPlate?.let { "\n" + it } ?: ""}",
+                "label" to "🔖\nPlate${tripPlate?.let { "\n" + it } ?: ""}",
                 "color" to fieldColor(tripPlateSource), "action" to "trip_field:plate"))
             uiItems.add(mapOf("type" to "button",
                 "label" to "🔢\nKm${tripKm?.let { "\n" + it } ?: ""}",
                 "color" to fieldColor(tripKmSource), "action" to "trip_field:km"))
             uiItems.add(mapOf("type" to "button",
-                "label" to "🎯\nZweck${tripPurpose?.let { "\n" + it.take(8) } ?: ""}",
+                "label" to "🎯\nPurpose${tripPurpose?.let { "\n" + it.take(8) } ?: ""}",
                 "color" to fieldColor(tripPurposeSource), "action" to "trip_field:purpose"))
         } else if (tripSettingsMenu) {
             // ── Settings sub-menu (on hexes): the two toggles live here now so
             // they aren't fat-fingered on the main trip grid. ✓/✕ shows state. ──
-            uiItems.add(mapOf("type" to "button", "label" to "◀\nZurück", "color" to "#455A64", "action" to "trip_settings_back"))
+            uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_settings_back"))
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to if (auto) "✓ Auto\nStart" else "✕ Auto\nStart",
@@ -1707,7 +1707,7 @@ class MainScreenViewModel : ViewModel() {
             // no overlay button on the map (plenty of free hexes).
             uiItems.add(mapOf(
                 "type" to "button",
-                "label" to "📍\nZu mir",
+                "label" to "📍\nMe",
                 "color" to "#37474F",
                 "action" to "trip_recenter"
             ))
@@ -1716,14 +1716,14 @@ class MainScreenViewModel : ViewModel() {
             // trip state: GREEN while a Fahrt is running, GREY when idle.
             uiItems.add(mapOf(
                 "type" to "button",
-                "label" to if (recording) "🚗\nFahrt●" else "🚗\nNeue Fahrt",
+                "label" to if (recording) "🚗\nTrip●" else "🚗\nNew Trip",
                 "color" to if (recording) "#2E7D32" else "#455A64",
                 "action" to "trip_open_start"
             ))
             // City buttons (cities with waiting tickets). Tap → console shows that
             // city's tickets. "All" clears the filter.
             if (tripSelectedCity != null) {
-                uiItems.add(mapOf("type" to "button", "label" to "⬅\nAlle", "color" to "#455A64", "action" to "trip_city_all"))
+                uiItems.add(mapOf("type" to "button", "label" to "⬅\nAll", "color" to "#455A64", "action" to "trip_city_all"))
             }
             _tripCities.value?.forEach { c ->
                 val selected = c.city == tripSelectedCity
@@ -1780,7 +1780,7 @@ class MainScreenViewModel : ViewModel() {
             }
             action == "trip_field_back" -> {
                 tripFieldMenu = null
-                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Fahrt läuft" else "Fahrten")
+                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Trip running" else "Trips")
                 renderTripGrid(); "handled"
             }
             action.startsWith("trip_key:") -> {
@@ -1799,14 +1799,14 @@ class MainScreenViewModel : ViewModel() {
                     setTripField(f, v.ifEmpty { null }, if (v.isEmpty()) "empty" else "user")
                 }
                 tripFieldMenu = null
-                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Fahrt läuft" else "Fahrten")
+                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Trip running" else "Trips")
                 renderTripGrid(); "handled"
             }
             action.startsWith("trip_pick:") -> {
                 val v = action.removePrefix("trip_pick:")
                 tripFieldMenu?.let { setTripField(it, v, "user") }
                 tripFieldMenu = null
-                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Fahrt läuft" else "Fahrten")
+                _tripStatus.postValue(if (_tripRecording.value == true) "🚗 Trip running" else "Trips")
                 renderTripGrid(); "handled"
             }
             // OCR the plate/odometer — MainScreen owns the camera; it calls
