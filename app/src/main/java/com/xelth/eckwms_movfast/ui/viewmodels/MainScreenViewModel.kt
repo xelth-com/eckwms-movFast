@@ -1591,10 +1591,10 @@ class MainScreenViewModel : ViewModel() {
     // purpose = free text.
     private fun keySetFor(field: String): List<String> = when (field) {
         "km" -> "0123456789.".map { it.toString() }
-        "plate" -> (('A'..'Z').map { it.toString() } + ('0'..'9').map { it.toString() } + listOf(" ", "-"))
-        else -> (('A'..'Z').map { it.toString() } + ('0'..'9').map { it.toString() } + listOf(" ", ".", ",", "-"))
+        // Digits FIRST so they always land on page 1 (plates carry numbers too).
+        "plate" -> (('0'..'9').map { it.toString() } + ('A'..'Z').map { it.toString() } + listOf(" ", "-"))
+        else -> (('0'..'9').map { it.toString() } + ('A'..'Z').map { it.toString() } + listOf(" ", ".", ",", "-"))
     }
-    private val KEYS_PER_PAGE = 12
     private fun setTripField(field: String, value: String?, source: String) {
         when (field) {
             "plate" -> { tripPlate = value; tripPlateSource = source }
@@ -1621,24 +1621,34 @@ class MainScreenViewModel : ViewModel() {
      *  values as quick-pick + a PAGED hex-keyboard (all remaining hexes are keys).
      *  The current entry buffer is shown live in the trip status line. */
     private fun renderTripFieldMenu(uiItems: MutableList<Map<String, Any>>, field: String) {
-        uiItems.add(mapOf("type" to "button", "label" to "◀\nBack", "color" to "#455A64", "action" to "trip_field_back"))
+        // No full Back hex — the ✕ half-button (set at the end of renderTripGrid)
+        // already steps back out of the field menu.
         uiItems.add(mapOf("type" to "button", "label" to "✓\nOK", "color" to "#2E7D32", "action" to "trip_field_ok"))
         uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
         if (field != "purpose") {
             uiItems.add(mapOf("type" to "button", "label" to "📷\nOCR", "color" to "#37474F", "action" to "trip_ocr"))
         }
-        fieldKnown(field).take(6).forEach { v ->
+        val known = fieldKnown(field).take(6)
+        known.forEach { v ->
             uiItems.add(mapOf("type" to "button", "label" to v, "color" to "#1565C0", "action" to "trip_pick:$v"))
         }
+        // Fill ALL remaining full hexes with keys. Budget = usable full slots − the
+        // 3 pinned system buttons (Scan/Photo/Mic) − the controls above; if the key
+        // set overflows the budget, reserve one slot for the ▶ Page cycler.
+        val usable = try { gridManager.contentGrid.getUsableSlots().size } catch (e: Exception) { 18 }
+        val controls = 2 + (if (field != "purpose") 1 else 0) + known.size   // OK + Del [+ OCR] + picks
+        val budget = (usable - 3 - controls).coerceAtLeast(3)
         val keys = keySetFor(field)
-        val pages = (keys.size + KEYS_PER_PAGE - 1) / KEYS_PER_PAGE
-        if (pages > 1) {
+        val needsPaging = keys.size > budget
+        val perPage = if (needsPaging) (budget - 1).coerceAtLeast(1) else budget
+        val pages = if (needsPaging) (keys.size + perPage - 1) / perPage else 1
+        if (needsPaging) {
             uiItems.add(mapOf("type" to "button",
                 "label" to "▶\nPage\n${(tripKeyPage % pages) + 1}/$pages",
                 "color" to "#455A64", "action" to "trip_key_page"))
         }
-        val startIdx = (tripKeyPage % maxOf(pages, 1)) * KEYS_PER_PAGE
-        keys.drop(startIdx).take(KEYS_PER_PAGE).forEach { k ->
+        val startIdx = (tripKeyPage % maxOf(pages, 1)) * perPage
+        keys.drop(startIdx).take(perPage).forEach { k ->
             uiItems.add(mapOf("type" to "button",
                 "label" to if (k == " ") "␣" else k,
                 "color" to "#263238", "action" to "trip_key:$k"))
