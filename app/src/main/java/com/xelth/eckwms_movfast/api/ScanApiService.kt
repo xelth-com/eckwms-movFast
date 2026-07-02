@@ -775,9 +775,79 @@ class ScanApiService(private val context: Context) {
             }
         }
 
+        // 3. Still failed (both direct URLs unreachable — e.g. phone on mobile data,
+        //    LAN master out of reach) → relay fallback: land the photo in CAS through
+        //    the relay polygon, mirroring uploadTrip. Reuses the SAME imageId.
+        if (result is ScanResult.Error &&
+            com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId().isNotEmpty()
+        ) {
+            if (uploadImageViaRelay(bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)) {
+                result = ScanResult.Success("upload", "Image uploaded via relay",
+                    JSONObject().put("relay", true).put("image_id", imageId).toString())
+            }
+        }
+
         Log.d(TAG, "uploadImage END - final result: ${result::class.simpleName}, imageId: $imageId")
 
         return@withContext result
+    }
+
+    /** Relay fallback for image upload — the phone can't reach the LAN master's
+     *  /api/upload/image (mobile data), so it base64s the WEBP into an
+     *  `image_upload` mesh-task on the relay polygon targeting the master (device
+     *  JWT gated). Mirrors [uploadTripViaRelay]; reuses the caller's imageId so the
+     *  CAS dedupe is stable across a later direct re-upload. */
+    private suspend fun uploadImageViaRelay(
+        bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?,
+        quality: Int, orderId: String?, imageId: String
+    ): Boolean {
+        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+        if (master.isEmpty()) return false
+        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
+        if (polygon.isEmpty()) return false
+        val token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+        if (token.isEmpty()) return false
+        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
+        val b64 = try {
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
+            android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.w(TAG, "Image relay: compress failed (${e.message})"); return false
+        }
+        val body = JSONObject().apply {
+            put("token", token)
+            put("device_id", deviceId)
+            put("image_id", imageId)
+            put("scan_mode", scanMode)
+            barcodeData?.let { put("barcode_data", it) }
+            orderId?.let { put("order_id", it) }
+            put("file_name", "$imageId.webp")
+            put("mime_type", "image/webp")
+            put("image_b64", b64)
+        }
+        for (raw in polygon) {
+            val relayBase = raw.trimEnd('/')
+            val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId)
+            when (val outcome = relay.meshDispatch(master, "image_upload", body)) {
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
+                    val res = pollRelayResult(relay, outcome.taskId)
+                    if (res != null && res.optBoolean("ok", false)) {
+                        Log.i(TAG, "Image delivered via relay $relayBase (ImageID: $imageId)")
+                        return true
+                    }
+                    Log.w(TAG, "Image relay via $relayBase: no ok ack — next relay")
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
+                    Log.w(TAG, "Image relay rejected by $relayBase: ${outcome.message}")
+                    return false
+                }
+                is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
+                    Log.w(TAG, "Image relay $relayBase unavailable (${outcome.message}) — next relay")
+                }
+            }
+        }
+        return false
     }
 
     /**
