@@ -2238,20 +2238,62 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         polygon.forEach { addPairingLog("   • ${normalizeRelayBase(it)}") }
         _pairingStatus.postValue("Pairing via relay…")
 
-        // Sign the registration once; the same envelope is replayed per relay.
         com.xelth.eckwms_movfast.utils.CryptoManager.initialize(getApplication())
         val publicKeyBase64 = com.xelth.eckwms_movfast.utils.CryptoManager.getPublicKeyBase64()
         val deviceId = android.provider.Settings.Secure.getString(
             getApplication<Application>().contentResolver,
             android.provider.Settings.Secure.ANDROID_ID
         ) ?: "unknown-android-id"
-        val signatureData = "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\"}"
+
+        // ── Phase 1: obtain a single-use challenge nonce from the (NAT'd) master ──
+        // The phone can't GET /api/auth/device-challenge directly, so it asks over
+        // the same relay mesh-queue. The master mints+stores the nonce and acks it.
+        // Both phases target the same masterUuid, so the master that issues the
+        // nonce is the one that validates it. Nonce is short-TTL + single-use.
+        addPairingLog("🔐 Requesting auth challenge from master…")
+        var nonce: String? = null
+        run {
+            for ((idx, raw) in polygon.withIndex()) {
+                val relayBase = normalizeRelayBase(raw)
+                addPairingLog("→ [${idx + 1}/${polygon.size}] challenge via $relayBase")
+                val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId ?: "")
+                when (val outcome = relay.meshDispatch(masterUuid, "device_challenge", JSONObject())) {
+                    is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
+                        val res = awaitRelayRaw(relay, outcome.taskId)
+                        val n = res?.optString("nonce", "")?.takeIf { it.isNotBlank() }
+                        if (n != null) { nonce = n; return@run }
+                        addPairingLog("⏳ No challenge ack via $relayBase — trying next relay")
+                    }
+                    is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
+                        addPairingLog("❌ Relay rejected challenge: ${outcome.message}")
+                        _pairingStatus.postValue("Error: ${outcome.message}")
+                        return
+                    }
+                    is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
+                        addPairingLog("⏭️ $relayBase unavailable (${outcome.message}) — next relay")
+                    }
+                }
+            }
+        }
+        val challengeNonce = nonce
+        if (challengeNonce == null) {
+            addPairingLog("❌ Could not obtain an auth challenge from the master")
+            _pairingStatus.postValue("Error: no challenge from master")
+            return
+        }
+
+        // ── Phase 2: sign {deviceId,devicePublicKey,nonce} and dispatch register ──
+        // Signed once; the same (nonce-bound) envelope is replayed across relays —
+        // still single-use because the master consumes the nonce on first success.
+        val signatureData =
+            "{\"deviceId\":\"$deviceId\",\"devicePublicKey\":\"$publicKeyBase64\",\"nonce\":\"$challengeNonce\"}"
         val signature = com.xelth.eckwms_movfast.utils.CryptoManager.sign(signatureData.toByteArray())
         val signatureBase64 = android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)
         val payload = JSONObject().apply {
             put("deviceId", deviceId)
             put("devicePublicKey", publicKeyBase64)
             put("signature", signatureBase64)
+            put("nonce", challengeNonce)
             if (!inviteToken.isNullOrEmpty()) put("inviteToken", inviteToken)
         }
 
@@ -2282,6 +2324,24 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
         addPairingLog("❌ Relay-forwarded pairing failed: $lastError")
         _pairingStatus.postValue("Error: all relays unreachable")
+    }
+
+    /**
+     * Poll a dispatched relay task for the master's raw ack JSON (no register-
+     * specific side effects). Used by the challenge phase of relay pairing.
+     * Returns the ack body, or null on timeout (caller tries the next relay).
+     */
+    private suspend fun awaitRelayRaw(
+        relay: com.xelth.eckwms_movfast.sync.RelayClient,
+        taskId: String
+    ): JSONObject? {
+        val deadline = System.currentTimeMillis() + 45_000
+        while (System.currentTimeMillis() < deadline) {
+            val result = relay.meshResult(taskId).getOrNull()
+            if (result != null) return result
+            kotlinx.coroutines.delay(2500)
+        }
+        return null
     }
 
     /**

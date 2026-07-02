@@ -951,12 +951,43 @@ class ScanApiService(private val context: Context) {
         return@withContext null
     }
 
+    /**
+     * Fetch a single-use challenge nonce from the server (GET /api/auth/device-challenge).
+     * The device folds it into the signed registration message so a captured
+     * register-device request can't be replayed. Returns null if the server
+     * doesn't issue one (unreachable / error) — the caller then can't register.
+     */
+    private suspend fun fetchDeviceChallenge(baseUrl: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("${baseUrl.removeSuffix("/")}/api/auth/device-challenge")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/json")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 10000
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "device-challenge from $baseUrl returned HTTP $code")
+                return@withContext null
+            }
+            val resp = connection.inputStream.bufferedReader().use { it.readText() }
+            val nonce = JSONObject(resp).optString("nonce", "")
+            nonce.ifBlank { null }
+        } catch (e: Exception) {
+            Log.w(TAG, "device-challenge fetch from $baseUrl failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun registerDevice(
         publicKeyBase64: String,
-        signature: String,
+        // Legacy nonce-less signature from the caller. IGNORED now that the server
+        // requires a challenge nonce — we re-sign internally over the fresh nonce.
+        // Kept in the signature only so the many existing call sites compile unchanged.
+        @Suppress("UNUSED_PARAMETER") signature: String,
         timestamp: Long,
         inviteToken: String? = null,
-        // The exact id the caller signed over in `{"deviceId":..,"devicePublicKey":..}`.
+        // The exact id we sign over in `{"deviceId":..,"devicePublicKey":..,"nonce":..}`.
         // MUST match what we put in the body or the server rejects the signature.
         // Defaults to the canonical `deviceId` (what performSilentAuth signs); the
         // pairing flows pass their raw ANDROID_ID here since that's what they sign.
@@ -966,6 +997,20 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "Registering device with server: $serverUrl")
 
         try {
+            // Replay-proof auth: fetch a fresh single-use nonce and sign
+            // {deviceId,devicePublicKey,nonce} over it. The server verifies the
+            // signature AND consumes the nonce, so a captured request is useless.
+            val nonce = fetchDeviceChallenge(serverUrl)
+            if (nonce == null) {
+                return@withContext ScanResult.Error("Could not obtain auth challenge from server")
+            }
+            val signedMessage =
+                "{\"deviceId\":\"$signedDeviceId\",\"devicePublicKey\":\"$publicKeyBase64\",\"nonce\":\"$nonce\"}"
+            val freshSignature = android.util.Base64.encodeToString(
+                com.xelth.eckwms_movfast.utils.CryptoManager.sign(signedMessage.toByteArray()),
+                android.util.Base64.NO_WRAP
+            )
+
             val url = URL("${serverUrl.removeSuffix("/")}/api/internal/register-device")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
@@ -973,16 +1018,16 @@ class ScanApiService(private val context: Context) {
             connection.setRequestProperty("Accept", "application/json")
             connection.doOutput = true
 
-            // Server expects: deviceId, deviceName, devicePublicKey, signature.
-            // `deviceId` here is the SIGNED id (signedDeviceId) so the server's
-            // Ed25519 check over {"deviceId":..,"devicePublicKey":..} passes; the
-            // server resolves it to the canonical device UUID via the public-key
-            // anchor and returns `device_uuid`.
+            // Server expects: deviceId, deviceName, devicePublicKey, signature, nonce.
+            // `deviceId` is the SIGNED id (signedDeviceId) so the Ed25519 check over
+            // {"deviceId":..,"devicePublicKey":..,"nonce":..} passes; the server
+            // resolves it to the canonical device UUID via the public-key anchor.
             val jsonRequest = JSONObject().apply {
                 put("deviceId", signedDeviceId)
                 put("deviceName", android.os.Build.MODEL)  // Added: device model name
                 put("devicePublicKey", publicKeyBase64)
-                put("signature", signature)
+                put("signature", freshSignature)
+                put("nonce", nonce)
                 // Note: timestamp not used by server, but included for compatibility
                 put("timestamp", timestamp)
                 if (inviteToken != null) {
