@@ -82,6 +82,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import android.graphics.Bitmap
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -624,6 +627,7 @@ fun MainScreen(
         // Multi-user callbacks
         mainViewModel.onFetchUsers = { scanApiService.fetchActiveUsers() }
         mainViewModel.onVerifyPin = { userId, pin -> scanApiService.verifyUserPin(userId, pin) }
+        mainViewModel.onChangePassword = { oldPw, newPw -> scanApiService.changePassword(oldPw, newPw) }
         // Restore saved user + load user list from server
         com.xelth.eckwms_movfast.ui.viewmodels.UserManager.restoreFromSettings()
         mainViewModel.loadAvailableUsers()
@@ -1716,6 +1720,15 @@ fun MainScreen(
             },
             confirmButton = {
                 TextButton(onClick = { mainViewModel.dismissUserDialog() }) { Text("Cancel", color = Color.White) }
+            },
+            dismissButton = {
+                // Session action: the logged-in user can change their own password.
+                if (currentUserState != null) {
+                    TextButton(onClick = {
+                        mainViewModel.dismissUserDialog()
+                        mainViewModel.openChangePasswordDialog()
+                    }) { Text("🔑 Change password", color = Color(0xFFFF9800)) }
+                }
             }
         )
     }
@@ -1776,6 +1789,106 @@ fun MainScreen(
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { mainViewModel.dismissPinDialog() }) { Text("Cancel", color = Color.White) }
+            }
+        )
+    }
+
+    // Change Password Dialog (self-service + forced variant for seeded accounts)
+    val showChangePassword by mainViewModel.showChangePasswordDialog.observeAsState(false)
+    val changePwForced by mainViewModel.changePasswordForced.observeAsState(false)
+    val changePwError by mainViewModel.changePasswordError.observeAsState(null)
+    val changePwBusy by mainViewModel.changePasswordBusy.observeAsState(false)
+    if (showChangePassword) {
+        var oldPw by remember { mutableStateOf("") }
+        var newPw by remember { mutableStateOf("") }
+        var confirmPw by remember { mutableStateOf("") }
+        val pwFieldColors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+            focusedBorderColor = Color(0xFFFF9800),
+            unfocusedBorderColor = Color.Gray,
+            focusedLabelColor = Color(0xFFFF9800),
+            unfocusedLabelColor = Color.Gray,
+            cursorColor = Color.White
+        )
+        AlertDialog(
+            onDismissRequest = { if (!changePwForced) mainViewModel.dismissChangePasswordDialog() },
+            properties = DialogProperties(
+                dismissOnBackPress = !changePwForced,
+                dismissOnClickOutside = !changePwForced
+            ),
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = { Text(if (changePwForced) "Set your password" else "Change password") },
+            text = {
+                Column {
+                    if (changePwForced) {
+                        Text(
+                            "Your account was set up with a temporary password. Choose a new one to continue.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    OutlinedTextField(
+                        value = oldPw,
+                        onValueChange = { oldPw = it },
+                        label = { Text("Current password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        colors = pwFieldColors,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+                    OutlinedTextField(
+                        value = newPw,
+                        onValueChange = { newPw = it },
+                        label = { Text("New password (min 8)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        colors = pwFieldColors,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+                    OutlinedTextField(
+                        value = confirmPw,
+                        onValueChange = { confirmPw = it },
+                        label = { Text("Confirm new password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        colors = pwFieldColors,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+                    if (changePwError != null) {
+                        Text(
+                            changePwError!!,
+                            color = Color.Red,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !changePwBusy,
+                    onClick = { mainViewModel.submitChangePassword(oldPw, newPw, confirmPw) }
+                ) { Text(if (changePwBusy) "Saving…" else "Save", color = Color(0xFFFF9800)) }
+            },
+            dismissButton = {
+                if (!changePwForced) {
+                    TextButton(onClick = { mainViewModel.dismissChangePasswordDialog() }) {
+                        Text("Cancel", color = Color.White)
+                    }
+                }
             }
         )
     }

@@ -9,7 +9,10 @@ data class AppUser(
     val id: String,
     val username: String,  // nickname (short, for button display)
     val name: String,      // full name (for dialogs)
-    val role: String
+    val role: String,
+    // True for a bulk-seeded staff account that must set its own password before
+    // using the app (mirrors the server's login/user "mustChangePassword" flag).
+    val mustChangePassword: Boolean = false
 ) {
     /** Display label for the hex button — uses username (nickname), not full name. */
     fun getDisplayLabel(): String {
@@ -19,6 +22,18 @@ data class AppUser(
     /** Display name for dialogs — full name if available, otherwise username. */
     fun getDialogName(): String = if (name.isNotEmpty()) "$name ($username)" else username
 }
+
+/** Result of a PIN login attempt (mirrors the server verify-pin response). */
+data class PinAuthResult(
+    val ok: Boolean,
+    val mustChangePassword: Boolean = false
+)
+
+/** Result of a self-service password change. `error` is a display-ready message. */
+data class ChangePasswordResult(
+    val success: Boolean,
+    val error: String? = null
+)
 
 /**
  * Singleton managing multi-user state on shared PDA device.
@@ -79,6 +94,16 @@ object UserManager {
             _currentUser.value = restored
             _viewingUser.value = restored
         }
+    }
+
+    /** Clear the forced-password-change flag on the current (and viewing) user
+     *  after a successful self-service change, so the app can proceed. */
+    fun clearMustChangePassword() {
+        val u = _currentUser.value ?: return
+        if (!u.mustChangePassword) return
+        val cleared = u.copy(mustChangePassword = false)
+        _currentUser.value = cleared
+        if (_viewingUser.value?.id == u.id) _viewingUser.value = cleared
     }
 
     /** Logout current user. */

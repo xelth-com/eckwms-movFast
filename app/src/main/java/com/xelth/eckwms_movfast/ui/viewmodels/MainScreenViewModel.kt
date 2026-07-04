@@ -325,12 +325,79 @@ class MainScreenViewModel : ViewModel() {
     private var pendingLoginUser: AppUser? = null
 
     // Callback for verifying PIN (set by UI layer, backed by ScanApiService)
-    var onVerifyPin: (suspend (userId: String, pin: String) -> Boolean)? = null
+    var onVerifyPin: (suspend (userId: String, pin: String) -> PinAuthResult)? = null
     // Callback for fetching user list
     var onFetchUsers: (suspend () -> List<AppUser>?)? = null
+    // Callback for changing the current user's password (backed by ScanApiService)
+    var onChangePassword: (suspend (oldPassword: String, newPassword: String) -> ChangePasswordResult)? = null
 
     fun dismissUserDialog() { _showUserDialog.value = false }
     fun dismissPinDialog() { _showPinDialog.value = false; pendingLoginUser = null }
+
+    // --- CHANGE PASSWORD STATE ---
+    private val _showChangePasswordDialog = MutableLiveData<Boolean>(false)
+    val showChangePasswordDialog: LiveData<Boolean> = _showChangePasswordDialog
+
+    // Forced = seeded account must set a password before proceeding (non-dismissable).
+    private val _changePasswordForced = MutableLiveData<Boolean>(false)
+    val changePasswordForced: LiveData<Boolean> = _changePasswordForced
+
+    private val _changePasswordError = MutableLiveData<String?>(null)
+    val changePasswordError: LiveData<String?> = _changePasswordError
+
+    private val _changePasswordBusy = MutableLiveData<Boolean>(false)
+    val changePasswordBusy: LiveData<Boolean> = _changePasswordBusy
+
+    /** Self-service entry: open a dismissable change-password dialog. */
+    fun openChangePasswordDialog() {
+        _changePasswordForced.value = false
+        _changePasswordError.value = null
+        _showChangePasswordDialog.value = true
+    }
+
+    /** Forced entry: seeded account must change before using the app (no dismiss). */
+    private fun openForcedChangePasswordDialog() {
+        _changePasswordForced.postValue(true)
+        _changePasswordError.postValue(null)
+        _showChangePasswordDialog.postValue(true)
+    }
+
+    /** Dismiss — a no-op while a forced change is pending. */
+    fun dismissChangePasswordDialog() {
+        if (_changePasswordForced.value == true) return
+        _showChangePasswordDialog.value = false
+        _changePasswordError.value = null
+    }
+
+    /** Validate client-side, then POST. On success clear the flag and close. */
+    fun submitChangePassword(oldPassword: String, newPassword: String, confirmPassword: String) {
+        val localError = com.xelth.eckwms_movfast.utils.PasswordPolicy.validate(oldPassword, newPassword, confirmPassword)
+        if (localError != null) {
+            _changePasswordError.value = localError
+            onHapticError?.invoke()
+            return
+        }
+        val cb = onChangePassword
+        if (cb == null) {
+            _changePasswordError.value = "Password change unavailable"
+            return
+        }
+        _changePasswordBusy.value = true
+        _changePasswordError.value = null
+        viewModelScope.launch {
+            val result = cb.invoke(oldPassword, newPassword)
+            _changePasswordBusy.postValue(false)
+            if (result.success) {
+                UserManager.clearMustChangePassword()
+                _changePasswordForced.postValue(false)
+                _showChangePasswordDialog.postValue(false)
+                addLog("✅ Password changed")
+            } else {
+                _changePasswordError.postValue(result.error ?: "Password change failed")
+                onHapticError?.invoke()
+            }
+        }
+    }
 
     // Camera navigation for receiving — holds scan_mode string, null when not navigating
     private val _receivingCameraNav = MutableLiveData<String?>(null)
@@ -660,12 +727,16 @@ class MainScreenViewModel : ViewModel() {
     fun onPinSubmitted(pin: String) {
         val user = pendingLoginUser ?: return
         viewModelScope.launch {
-            val verified = onVerifyPin?.invoke(user.id, pin) ?: false
-            if (verified) {
+            val result = onVerifyPin?.invoke(user.id, pin) ?: PinAuthResult(ok = false)
+            if (result.ok) {
                 UserManager.login(user)
                 addLog("✅ Logged in as ${user.name}")
                 _showPinDialog.postValue(false)
                 pendingLoginUser = null
+                // Seeded staff account → force a password change before proceeding.
+                if (result.mustChangePassword || user.mustChangePassword) {
+                    openForcedChangePasswordDialog()
+                }
             } else {
                 addLog("❌ Wrong PIN for ${user.name}")
                 onHapticError?.invoke()

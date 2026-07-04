@@ -2859,7 +2859,8 @@ class ScanApiService(private val context: Context) {
                         id = obj.getString("id"),
                         username = obj.optString("username", ""),
                         name = obj.optString("name", ""),
-                        role = obj.optString("role", "user")
+                        role = obj.optString("role", "user"),
+                        mustChangePassword = obj.optBoolean("mustChangePassword", false)
                     ))
                 }
                 Log.i(TAG, "Fetched ${list.size} active users")
@@ -2873,7 +2874,7 @@ class ScanApiService(private val context: Context) {
         return@withContext null
     }
 
-    suspend fun verifyUserPin(userId: String, pin: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun verifyUserPin(userId: String, pin: String): com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         try {
             val url = URL("$baseUrl/api/users/verify-pin")
@@ -2891,11 +2892,91 @@ class ScanApiService(private val context: Context) {
             }
             connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
 
-            return@withContext connection.responseCode == HttpURLConnection.HTTP_OK
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                // Seeded staff accounts must set their own password; the flag may be
+                // top-level or nested in a "user" object. Absent → false (no forced flow).
+                val must = try {
+                    val respBody = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(respBody)
+                    json.optBoolean(
+                        "mustChangePassword",
+                        json.optJSONObject("user")?.optBoolean("mustChangePassword", false) ?: false
+                    )
+                } catch (_: Exception) { false }
+                return@withContext com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult(ok = true, mustChangePassword = must)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error verifying user PIN", e)
         }
-        return@withContext false
+        return@withContext com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult(ok = false, mustChangePassword = false)
+    }
+
+    /**
+     * Self-service password change. Posts {oldPassword,newPassword} to
+     * POST {base}/api/auth/change-password with the device Bearer JWT (the same
+     * token every other authenticated call uses). Server enforces the real rules
+     * (>=8 chars, != old, old verifies) and answers 200 {success:true} or
+     * 400/401 {success:false,error}. On a transport failure we fail over to the
+     * global relay URL, mirroring [authenticatedPostWithFailover].
+     */
+    suspend fun changePassword(
+        oldPassword: String,
+        newPassword: String
+    ): com.xelth.eckwms_movfast.ui.viewmodels.ChangePasswordResult = withContext(Dispatchers.IO) {
+        val jsonBody = JSONObject().apply {
+            put("oldPassword", oldPassword)
+            put("newPassword", newPassword)
+        }.toString()
+
+        val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
+
+        // null == transport failure (retryable); non-null == server answered (final).
+        var result = postChangePassword("$activeUrl/api/auth/change-password", jsonBody)
+        if (result == null && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
+            Log.w(TAG, "⚠️ change-password to $activeUrl unreachable, failover to $globalUrl")
+            result = postChangePassword("$globalUrl/api/auth/change-password", jsonBody)
+        }
+        return@withContext result
+            ?: com.xelth.eckwms_movfast.ui.viewmodels.ChangePasswordResult(false, "Network error — could not reach server")
+    }
+
+    /** One change-password POST. Returns null only on a transport failure (so the
+     *  caller may fail over); any HTTP response (2xx or 4xx) is parsed to a result. */
+    private fun postChangePassword(
+        urlStr: String,
+        jsonBody: String
+    ): com.xelth.eckwms_movfast.ui.viewmodels.ChangePasswordResult? {
+        return try {
+            val url = URL(urlStr)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 15000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+            connection.outputStream.bufferedWriter().use { it.write(jsonBody) }
+
+            val code = connection.responseCode
+            val text = if (code in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            }
+            val json = try { JSONObject(text) } catch (_: Exception) { null }
+            val success = code in 200..299 && (json?.optBoolean("success", true) ?: true)
+            if (success) {
+                com.xelth.eckwms_movfast.ui.viewmodels.ChangePasswordResult(true, null)
+            } else {
+                val err = json?.optString("error", "").takeIf { !it.isNullOrEmpty() }
+                    ?: "Password change failed (HTTP $code)"
+                com.xelth.eckwms_movfast.ui.viewmodels.ChangePasswordResult(false, err)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "changePassword error: $urlStr → ${e.message}")
+            null
+        }
     }
 }
 
