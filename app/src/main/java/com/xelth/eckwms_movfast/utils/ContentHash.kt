@@ -93,9 +93,9 @@ object ContentHash {
     private fun fmix64(k: Long): Long {
         var h = k
         h = h xor (h ushr 33)
-        h *= -0x49B0D1C09580AB0FL // 0xff51afd7ed558ccd
+        h *= 0xff51afd7ed558ccdUL.toLong() // canonical MurmurHash3 fmix64 constant
         h = h xor (h ushr 33)
-        h *= -0x51F4C5A33D883A25L // 0xc4ceb9fe1a85ec53
+        h *= 0xc4ceb9fe1a85ec53UL.toLong() // canonical MurmurHash3 fmix64 constant
         h = h xor (h ushr 33)
         return h
     }

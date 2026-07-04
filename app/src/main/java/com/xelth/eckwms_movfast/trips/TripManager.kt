@@ -131,7 +131,9 @@ object TripManager {
         return start + dist
     }
 
-    private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    // VisibleForTesting: widened from private to internal so unit tests can verify
+    // the great-circle math directly. Pure function, no Android/state dependencies.
+    internal fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371.0
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)

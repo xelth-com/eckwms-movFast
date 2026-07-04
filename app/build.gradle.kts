@@ -112,6 +112,11 @@ dependencies {
     implementation(libs.androidx.material3)
 
     testImplementation(libs.junit)
+    // JVM unit-test support: real org.json (so XelixirProtocol/RelayClient JSON
+    // resolves off-device instead of the Android stub that throws "not mocked"),
+    // and coroutines-test for suspend/Flow use-case tests.
+    testImplementation("org.json:json:20240303")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

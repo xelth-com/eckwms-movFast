@@ -770,7 +770,23 @@ object SettingsManager {
     }
 
     fun saveMeshId(meshId: String) = prefs.edit().putString(KEY_MESH_ID, meshId.trim()).commit()
-    fun getMeshId(): String? = prefs.getString(KEY_MESH_ID, null)
+    fun getMeshId(): String? {
+        val stored = prefs.getString(KEY_MESH_ID, null) ?: return null
+        // Legacy self-heal: pre-2026-07 computeMeshId() emitted sha256[..8] as 16
+        // undashed hex chars, diverging from the server's dashed-UUID mesh_id. If we
+        // still hold such a value AND the sync key it was derived from, recompute once
+        // with the fixed formula and persist. Pairing-QR mesh_ids are dashed UUIDs, so
+        // they never match this shape.
+        if (Regex("^[0-9a-f]{16}$").matches(stored)) {
+            val key = getSyncNetworkKey()
+            if (!key.isNullOrBlank()) {
+                val healed = computeMeshId(key)
+                saveMeshId(healed)
+                return healed
+            }
+        }
+        return stored
+    }
 
     fun saveSyncNetworkKey(key: String) {
         sec().edit().putString(KEY_SYNC_NETWORK_KEY, key.trim()).commit()
@@ -814,12 +830,20 @@ object SettingsManager {
 
     /**
      * Compute mesh_id from SYNC_NETWORK_KEY.
-     * mesh_id = sha256(key)[:8 bytes] = 16 hex characters.
-     * Must match the Rust server's compute_mesh_id().
+     * mesh_id = first 16 bytes of sha256(key), formatted as a dashed lowercase UUID —
+     * byte-for-byte identical to the Rust server's compute_mesh_id()
+     * (core/src/utils/identity.rs: Uuid::from_bytes(sha256(key)[..16]).to_string()).
+     * Matching matters twice: the server derives the same mesh_id from the same key,
+     * and orderedEckNodes() hashes this STRING to pick the mod-3 primary node — a
+     * different format would pick a different primary than the server.
+     * (Pre-2026-07 builds emitted sha256[..8] as 16 undashed hex chars — see the
+     * legacy self-heal in getMeshId().)
      */
     fun computeMeshId(syncNetworkKey: String): String {
         val md = java.security.MessageDigest.getInstance("SHA-256")
-        val hash = md.digest(syncNetworkKey.toByteArray(Charsets.UTF_8))
-        return hash.take(8).joinToString("") { "%02x".format(it) }
+        val hex = md.digest(syncNetworkKey.toByteArray(Charsets.UTF_8))
+            .take(16).joinToString("") { "%02x".format(it) }
+        return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
+            "${hex.substring(16, 20)}-${hex.substring(20, 32)}"
     }
 }
