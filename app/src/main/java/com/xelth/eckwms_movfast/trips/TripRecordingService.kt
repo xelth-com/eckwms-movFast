@@ -784,6 +784,16 @@ class TripRecordingService : Service() {
                         db.tripDao().setEndOdometer(
                             id, t.tentativeEndOdoKm, "scanned", t.tentativeEndPhotoId
                         )
+                    } else if (t != null && t.endOdometerKm == null && t.startOdometerKm != null) {
+                        // Stop without any odometer signal: close the reading gap
+                        // with the least-action track estimate, honestly marked
+                        // "estimated" (a photo/manual entry always overrides —
+                        // spec .eck/TRACK_ESTIMATION.md, trigger 3).
+                        TripManager.smoothedTrack(applicationContext, id)?.let { s ->
+                            val estEnd = Math.round((t.startOdometerKm + s.distanceKm) * 10.0) / 10.0
+                            db.tripDao().setEndOdometer(id, estEnd, "estimated", null)
+                            Log.i(TAG, "end odometer estimated for trip $id: $estEnd km (smoothed ${s.distanceKm} km)")
+                        }
                     }
                     db.tripDao().endTrip(id, System.currentTimeMillis())
                     TripManager.publishActiveTrip(null)

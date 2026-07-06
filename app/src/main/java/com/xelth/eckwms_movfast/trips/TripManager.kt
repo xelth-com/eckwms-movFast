@@ -128,12 +128,17 @@ object TripManager {
     suspend fun odometerCheckpoint(context: Context, km: Double, photoId: String?): Boolean {
         val db = AppDatabase.getInstance(context)
         val open = db.tripDao().getOpenTrip() ?: return false
-        val pts = db.tripDao().getPoints(open.id).filter { it.lat != null && it.lng != null }
-        var trackKm = 0.0
-        for (i in 1 until pts.size) {
-            trackKm += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+        // Smoothed (gated) track distance — a mislocated tower must not widen
+        // the plausibility band. Chord sum only as the few-points fallback.
+        val trackKm = smoothedTrack(context, open.id)?.distanceKm ?: run {
+            val pts = db.tripDao().getPoints(open.id).filter { it.lat != null && it.lng != null }
+            var d = 0.0
+            for (i in 1 until pts.size) {
+                d += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+            }
+            d.takeIf { pts.size >= 2 }
         }
-        if (!plausibleOdoStop(open.startOdometerKm, km, trackKm.takeIf { pts.size >= 2 })) {
+        if (!plausibleOdoStop(open.startOdometerKm, km, trackKm)) {
             Log.i(TAG, "odometer $km not a plausible stop for trip ${open.id} (start=${open.startOdometerKm}, track=$trackKm)")
             return false
         }
@@ -452,18 +457,64 @@ object TripManager {
         }
     }
 
-    /** Estimate the current odometer = trip start reading + summed track distance
-     *  (haversine over resolved points). Rough by design (noisy cell/fused fixes);
-     *  the driver can override with an exact odometer OCR at the fuel stop. Null if
-     *  no open trip or no start reading to add onto. */
+    // ── Least-action track estimation (see .eck/TRACK_ESTIMATION.md) ─────────
+    // One smoothing pass serves every km consumer: live odometer estimate,
+    // Expense prefill, odometer-stop plausibility, finalize's estimated end
+    // reading and the upload's smoothed polyline. Recomputed only when the
+    // point count changed (the "streaming" tier is an on-demand full pass —
+    // ~10 ms per trip, cheaper than keeping filter state alive).
+    @Volatile private var estimateCache: Triple<String, Int, TrackEstimator.Result>? = null
+
+    /** Located observations for the estimator: fused/gps fixes as-is, cell
+     *  points through the on-device tower cache (unknown cells contribute
+     *  nothing — the dynamics coast through them). σ is honest per source. */
+    private suspend fun locatedObservations(
+        db: AppDatabase,
+        tripId: String
+    ): List<TrackEstimator.Obs> {
+        val cellDao = db.cellTowerDao()
+        return db.tripDao().getPoints(tripId).mapNotNull { p ->
+            if (p.source == "cell") {
+                val key = "${p.mcc}-${p.mnc}-${p.tac}-${p.cid}"
+                if (p.cid == null || p.mcc == null) return@mapNotNull null
+                val tower = cellDao.get(key) ?: return@mapNotNull null
+                TrackEstimator.Obs(p.ts, tower.lat, tower.lng, maxOf(tower.rangeM, 700.0))
+            } else {
+                val lat = p.lat ?: return@mapNotNull null
+                val lng = p.lng ?: return@mapNotNull null
+                TrackEstimator.Obs(p.ts, lat, lng, maxOf(p.accuracyM ?: 100.0, 10.0))
+            }
+        }
+    }
+
+    /** Smoothed track for a trip (cached by point count). Null when there are
+     *  too few located points to say anything. */
+    suspend fun smoothedTrack(context: Context, tripId: String): TrackEstimator.Result? {
+        val db = AppDatabase.getInstance(context)
+        val count = db.tripDao().pointCount(tripId)
+        estimateCache?.let { (id, n, res) -> if (id == tripId && n == count) return res }
+        val res = TrackEstimator.smooth(locatedObservations(db, tripId)) ?: return null
+        estimateCache = Triple(tripId, count, res)
+        return res
+    }
+
+    /** Estimate the current odometer = trip start reading + smoothed track
+     *  distance (least-action estimate, mislocated towers gated out). The
+     *  driver can always override with an exact odometer OCR. Null if no open
+     *  trip or no start reading to add onto. */
     suspend fun estimateCurrentOdometer(context: Context): Double? {
         val db = AppDatabase.getInstance(context)
         val trip = db.tripDao().getOpenTrip() ?: return null
         val start = trip.startOdometerKm ?: return null
-        val pts = db.tripDao().getPoints(trip.id).filter { it.lat != null && it.lng != null }
-        var dist = 0.0
-        for (i in 1 until pts.size) {
-            dist += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+        val dist = smoothedTrack(context, trip.id)?.distanceKm ?: run {
+            // Too few located points for the smoother — chord sum is the
+            // honest fallback (usually the first minutes of a trip).
+            val pts = db.tripDao().getPoints(trip.id).filter { it.lat != null && it.lng != null }
+            var d = 0.0
+            for (i in 1 until pts.size) {
+                d += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+            }
+            d
         }
         return start + dist
     }
@@ -569,6 +620,9 @@ object TripManager {
 
         // Privatfahrt: coordinates never leave the device — km delta only
         val pointsJson = JSONArray()
+        // Located observations for the smoothed derived layer (collected in the
+        // same pass so cell resolution happens exactly once, same cache rules).
+        val smoothObs = ArrayList<TrackEstimator.Obs>(points.size)
         if (trip.purpose != "private") {
             val cellDao = db.cellTowerDao()
             points.forEach { p ->
@@ -597,6 +651,7 @@ object TripManager {
                         obj.put("accuracy_m", tower.rangeM)
                         obj.put("resolved_by", "device_cache")
                         resolved = true
+                        smoothObs.add(TrackEstimator.Obs(p.ts, tower.lat, tower.lng, maxOf(tower.rangeM, 700.0)))
                     }
                 }
                 if (!resolved) {
@@ -608,10 +663,27 @@ object TripManager {
                     p.tac?.let { obj.put("tac", it) }
                     p.cid?.let { obj.put("cid", it) }
                     p.signalDbm?.let { obj.put("signal_dbm", it) }
+                    if (p.source != "cell" && p.lat != null && p.lng != null) {
+                        smoothObs.add(TrackEstimator.Obs(p.ts, p.lat, p.lng, maxOf(p.accuracyM ?: 100.0, 10.0)))
+                    }
                 }
                 pointsJson.put(obj)
             }
         }
+
+        // Derived layer: least-action smoothed polyline + km (raw points above
+        // stay untouched — they are the GoBD evidence; this is recomputable).
+        val smoothed = if (trip.purpose != "private") TrackEstimator.smooth(smoothObs) else null
+        // Road snap only on the FINAL upload (needs corridor tiles → network);
+        // checkpoints of an open trip skip it. Failure = layer omitted.
+        val matched = if (trip.endedAt != null && smoothed != null) {
+            try {
+                RoadTileProvider.matchTrack(context, smoothed.path)
+            } catch (e: Exception) {
+                Log.w(TAG, "road match failed: ${e.message}")
+                null
+            }
+        } else null
 
         return JSONObject().apply {
             put("trip_uuid", trip.id)
@@ -635,6 +707,26 @@ object TripManager {
             val userId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
             if (!userId.isNullOrEmpty()) put("driver_user_id", userId)
             put("points", pointsJson)
+            smoothed?.let { s ->
+                put("smoothed_km", Math.round(s.distanceKm * 10.0) / 10.0)
+                put("estimation_version", s.version)
+                val path = JSONArray()
+                TrackEstimator.decimate(s.path).forEach { p ->
+                    // GeoJSON order [lng, lat]; 5 decimals ≈ 1 m — plenty.
+                    path.put(JSONArray().put(Math.round(p.lng * 1e5) / 1e5).put(Math.round(p.lat * 1e5) / 1e5))
+                }
+                put("smoothed_path", path)
+            }
+            matched?.let { m ->
+                put("matched_km", Math.round(m.distanceKm * 10.0) / 10.0)
+                put("matched_share", Math.round(m.matchedShare * 100.0) / 100.0)
+                put("matcher_version", m.version)
+                val path = JSONArray()
+                TrackEstimator.decimate(m.path).forEach { p ->
+                    path.put(JSONArray().put(Math.round(p.lng * 1e5) / 1e5).put(Math.round(p.lat * 1e5) / 1e5))
+                }
+                put("matched_path", path)
+            }
         }.toString()
     }
 
