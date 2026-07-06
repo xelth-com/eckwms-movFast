@@ -1,6 +1,7 @@
 package com.xelth.eckwms_movfast.trips
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,5 +43,46 @@ class TripManagerTest {
         val ab = TripManager.haversineKm(50.1440, 8.5710, 51.2562, 7.1508)
         val ba = TripManager.haversineKm(51.2562, 7.1508, 50.1440, 8.5710)
         assertEquals(ab, ba, eps)
+    }
+
+    // ── openTripIsStale (orphaned-open-trip guard, the 44e9ee52 phantom case) ──
+
+    private val min = 60_000L
+
+    @Test
+    fun `fresh trip with recent point is not stale`() {
+        val now = 1_000_000_000_000L
+        assertFalse(TripManager.openTripIsStale(now - 60 * min, now - 2 * min, now))
+    }
+
+    @Test
+    fun `trip whose last point is days old is stale`() {
+        val now = 1_000_000_000_000L
+        val fourDays = 4 * 24 * 60 * min
+        assertTrue(TripManager.openTripIsStale(now - fourDays, now - fourDays + 87 * min, now))
+    }
+
+    @Test
+    fun `point-less trip falls back to startedAt`() {
+        val now = 1_000_000_000_000L
+        // Just started, no points yet (private trip / first seconds) — not stale
+        assertFalse(TripManager.openTripIsStale(now - 5 * min, null, now))
+        // Started hours ago, never got a point — stale
+        assertTrue(TripManager.openTripIsStale(now - 3 * 60 * min, null, now))
+    }
+
+    @Test
+    fun `exactly at the 30 min cutoff is not yet stale`() {
+        val now = 1_000_000_000_000L
+        assertFalse(TripManager.openTripIsStale(now - 60 * min, now - 30 * min, now))
+        assertTrue(TripManager.openTripIsStale(now - 60 * min, now - 30 * min - 1, now))
+    }
+
+    @Test
+    fun `stray point older than startedAt does not make a fresh trip stale`() {
+        val now = 1_000_000_000_000L
+        // lastActivity = max(startedAt, lastPointTs): a leftover point with an
+        // old timestamp must not outweigh a trip started 1 min ago.
+        assertFalse(TripManager.openTripIsStale(now - 1 * min, now - 5 * 60 * min, now))
     }
 }

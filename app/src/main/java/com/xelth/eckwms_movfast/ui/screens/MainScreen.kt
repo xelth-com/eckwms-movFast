@@ -181,12 +181,15 @@ fun MainScreen(
     val density = LocalDensity.current
     val context = LocalContext.current
 
-    // Trip mode: refresh active trip on enter + auto-detect permission launcher
+    // Trip mode: refresh active trip on enter + auto-detect permission launcher.
+    // reconcileOpenTrip also closes an orphaned open trip (stale phantom) at its
+    // last activity so the console offers a clean start, not a ghost recording.
     LaunchedEffect(isTripMode) {
         if (isTripMode) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
-                com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
+                com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(
+                    com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
+                )
             }
         }
     }

@@ -128,6 +128,20 @@ class TripRecordingService : Service() {
                         intent.getStringExtra(EXTRA_PURPOSE_LABEL),
                         intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
                     )
+                } else if (intent.getBooleanExtra(EXTRA_MANUAL, false)) {
+                    // Already recording (auto-detect won the race): the manual
+                    // start carries the driver's DECLARED purpose — merge it onto
+                    // the open trip instead of silently dropping it (purpose is
+                    // editable until trip end; earliest declared_at is preserved).
+                    val id = tripId ?: return START_STICKY
+                    val purpose = intent.getStringExtra(EXTRA_PURPOSE) ?: "business"
+                    val ref = intent.getStringExtra(EXTRA_PURPOSE_REF)
+                    val label = intent.getStringExtra(EXTRA_PURPOSE_LABEL)
+                    val source = intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
+                    scope.launch {
+                        applyDeclaredPurpose(id, purpose, ref, label, source)
+                            ?.let { TripManager.publishActiveTrip(it) }
+                    }
                 }
             }
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
@@ -163,7 +177,10 @@ class TripRecordingService : Service() {
         startForegroundWithNotification(false)
         scope.launch {
             val db = AppDatabase.getInstance(applicationContext)
-            val trip = db.tripDao().getOpenTrip()
+            // Stale-guard: a sticky restart normally follows the kill within
+            // moments; an open trip whose last activity is >30 min old is an
+            // orphan — close it at that activity instead of resurrecting it.
+            val trip = TripManager.reconcileOpenTrip(applicationContext)
             if (trip == null) {
                 Log.i(TAG, "Sticky restart with no open trip — stopping")
                 stopSelf()
@@ -171,6 +188,7 @@ class TripRecordingService : Service() {
             }
             if (trip.purpose == "private") startForegroundWithNotification(true)
             tripId = trip.id
+            TripManager.serviceRecordingTripId = trip.id
             seq.set(db.tripDao().pointCount(trip.id))
             TripManager.publishActiveTrip(trip)
             Log.i(TAG, "Resumed open trip ${trip.id} after sticky restart (post-kill)")
@@ -180,6 +198,34 @@ class TripRecordingService : Service() {
                 startCheckpoints(trip.id)
             }
         }
+    }
+
+    /** Merge a driver-declared purpose onto the open trip. Refuses to flip a
+     *  RECORDING business trip to private mid-flight (positions were already
+     *  sampled — stopping first is the honest path); private stays private. */
+    private suspend fun applyDeclaredPurpose(
+        id: String,
+        purpose: String,
+        ref: String?,
+        label: String?,
+        source: String?
+    ): TripEntity? {
+        val db = AppDatabase.getInstance(applicationContext)
+        val open = db.tripDao().getTrip(id) ?: return null
+        if (purpose == "private" && open.purpose != "private") {
+            Log.w(TAG, "declared purpose ignored: can't switch recording trip $id to private mid-trip")
+            return open
+        }
+        val isPrivate = purpose == "private"
+        db.tripDao().updatePurpose(
+            id, purpose,
+            if (isPrivate) null else ref,
+            if (isPrivate) null else label,
+            if (isPrivate) null else source,
+            System.currentTimeMillis()
+        )
+        Log.i(TAG, "declared purpose merged onto open trip $id (purpose=$purpose, label=${label ?: "-"})")
+        return db.tripDao().getTrip(id)
     }
 
     private fun startRecording(
@@ -194,10 +240,12 @@ class TripRecordingService : Service() {
 
         scope.launch {
             val db = AppDatabase.getInstance(applicationContext)
-            // Reuse an open trip after process death
-            val existing = db.tripDao().getOpenTrip()
+            // Reuse an open trip after process death — but only a LIVE one; a
+            // stale orphan is closed at its last activity by the reconciler so
+            // today's drive never glues onto a days-old phantom.
+            val existing = TripManager.reconcileOpenTrip(applicationContext)
             val now = System.currentTimeMillis()
-            val trip = existing ?: TripEntity(
+            var trip = existing ?: TripEntity(
                 id = TripManager.newTripId(),
                 startedAt = now,
                 manualStart = manual,
@@ -209,7 +257,15 @@ class TripRecordingService : Service() {
                 purposeSource = if (isPrivate) null else purposeSource
             ).also { db.tripDao().upsertTrip(it) }
 
+            if (existing != null && manual) {
+                // Resumed a live trip AND the driver declared a purpose now —
+                // merge it (earliest declared_at wins inside updatePurpose).
+                applyDeclaredPurpose(trip.id, purpose, purposeRef, purposeLabel, purposeSource)
+                    ?.let { trip = it }
+            }
+
             tripId = trip.id
+            TripManager.serviceRecordingTripId = trip.id
             seq.set(db.tripDao().pointCount(trip.id))
             TripManager.publishActiveTrip(trip)
             Log.i(TAG, "Recording trip ${trip.id} (resumed=${existing != null}, manual=$manual, purpose=${trip.purpose})")
@@ -493,6 +549,7 @@ class TripRecordingService : Service() {
         checkpointJob?.cancel()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
         tripId = null
+        TripManager.serviceRecordingTripId = null
 
         // Always resolve through the DB: if the OS killed the FGS mid-trip and
         // sticky-restarted it with no intent, `tripId` is null even though an
@@ -521,6 +578,7 @@ class TripRecordingService : Service() {
 
     override fun onDestroy() {
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        TripManager.serviceRecordingTripId = null
         scope.cancel()
         super.onDestroy()
     }

@@ -88,10 +88,13 @@ fun TripsScreen(onBack: () -> Unit, onOpenMap: () -> Unit = {}) {
         vehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
     }
 
-    // Refresh active-trip LiveData from DB on entry (after process restarts)
+    // Refresh active-trip LiveData from DB on entry (after process restarts).
+    // reconcileOpenTrip also closes an orphaned open trip (stale phantom) at its
+    // last activity, so the screen offers a clean START instead of a stop button
+    // for a days-old ghost recording.
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
+            TripManager.publishActiveTrip(TripManager.reconcileOpenTrip(context))
         }
     }
 

@@ -35,8 +35,31 @@ interface TripDao {
     @Query("SELECT COUNT(*) FROM trip_points WHERE tripId = :tripId")
     suspend fun pointCount(tripId: String): Int
 
+    @Query("SELECT MAX(ts) FROM trip_points WHERE tripId = :tripId")
+    suspend fun lastPointTs(tripId: String): Long?
+
     @Query("UPDATE trips SET endedAt = :endedAt, status = :status WHERE id = :id")
     suspend fun endTrip(id: String, endedAt: Long, status: String = TripEntity.STATUS_ENDED)
+
+    // Orphaned open trip (process died, stop never delivered): close it at its
+    // last real activity, keeping any existing note (COALESCE = never overwrite).
+    @Query(
+        "UPDATE trips SET endedAt = :endedAt, status = 'ended', " +
+        "note = COALESCE(note, :note) WHERE id = :id"
+    )
+    suspend fun closeStale(id: String, endedAt: Long, note: String)
+
+    // Declared purpose merged onto the OPEN trip (spec: editable until trip end).
+    // COALESCE keeps the EARLIEST declaration timestamp — the anti-fabrication
+    // anchor the server seals (same earliest-wins rule as upload_trip).
+    @Query(
+        "UPDATE trips SET purpose = :purpose, purposeRef = :ref, purposeLabel = :label, " +
+        "purposeSource = :source, purposeDeclaredAt = COALESCE(purposeDeclaredAt, :declaredAt) " +
+        "WHERE id = :id"
+    )
+    suspend fun updatePurpose(
+        id: String, purpose: String, ref: String?, label: String?, source: String?, declaredAt: Long
+    )
 
     @Query("UPDATE trips SET status = 'synced', syncedAt = :syncedAt WHERE id = :id")
     suspend fun markSynced(id: String, syncedAt: Long)

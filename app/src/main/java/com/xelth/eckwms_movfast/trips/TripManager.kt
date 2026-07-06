@@ -35,11 +35,49 @@ object TripManager {
     private const val TAG = "TripManager"
     private const val TRANSITION_REQUEST_CODE = 7301
 
+    // An open trip with no activity for this long is an orphan (process died and
+    // the stop was never delivered). Well above the 3 min graceful-stop window +
+    // 5 min checkpoint interval, so a live recording can never look stale.
+    private const val STALE_OPEN_TRIP_MS = 30 * 60_000L
+
+    // Trip the recording service is ACTIVELY recording right now (in-memory,
+    // same process). reconcileOpenTrip never closes this one — a live trip can
+    // legitimately go long without points (no-signal stretch, Privatfahrt).
+    @Volatile internal var serviceRecordingTripId: String? = null
+
     private val _activeTrip = MutableLiveData<TripEntity?>(null)
     val activeTrip: LiveData<TripEntity?> = _activeTrip
 
     fun publishActiveTrip(trip: TripEntity?) {
         _activeTrip.postValue(trip)
+    }
+
+    // VisibleForTesting: pure staleness decision. Last activity = newest point,
+    // falling back to the start moment for point-less trips (private / just started).
+    internal fun openTripIsStale(startedAt: Long, lastPointTs: Long?, now: Long): Boolean {
+        val lastActivity = maxOf(startedAt, lastPointTs ?: startedAt)
+        return now - lastActivity > STALE_OPEN_TRIP_MS
+    }
+
+    /** The valid open trip, or null. An orphaned open trip (see [openTripIsStale])
+     *  is closed HERE at its last real activity — not at "now", days later — with
+     *  an honest note, and queued for upload. Without this, the next start would
+     *  glue a new drive onto a days-old phantom (the 44e9ee52 case). */
+    suspend fun reconcileOpenTrip(context: Context): TripEntity? {
+        val db = AppDatabase.getInstance(context)
+        val open = db.tripDao().getOpenTrip() ?: return null
+        if (open.id == serviceRecordingTripId) return open
+        val lastPointTs = db.tripDao().lastPointTs(open.id)
+        if (!openTripIsStale(open.startedAt, lastPointTs, System.currentTimeMillis())) return open
+        val endedAt = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
+        db.tripDao().closeStale(
+            open.id, endedAt,
+            "auto-closed: recording was interrupted; ended at last recorded activity " +
+                java.time.Instant.ofEpochMilli(endedAt).toString()
+        )
+        queueTripSync(context, open.id)
+        Log.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
+        return null
     }
 
     /** Start recording (idempotent — reuses an already-open trip).
