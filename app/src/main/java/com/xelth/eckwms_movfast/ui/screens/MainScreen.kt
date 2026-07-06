@@ -294,6 +294,22 @@ fun MainScreen(
                 com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdoPhoto(photoId)
             }
         }
+        // Purpose typed/dictated while a trip is RECORDING → merge it onto the
+        // open trip now (the field alone only feeds the NEXT start).
+        mainViewModel.onTripPurposeCaptured = { label ->
+            tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val open = com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
+                if (open != null && open.purpose != "private") {
+                    com.xelth.eckwms_movfast.trips.TripManager.startTrip(
+                        context, manual = true,
+                        purpose = "business",
+                        purposeLabel = label,
+                        purposeSource = "text"
+                    )
+                    mainViewModel.addLog("🚗 Ziel übernommen: „$label\" (laufende Fahrt)")
+                }
+            }
+        }
     }
 
     val tripStartLauncher = rememberLauncherForActivityResult(
@@ -1262,6 +1278,23 @@ fun MainScreen(
                                     com.xelth.eckwms_movfast.voice.VoiceCommandManager.parseTripIntent(text)
                                 if (intentPhrase != null) {
                                     tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        // A trip is ALREADY recording → the spoken destination
+                                        // belongs to IT: merge now (editable until trip end)
+                                        // instead of arming an intent for a future drive.
+                                        val open = com.xelth.eckwms_movfast.trips.TripManager
+                                            .reconcileOpenTrip(context)
+                                        if (open != null) {
+                                            com.xelth.eckwms_movfast.trips.TripManager.startTrip(
+                                                context, manual = true,
+                                                purpose = "business",
+                                                purposeLabel = intentPhrase.destination,
+                                                purposeSource = "voice"
+                                            )
+                                            mainViewModel.logVoiceInfo(
+                                                "🚗 Ziel übernommen: „${intentPhrase.destination}\" (laufende Fahrt)"
+                                            )
+                                            return@launch
+                                        }
                                         val ti = com.xelth.eckwms_movfast.trips.TripManager
                                             .armTripIntent(context, intentPhrase.destination)
                                         // An odometer reading already pre-set on the Km hex

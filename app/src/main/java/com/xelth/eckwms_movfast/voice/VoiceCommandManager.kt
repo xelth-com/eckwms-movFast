@@ -88,16 +88,17 @@ object VoiceCommandManager {
 
     // Trip-intent openers. The capture group is the destination/client phrase.
     // Person markers (к / zu(m/r) / to Dr./Doktor/Herr/Frau …) flag clientNamed.
+    // NOT start-anchored: STT loves leading filler ("ну я поехал в …", "okay ich
+    // fahre nach …") — the opener may appear anywhere, the tail is captured.
     private val tripIntentPatterns = listOf(
-        // RU: я поехал/еду/выезжаю/поеду (в|на|к) X
-        Regex("^(?:я )?(?:поехал[а]?|еду|выезжаю|поеду) (?:в|на) (.+)$"),
-        Regex("^(?:я )?(?:поехал[а]?|еду|выезжаю|поеду) к (.+)$"),
-        // DE: (ich) fahre/fahr (jetzt) nach|zu(m|r) X · fahrt nach X
-        Regex("^(?:ich )?fahr[e]? (?:jetzt )?nach (.+)$"),
-        Regex("^(?:ich )?fahr[e]? (?:jetzt )?zu[mr]? (.+)$"),
-        Regex("^fahrt nach (.+)$"),
-        // EN: (i'm) driving/going/heading to X
-        Regex("^(?:i m |im )?(?:driving|going|heading) to (.+)$"),
+        // RU: (я) поехал/еду/выезжаю/поеду/выехал/едем (в|во|на) X
+        Regex("(?:^| )(?:я |мы )?(?:поехал[аи]?|еду|едем|выезжаю|выезжаем|выехал[аи]?|поеду|поедем) (?:в|во|на) (.+)$"),
+        Regex("(?:^| )(?:я |мы )?(?:поехал[аи]?|еду|едем|выезжаю|выезжаем|выехал[аи]?|поеду|поедем) к (.+)$"),
+        // DE: (ich/wir) fahre(n)/fahr (jetzt) nach|zu(m|r) X · fahrt nach X
+        Regex("(?:^| )(?:ich |wir )?fahr(?:e|en|t)? (?:jetzt )?nach (.+)$"),
+        Regex("(?:^| )(?:ich |wir )?fahr(?:e|en|t)? (?:jetzt )?zu[mr]? (.+)$"),
+        // EN: (i'm/we're) driving/going/heading to X
+        Regex("(?:^| )(?:i m |im |we re )?(?:driving|going|heading) to (.+)$"),
     )
     // Zero-indexed patterns that carry a PERSON marker (к / zu). Titles inside
     // the captured phrase also flag a named client.

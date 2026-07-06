@@ -1703,9 +1703,12 @@ class MainScreenViewModel : ViewModel() {
     // Wired by MainScreen (needs the app context): a user-set Km value while a
     // trip records = "odometer photographed at a stop" → TripManager validates
     // the delta against the track and arms the tentative end. The photo CAS id
-    // lands later (async upload) via the second callback.
+    // lands later (async upload) via the second callback. A user-set Purpose
+    // while a trip records merges onto the OPEN trip (editable until trip end)
+    // instead of waiting for the next start.
     var onTripKmCaptured: ((Double) -> Unit)? = null
     var onTripKmPhotoCaptured: ((String) -> Unit)? = null
+    var onTripPurposeCaptured: ((String) -> Unit)? = null
 
     private fun setTripField(field: String, value: String?, source: String) {
         when (field) {
@@ -1714,7 +1717,11 @@ class MainScreenViewModel : ViewModel() {
                 tripKm = value; tripKmSource = source
                 if (source == "user") value?.toDoubleOrNull()?.let { onTripKmCaptured?.invoke(it) }
             }
-            else -> { tripPurpose = value; tripPurposeSource = source }
+            else -> {
+                tripPurpose = value; tripPurposeSource = source
+                if (source == "user") value?.takeIf { it.isNotBlank() }
+                    ?.let { onTripPurposeCaptured?.invoke(it) }
+            }
         }
     }
     /** Current pending trip fields (read by MainScreen when starting a trip). */

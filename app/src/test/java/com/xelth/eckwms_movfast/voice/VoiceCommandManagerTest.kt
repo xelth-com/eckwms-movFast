@@ -53,6 +53,21 @@ class VoiceCommandManagerTest {
     }
 
     @Test
+    fun `leading filler words do not break the parse`() {
+        // STT loves prefixes — the opener is matched anywhere, not just at ^.
+        assertEquals("эшборн", VoiceCommandManager.parseTripIntent("ну я поехал в Эшборн")?.destination)
+        assertEquals("karlsruhe", VoiceCommandManager.parseTripIntent("okay ich fahre jetzt nach Karlsruhe")?.destination)
+        assertEquals("эшборн", VoiceCommandManager.parseTripIntent("так мы едем в Эшборн")?.destination)
+    }
+
+    @Test
+    fun `more verbs and prepositions parse`() {
+        assertEquals("эшборн", VoiceCommandManager.parseTripIntent("выехал в Эшборн")?.destination)
+        assertEquals("франкфурт", VoiceCommandManager.parseTripIntent("поедем во франкфурт")?.destination)
+        assertEquals("mannheim", VoiceCommandManager.parseTripIntent("wir fahren nach Mannheim")?.destination)
+    }
+
+    @Test
     fun `registry stop command still wins over intent parse order`() {
         // The caller checks the registry FIRST; "fahrt beenden" must be a
         // registry hit in trip mode and NOT a trip declaration.

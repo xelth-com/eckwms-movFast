@@ -24,25 +24,30 @@ class VehicleTransitionReceiver : BroadcastReceiver() {
         if (!ActivityTransitionResult.hasResult(intent)) return
         val result = ActivityTransitionResult.extractResult(intent) ?: return
 
-        for (event in result.transitionEvents) {
-            if (event.activityType != DetectedActivity.IN_VEHICLE) continue
-            when (event.transitionType) {
-                ActivityTransition.ACTIVITY_TRANSITION_ENTER -> {
-                    // A spoken declaration ("я поехал в Karlsruhe") armed a trip
-                    // intent — movement is what actually starts it, with the
-                    // declared destination/client, last-known vehicle + odometer
-                    // and the TRUE (pre-drive) declaration timestamp.
-                    if (TripManager.startTripFromIntent(context)) {
-                        Log.i(TAG, "IN_VEHICLE enter → trip started from voice intent")
-                    } else {
-                        Log.i(TAG, "IN_VEHICLE enter → start trip recording")
-                        TripManager.startTrip(context, manual = false)
-                    }
+        // The API may deliver a BATCH of buffered transitions. Only the
+        // chronologically LAST vehicle event reflects the current state — acting
+        // on every event in delivery order let a stale EXIT schedule a graceful
+        // stop AFTER a fresh ENTER and kill a just-started trip.
+        val last = result.transitionEvents
+            .filter { it.activityType == DetectedActivity.IN_VEHICLE }
+            .maxByOrNull { it.elapsedRealTimeNanos }
+            ?: return
+        when (last.transitionType) {
+            ActivityTransition.ACTIVITY_TRANSITION_ENTER -> {
+                // A spoken declaration ("я поехал в Karlsruhe") armed a trip
+                // intent — movement is what actually starts it, with the
+                // declared destination/client, last-known vehicle + odometer
+                // and the TRUE (pre-drive) declaration timestamp.
+                if (TripManager.startTripFromIntent(context)) {
+                    Log.i(TAG, "IN_VEHICLE enter → trip started from voice intent")
+                } else {
+                    Log.i(TAG, "IN_VEHICLE enter → start trip recording")
+                    TripManager.startTrip(context, manual = false)
                 }
-                ActivityTransition.ACTIVITY_TRANSITION_EXIT -> {
-                    Log.i(TAG, "IN_VEHICLE exit → graceful stop")
-                    TripManager.stopTrip(context, graceful = true)
-                }
+            }
+            ActivityTransition.ACTIVITY_TRANSITION_EXIT -> {
+                Log.i(TAG, "IN_VEHICLE exit → graceful stop")
+                TripManager.stopTrip(context, graceful = true)
             }
         }
     }
