@@ -40,6 +40,12 @@ object TripManager {
     // 5 min checkpoint interval, so a live recording can never look stale.
     private const val STALE_OPEN_TRIP_MS = 30 * 60_000L
 
+    // Grace window after an odometer-photo stop signal (tentative end): if no
+    // driving follows within it, the trip auto-ends AT THE PHOTO MOMENT with
+    // that reading. Long enough for a full customer visit, short enough that
+    // the day's Fahrtenbuch closes itself.
+    private const val TENTATIVE_END_GRACE_MS = 6 * 3_600_000L
+
     // Trip the recording service is ACTIVELY recording right now (in-memory,
     // same process). reconcileOpenTrip never closes this one — a live trip can
     // legitimately go long without points (no-signal stretch, Privatfahrt).
@@ -62,11 +68,21 @@ object TripManager {
     /** The valid open trip, or null. An orphaned open trip (see [openTripIsStale])
      *  is closed HERE at its last real activity — not at "now", days later — with
      *  an honest note, and queued for upload. Without this, the next start would
-     *  glue a new drive onto a days-old phantom (the 44e9ee52 case). */
+     *  glue a new drive onto a days-old phantom (the 44e9ee52 case). An ARMED
+     *  tentative end (odometer photographed at a stop) replaces the 30-min stale
+     *  rule with the 6 h grace: expired → close AT THE PHOTO with that reading. */
     suspend fun reconcileOpenTrip(context: Context): TripEntity? {
         val db = AppDatabase.getInstance(context)
         val open = db.tripDao().getOpenTrip() ?: return null
         if (open.id == serviceRecordingTripId) return open
+        open.tentativeEndTs?.let { armTs ->
+            return if (armedEndExpired(armTs, System.currentTimeMillis())) {
+                closeWithArmedEnd(context, open)
+                null
+            } else {
+                open // explicit driver signal — wait out the 6 h grace
+            }
+        }
         val lastPointTs = db.tripDao().lastPointTs(open.id)
         if (!openTripIsStale(open.startedAt, lastPointTs, System.currentTimeMillis())) return open
         val endedAt = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
@@ -78,6 +94,98 @@ object TripManager {
         queueTripSync(context, open.id)
         Log.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
         return null
+    }
+
+    // ── Odometer-photo stop signal (tentative end) ───────────────────────────
+
+    internal fun armedEndExpired(armTs: Long, now: Long): Boolean =
+        now - armTs > TENTATIVE_END_GRACE_MS
+
+    /** Is a mid-trip odometer reading a believable "I stopped here" signal?
+     *  The delta over the start reading must roughly match what the track says
+     *  the car has driven — the band is wide (cell tracks are coarse, fused
+     *  under-counts) with absolute slack for short trips. Without a start
+     *  reading there is nothing to validate against → never arms. */
+    internal fun plausibleOdoStop(startKm: Double?, km: Double, trackKm: Double?): Boolean {
+        if (startKm == null) return false
+        val diff = km - startKm
+        if (diff < 0.2) return false            // same reading / backwards — no movement
+        if (trackKm != null && trackKm > 0.5) {
+            return diff >= 0.3 * trackKm - 2.0 && diff <= 3.0 * trackKm + 10.0
+        }
+        return diff < 2000.0                     // no usable track — sanity bound only
+    }
+
+    /** Driver set the Km field while a trip is recording = odometer photographed
+     *  at a stop. Validates the delta against the track, drops a stop-marker
+     *  point, arms the tentative end and pushes a checkpoint. Returns true when
+     *  armed. Routed through the SERVICE when it is alive (it owns the seq
+     *  counter); written directly when it is not. */
+    suspend fun odometerCheckpoint(context: Context, km: Double, photoId: String?): Boolean {
+        val db = AppDatabase.getInstance(context)
+        val open = db.tripDao().getOpenTrip() ?: return false
+        val pts = db.tripDao().getPoints(open.id).filter { it.lat != null && it.lng != null }
+        var trackKm = 0.0
+        for (i in 1 until pts.size) {
+            trackKm += haversineKm(pts[i - 1].lat!!, pts[i - 1].lng!!, pts[i].lat!!, pts[i].lng!!)
+        }
+        if (!plausibleOdoStop(open.startOdometerKm, km, trackKm.takeIf { pts.size >= 2 })) {
+            Log.i(TAG, "odometer $km not a plausible stop for trip ${open.id} (start=${open.startOdometerKm}, track=$trackKm)")
+            return false
+        }
+        val now = System.currentTimeMillis()
+        if (serviceRecordingTripId == open.id) {
+            val intent = Intent(context, TripRecordingService::class.java).apply {
+                action = TripRecordingService.ACTION_ODO
+                putExtra(TripRecordingService.EXTRA_ODO_KM, km)
+                if (!photoId.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_PHOTO_ID, photoId)
+            }
+            try { context.startService(intent) } catch (e: Exception) {
+                Log.w(TAG, "odometerCheckpoint: service poke failed (${e.message})")
+            }
+        } else {
+            db.tripDao().insertPoint(
+                com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+                    tripId = open.id,
+                    seq = db.tripDao().pointCount(open.id) + 1,
+                    ts = now,
+                    source = "manual",
+                    kind = "manual",
+                    label = "odometer",
+                    odometerKm = km,
+                    photoId = photoId
+                )
+            )
+            db.tripDao().armTentativeEnd(open.id, now, km, photoId)
+            queueTripSync(context, open.id)
+        }
+        Log.i(TAG, "tentative end armed for trip ${open.id}: $km km at $now")
+        return true
+    }
+
+    /** The OCR photo upload finishes after the value lands — attach the CAS id
+     *  to a still-armed tentative end (evidence for the auto-closed trip). */
+    suspend fun attachArmedOdoPhoto(context: Context, photoId: String) {
+        val db = AppDatabase.getInstance(context)
+        val open = db.tripDao().getOpenTrip() ?: return
+        db.tripDao().setTentativeEndPhoto(open.id, photoId)
+    }
+
+    /** Close a trip on its armed tentative end: ended AT THE PHOTO MOMENT with
+     *  that odometer reading (source "scanned") and an honest note. */
+    suspend fun closeWithArmedEnd(context: Context, trip: TripEntity) {
+        val ts = trip.tentativeEndTs ?: return
+        val db = AppDatabase.getInstance(context)
+        trip.tentativeEndOdoKm?.let {
+            db.tripDao().setEndOdometer(trip.id, it, "scanned", trip.tentativeEndPhotoId)
+        }
+        db.tripDao().closeStale(
+            trip.id, ts,
+            "auto-ended: odometer photographed at stop " +
+                java.time.Instant.ofEpochMilli(ts).toString() + "; no further driving within 6 h"
+        )
+        queueTripSync(context, trip.id)
+        Log.i(TAG, "Trip ${trip.id} auto-ended on armed odometer stop (${trip.tentativeEndOdoKm} km)")
     }
 
     /** Start recording (idempotent — reuses an already-open trip).

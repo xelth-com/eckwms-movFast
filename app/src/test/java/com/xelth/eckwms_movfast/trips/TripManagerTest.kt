@@ -85,4 +85,54 @@ class TripManagerTest {
         // old timestamp must not outweigh a trip started 1 min ago.
         assertFalse(TripManager.openTripIsStale(now - 1 * min, now - 5 * 60 * min, now))
     }
+
+    // ── plausibleOdoStop (odometer-photo stop signal) ──────────────────────────
+
+    @Test
+    fun `odo stop needs a start reading to validate against`() {
+        assertFalse(TripManager.plausibleOdoStop(null, 206_100.0, 140.0))
+    }
+
+    @Test
+    fun `same or lower reading is not a stop signal`() {
+        assertFalse(TripManager.plausibleOdoStop(206_000.0, 206_000.0, 5.0))
+        assertFalse(TripManager.plausibleOdoStop(206_000.0, 205_900.0, 5.0))
+    }
+
+    @Test
+    fun `diff roughly matching the track arms`() {
+        // Drove ~140 km by track; odometer says 150 km more — plausible.
+        assertTrue(TripManager.plausibleOdoStop(206_000.0, 206_150.0, 140.0))
+        // Fused under-counts: track 120, odometer diff 150 — still plausible.
+        assertTrue(TripManager.plausibleOdoStop(206_000.0, 206_150.0, 120.0))
+    }
+
+    @Test
+    fun `diff wildly off the track does not arm`() {
+        // Track says ~5 km driven but the reading claims 800 km — typo/misOCR.
+        assertFalse(TripManager.plausibleOdoStop(206_000.0, 206_800.0, 5.0))
+        // Track says 140 km but the reading claims only 2 km — stale photo.
+        assertFalse(TripManager.plausibleOdoStop(206_000.0, 206_002.0, 140.0))
+    }
+
+    @Test
+    fun `short trips keep absolute slack`() {
+        // 1 km track, 3 km odometer diff — inside the +10 km absolute slack.
+        assertTrue(TripManager.plausibleOdoStop(206_000.0, 206_003.0, 1.0))
+    }
+
+    @Test
+    fun `no usable track falls back to sanity bound`() {
+        assertTrue(TripManager.plausibleOdoStop(206_000.0, 206_150.0, null))
+        assertFalse(TripManager.plausibleOdoStop(206_000.0, 208_500.0, null))
+    }
+
+    @Test
+    fun `armed end expires after six hours`() {
+        val now = 1_000_000_000_000L
+        val h = 3_600_000L
+        assertFalse(TripManager.armedEndExpired(now - 5 * h, now))
+        assertFalse(TripManager.armedEndExpired(now - 6 * h, now))
+        assertTrue(TripManager.armedEndExpired(now - 6 * h - 1, now))
+    }
 }

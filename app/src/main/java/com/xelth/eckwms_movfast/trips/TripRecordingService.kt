@@ -64,6 +64,10 @@ class TripRecordingService : Service() {
         // Refuel event on the OPEN trip: records a `fuel` point (odometer + receipt
         // photo id) — a Tankbeleg the server promotes to a durable fuel_events row.
         const val ACTION_FUEL = "trip_fuel"
+        // Odometer photographed at a stop (validated by TripManager): drop a stop
+        // marker, ARM the tentative end (6 h grace → auto-end at the photo moment)
+        // and push an immediate checkpoint.
+        const val ACTION_ODO = "trip_odo_stop"
         const val EXTRA_MANUAL = "manual"
         const val EXTRA_LABEL = "label"
         const val EXTRA_ODO_KM = "odo_km"
@@ -150,19 +154,24 @@ class TripRecordingService : Service() {
                         intent.getStringExtra(EXTRA_PURPOSE_SOURCE),
                         startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto
                     )
-                } else if (intent.getBooleanExtra(EXTRA_MANUAL, false)) {
-                    // Already recording (auto-detect won the race): the manual
-                    // start carries the driver's DECLARED purpose — merge it onto
-                    // the open trip instead of silently dropping it (purpose is
-                    // editable until trip end; earliest declared_at is preserved).
+                } else {
+                    // Driving (re)started on the open trip — a pending
+                    // odometer-photo stop signal was a mid-trip stop, not the end.
                     val id = tripId ?: return START_STICKY
+                    val manual = intent.getBooleanExtra(EXTRA_MANUAL, false)
                     val purpose = intent.getStringExtra(EXTRA_PURPOSE) ?: "business"
                     val ref = intent.getStringExtra(EXTRA_PURPOSE_REF)
                     val label = intent.getStringExtra(EXTRA_PURPOSE_LABEL)
                     val source = intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
                     scope.launch {
-                        applyDeclaredPurpose(id, purpose, ref, label, source)
-                        applyStartFields(id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
+                        AppDatabase.getInstance(applicationContext).tripDao().disarmTentativeEnd(id)
+                        if (manual) {
+                            // Manual start carries the driver's DECLARED purpose —
+                            // merge it onto the open trip instead of dropping it
+                            // (editable until trip end; earliest declared_at wins).
+                            applyDeclaredPurpose(id, purpose, ref, label, source)
+                            applyStartFields(id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
+                        }
                         AppDatabase.getInstance(applicationContext).tripDao().getTrip(id)
                             ?.let { TripManager.publishActiveTrip(it) }
                     }
@@ -174,6 +183,10 @@ class TripRecordingService : Service() {
             ACTION_FUEL -> recordFuelEvent(
                 intent.getDoubleExtra(EXTRA_ODO_KM, Double.NaN).let { if (it.isNaN()) null else it },
                 intent.getStringExtra(EXTRA_ODO_SOURCE),
+                intent.getStringExtra(EXTRA_PHOTO_ID)
+            )
+            ACTION_ODO -> recordOdoStop(
+                intent.getDoubleExtra(EXTRA_ODO_KM, Double.NaN).let { if (it.isNaN()) null else it },
                 intent.getStringExtra(EXTRA_PHOTO_ID)
             )
             else -> {
@@ -316,11 +329,16 @@ class TripRecordingService : Service() {
                 purposeSource = if (isPrivate) null else purposeSource
             ).also { db.tripDao().upsertTrip(it) }
 
-            if (existing != null && manual) {
-                // Resumed a live trip AND the driver declared a purpose now —
-                // merge it (earliest declared_at wins inside updatePurpose).
-                applyDeclaredPurpose(trip.id, purpose, purposeRef, purposeLabel, purposeSource)
-                    ?.let { trip = it }
+            if (existing != null) {
+                // Driving resumed on a reused open trip — a pending odometer-photo
+                // stop signal was a mid-trip stop, not the end.
+                db.tripDao().disarmTentativeEnd(trip.id)
+                if (manual) {
+                    // The driver declared a purpose now — merge it (earliest
+                    // declared_at wins inside updatePurpose).
+                    applyDeclaredPurpose(trip.id, purpose, purposeRef, purposeLabel, purposeSource)
+                        ?.let { trip = it }
+                }
             }
             // Scanned/typed start odometer + plate arrive IN the start intent and
             // are applied here, in the same coroutine that owns the trip row.
@@ -359,6 +377,15 @@ class TripRecordingService : Service() {
             while (true) {
                 delay(wait)
                 wait = CHECKPOINT_INTERVAL_MS
+                // Armed tentative end ran out its 6 h grace with the service
+                // still alive (parked, sampling) → close AT THE PHOTO MOMENT.
+                val trip = AppDatabase.getInstance(applicationContext).tripDao().getTrip(id)
+                val armTs = trip?.tentativeEndTs
+                if (armTs != null && TripManager.armedEndExpired(armTs, System.currentTimeMillis())) {
+                    TripManager.closeWithArmedEnd(applicationContext, trip)
+                    shutdownAfterExternalClose()
+                    return@launch
+                }
                 // Charger can be (un)plugged mid-trip — re-evaluate the GPS
                 // ground-truth sampling on the checkpoint cadence.
                 updateGpsSampling()
@@ -369,6 +396,59 @@ class TripRecordingService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "checkpoint upload failed: ${e.message}")
                 }
+            }
+        }
+    }
+
+    /** The trip was closed OUTSIDE the normal stop path (armed tentative end
+     *  expired) — tear down sampling and the FGS without re-ending the trip. */
+    private fun shutdownAfterExternalClose() {
+        samplingJob?.cancel()
+        locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback = null
+        tripId = null
+        TripManager.serviceRecordingTripId = null
+        TripManager.publishActiveTrip(null)
+        stopSelf()
+    }
+
+    /** Odometer photographed at a stop (already validated by TripManager):
+     *  record a stop-marker point carrying the reading, ARM the tentative end
+     *  and push an immediate checkpoint so the stop is in the WMS at once. */
+    @SuppressLint("MissingPermission")
+    private fun recordOdoStop(odometerKm: Double?, photoId: String?) {
+        val id = tripId ?: run { Log.w(TAG, "odo stop ignored: no open trip"); return }
+        val km = odometerKm ?: return
+        scope.launch {
+            val loc = lastLoc
+            val db = AppDatabase.getInstance(applicationContext)
+            val now = System.currentTimeMillis()
+            db.tripDao().insertPoint(
+                TripPointEntity(
+                    tripId = id,
+                    seq = seq.incrementAndGet(),
+                    ts = now,
+                    source = if (loc != null) "fused" else "manual",
+                    lat = loc?.latitude,
+                    lng = loc?.longitude,
+                    accuracyM = loc?.accuracy?.toDouble(),
+                    kind = "manual",
+                    label = "odometer",
+                    odometerKm = km,
+                    photoId = photoId
+                )
+            )
+            db.tripDao().armTentativeEnd(id, now, km, photoId)
+            Log.i(TAG, "odo stop on trip $id: $km km — tentative end armed (6 h grace)")
+            try {
+                val json = TripManager.buildUploadJson(applicationContext, id)
+                if (json != null) {
+                    val ok = apiService.uploadTrip(json)
+                    Log.i(TAG, "odo stop upload for trip $id: ok=$ok")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "odo stop upload failed: ${e.message}")
             }
         }
     }
@@ -681,6 +761,14 @@ class TripRecordingService : Service() {
                 val db = AppDatabase.getInstance(applicationContext)
                 val id = memberId ?: db.tripDao().getOpenTrip()?.id
                 if (id != null) {
+                    // A pending odometer-photo stop doubles as the end reading
+                    // when the driver stops without entering one separately.
+                    val t = db.tripDao().getTrip(id)
+                    if (t != null && t.endOdometerKm == null && t.tentativeEndOdoKm != null) {
+                        db.tripDao().setEndOdometer(
+                            id, t.tentativeEndOdoKm, "scanned", t.tentativeEndPhotoId
+                        )
+                    }
                     db.tripDao().endTrip(id, System.currentTimeMillis())
                     TripManager.publishActiveTrip(null)
                     TripManager.queueTripSync(applicationContext, id)

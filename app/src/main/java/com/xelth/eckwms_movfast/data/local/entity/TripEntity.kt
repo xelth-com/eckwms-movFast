@@ -36,7 +36,15 @@ data class TripEntity(
     val vehiclePlate: String? = null,
     val note: String? = null,
     val manualStart: Boolean = false,        // started by button vs auto-detect
-    val syncedAt: Long? = null
+    val syncedAt: Long? = null,
+    // ── Tentative end (odometer-photo stop signal) ─────────────────────────────
+    // Photographing the odometer mid-trip with a plausible delta over the start
+    // reading is the driver saying "I stopped": it drops a stop marker AND arms
+    // a tentative end. If no driving follows within the 6 h grace the trip
+    // auto-ends AT THE PHOTO MOMENT with that reading; a new drive disarms it.
+    val tentativeEndTs: Long? = null,        // when the odometer was photographed
+    val tentativeEndOdoKm: Double? = null,   // the reading (becomes end odometer)
+    val tentativeEndPhotoId: String? = null  // CAS id of the shot (evidence)
 ) {
     companion object {
         const val STATUS_RECORDING = "recording"

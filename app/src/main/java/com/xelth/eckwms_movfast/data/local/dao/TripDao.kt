@@ -81,4 +81,26 @@ interface TripDao {
 
     @Query("DELETE FROM trip_points WHERE tripId IN (SELECT id FROM trips WHERE status = 'synced' AND syncedAt < :olderThan)")
     suspend fun prunePointsOfOldSyncedTrips(olderThan: Long)
+
+    // ── Tentative end (odometer-photo stop signal) ─────────────────────────────
+
+    @Query(
+        "UPDATE trips SET tentativeEndTs = :ts, tentativeEndOdoKm = :km, " +
+        "tentativeEndPhotoId = :photoId WHERE id = :id"
+    )
+    suspend fun armTentativeEnd(id: String, ts: Long, km: Double, photoId: String?)
+
+    // Driving resumed — the odometer shot was a mid-trip stop, not the end.
+    @Query(
+        "UPDATE trips SET tentativeEndTs = NULL, tentativeEndOdoKm = NULL, " +
+        "tentativeEndPhotoId = NULL WHERE id = :id AND tentativeEndTs IS NOT NULL"
+    )
+    suspend fun disarmTentativeEnd(id: String)
+
+    // OCR photo uploads finish AFTER the value lands — attach the CAS id late.
+    @Query(
+        "UPDATE trips SET tentativeEndPhotoId = :photoId " +
+        "WHERE id = :id AND tentativeEndTs IS NOT NULL AND tentativeEndPhotoId IS NULL"
+    )
+    suspend fun setTentativeEndPhoto(id: String, photoId: String)
 }

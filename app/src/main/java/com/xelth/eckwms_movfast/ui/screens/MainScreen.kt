@@ -265,6 +265,25 @@ fun MainScreen(
     }
     DisposableEffect(Unit) { onDispose { speech.destroy(); voiceRec.cancel() } }
 
+    // Odometer-photo stop signal: a user-set Km while a trip records arms the
+    // tentative end (validated against the track; 6 h without driving → the
+    // trip auto-ends at the photo moment with that reading).
+    LaunchedEffect(Unit) {
+        mainViewModel.onTripKmCaptured = { km ->
+            tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val armed = com.xelth.eckwms_movfast.trips.TripManager.odometerCheckpoint(
+                    context, km, mainViewModel.pendingTripKmPhotoId()
+                )
+                if (armed) mainViewModel.addLog("📍 Odometer stop recorded ($km km) — trip auto-ends in 6 h unless driving resumes")
+            }
+        }
+        mainViewModel.onTripKmPhotoCaptured = { photoId ->
+            tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                com.xelth.eckwms_movfast.trips.TripManager.attachArmedOdoPhoto(context, photoId)
+            }
+        }
+    }
+
     val tripStartLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->

@@ -1700,10 +1700,20 @@ class MainScreenViewModel : ViewModel() {
         "plate" -> (('0'..'9').map { it.toString() } + ('A'..'Z').map { it.toString() } + listOf(" ", "-"))
         else -> (('0'..'9').map { it.toString() } + ('A'..'Z').map { it.toString() } + listOf(" ", ".", ",", "-"))
     }
+    // Wired by MainScreen (needs the app context): a user-set Km value while a
+    // trip records = "odometer photographed at a stop" → TripManager validates
+    // the delta against the track and arms the tentative end. The photo CAS id
+    // lands later (async upload) via the second callback.
+    var onTripKmCaptured: ((Double) -> Unit)? = null
+    var onTripKmPhotoCaptured: ((String) -> Unit)? = null
+
     private fun setTripField(field: String, value: String?, source: String) {
         when (field) {
             "plate" -> { tripPlate = value; tripPlateSource = source }
-            "km" -> { tripKm = value; tripKmSource = source }
+            "km" -> {
+                tripKm = value; tripKmSource = source
+                if (source == "user") value?.toDoubleOrNull()?.let { onTripKmCaptured?.invoke(it) }
+            }
             else -> { tripPurpose = value; tripPurposeSource = source }
         }
     }
@@ -1716,7 +1726,13 @@ class MainScreenViewModel : ViewModel() {
     /** CAS id of an OCR photo just uploaded for a field (evidence), stored so it
      *  can be attached to the trip at start. */
     fun setTripFieldPhotoId(field: String, photoId: String) {
-        when (field) { "plate" -> tripPlatePhotoId = photoId; "km" -> tripKmPhotoId = photoId }
+        when (field) {
+            "plate" -> tripPlatePhotoId = photoId
+            "km" -> {
+                tripKmPhotoId = photoId
+                onTripKmPhotoCaptured?.invoke(photoId)
+            }
+        }
     }
     /** Set a field from OCR/known-value (called by MainScreen), marks it user-set. */
     fun applyTripFieldValue(field: String, value: String) {

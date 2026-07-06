@@ -59,7 +59,7 @@ import com.xelth.eckwms_movfast.data.local.entity.VisitTaskEntity
         CellTowerEntity::class,
         VehicleEntity::class
     ],
-    version = 18,  // trip_points: kind/label/odometerKm/photoId (multi-stop + fuel)
+    version = 19,  // trips: tentativeEnd* (odometer-photo stop signal → 6 h auto-end)
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -101,6 +101,15 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL("ALTER TABLE trip_points ADD COLUMN label TEXT")
                     db.execSQL("ALTER TABLE trip_points ADD COLUMN odometerKm REAL")
                     db.execSQL("ALTER TABLE trip_points ADD COLUMN photoId TEXT")
+                }
+            },
+            // 18 → 19: tentative-end fields on trips (odometer-photo stop signal).
+            // Additive ALTER TABLE only — every existing trip is preserved.
+            object : Migration(18, 19) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE trips ADD COLUMN tentativeEndTs INTEGER")
+                    db.execSQL("ALTER TABLE trips ADD COLUMN tentativeEndOdoKm REAL")
+                    db.execSQL("ALTER TABLE trips ADD COLUMN tentativeEndPhotoId TEXT")
                 }
             },
         )
