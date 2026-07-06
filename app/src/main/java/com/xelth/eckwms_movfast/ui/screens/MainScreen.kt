@@ -274,12 +274,24 @@ fun MainScreen(
                 val armed = com.xelth.eckwms_movfast.trips.TripManager.odometerCheckpoint(
                     context, km, mainViewModel.pendingTripKmPhotoId()
                 )
-                if (armed) mainViewModel.addLog("📍 Odometer stop recorded ($km km) — trip auto-ends in 6 h unless driving resumes")
+                if (armed) {
+                    mainViewModel.addLog("📍 Odometer stop recorded ($km km) — trip auto-ends in 6 h unless driving resumes")
+                } else {
+                    // No open trip: a reading captured while a voice trip intent
+                    // is armed (photo shortly AFTER the command) upgrades its
+                    // estimated odometer to a real reading.
+                    com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdometer(
+                        km,
+                        if (mainViewModel.pendingTripKmPhotoId() != null) "photo" else "manual",
+                        mainViewModel.pendingTripKmPhotoId()
+                    )
+                }
             }
         }
         mainViewModel.onTripKmPhotoCaptured = { photoId ->
             tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 com.xelth.eckwms_movfast.trips.TripManager.attachArmedOdoPhoto(context, photoId)
+                com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdoPhoto(photoId)
             }
         }
     }
@@ -1240,6 +1252,60 @@ fun MainScreen(
                                 val local = mainViewModel.matchVoiceLocal(text)
                                 if (local != null) {
                                     onGridAction(local)              // dispatch like a button tap
+                                    return@start
+                                }
+                                // 1b) Spoken trip declaration ("я поехал в Karlsruhe" /
+                                // "zu Doktor Steiner") → ARM a trip intent; the next
+                                // IN_VEHICLE transition starts the trip with the armed
+                                // fields (spec: .eck/TRIP_PURPOSE.md §10).
+                                val intentPhrase =
+                                    com.xelth.eckwms_movfast.voice.VoiceCommandManager.parseTripIntent(text)
+                                if (intentPhrase != null) {
+                                    tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        val ti = com.xelth.eckwms_movfast.trips.TripManager
+                                            .armTripIntent(context, intentPhrase.destination)
+                                        // An odometer reading already pre-set on the Km hex
+                                        // (photo taken shortly BEFORE the voice command)
+                                        // upgrades the estimate to a real reading.
+                                        mainViewModel.pendingTripKm()?.let { km ->
+                                            com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdometer(
+                                                km,
+                                                if (mainViewModel.pendingTripKmPhotoId() != null) "photo" else "manual",
+                                                mainViewModel.pendingTripKmPhotoId()
+                                            )
+                                        }
+                                        mainViewModel.logVoiceInfo(
+                                            "🚗 Fahrt-Absicht: „${intentPhrase.destination}\" — startet bei Bewegung" +
+                                                (ti.odoKm?.let { " · ab ≈${it.toInt()} km" } ?: "") +
+                                                (ti.plate?.let { " · $it" } ?: "")
+                                        )
+                                        // Client binding: a NAMED client binds directly on an
+                                        // unambiguous match (the naming IS the declaration);
+                                        // an inferred single candidate is prefilled and logged
+                                        // (Ja/Nein console buttons = next iteration; purpose
+                                        // stays editable until trip end either way).
+                                        try {
+                                            val dest = voiceApi.fetchDestinations(query = intentPhrase.destination)
+                                            val hits = dest?.results.orEmpty().filter { it.purposeRef.isNotBlank() }
+                                            if (hits.size == 1) {
+                                                val h = hits.first()
+                                                com.xelth.eckwms_movfast.trips.TripManager
+                                                    .bindTripIntentClient(h.purposeRef, h.label)
+                                                mainViewModel.logVoiceInfo(
+                                                    if (intentPhrase.clientNamed)
+                                                        "· Kunde: ${h.label} (aus Ansage übernommen)"
+                                                    else
+                                                        "· Kunde angenommen: ${h.label} — bis Fahrtende änderbar"
+                                                )
+                                            } else if (hits.size > 1) {
+                                                mainViewModel.logVoiceInfo(
+                                                    "· ${hits.size} Kandidaten — Ziel bleibt „${intentPhrase.destination}\""
+                                                )
+                                            }
+                                        } catch (e: Exception) {
+                                            // binding is best-effort; the intent stays armed
+                                        }
+                                    }
                                     return@start
                                 }
                                 // 2) Trip mode's default = destination search.

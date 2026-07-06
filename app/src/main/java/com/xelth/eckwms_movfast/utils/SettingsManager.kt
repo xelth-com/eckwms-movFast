@@ -274,6 +274,16 @@ object SettingsManager {
     fun saveTripConsent(granted: Boolean) { prefs.edit().putBoolean(KEY_TRIP_CONSENT, granted).commit() }
     fun getTripConsent(): Boolean = prefs.getBoolean(KEY_TRIP_CONSENT, true)
 
+    // Pending voice trip intent (JSON blob managed by TripManager): armed by a
+    // spoken declaration, consumed by the next IN_VEHICLE transition. Survives
+    // process death by design.
+    private const val KEY_TRIP_INTENT = "trip_pending_intent"
+    fun saveTripIntentJson(json: String?) {
+        if (json == null) prefs.edit().remove(KEY_TRIP_INTENT).commit()
+        else prefs.edit().putString(KEY_TRIP_INTENT, json).commit()
+    }
+    fun getTripIntentJson(): String? = prefs.getString(KEY_TRIP_INTENT, null)
+
     // Separate, ADDITIONAL opt-in: share the live position of a business trip to
     // the dashboard map in near-real-time (a moving car marker with the plate).
     // Distinct from recording consent — recording can be on while live sharing is

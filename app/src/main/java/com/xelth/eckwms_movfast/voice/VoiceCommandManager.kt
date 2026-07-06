@@ -80,6 +80,49 @@ object VoiceCommandManager {
 
     fun commandsFor(mode: String): List<VoiceCommand> = registry[mode] ?: emptyList()
 
+    /** A spoken trip declaration ("я поехал в Карлсруэ" / "fahre nach Karlsruhe" /
+     *  "zu Doktor Steiner"). [clientNamed] = the phrase names a PERSON/client
+     *  (к/zu/to + name) rather than a place — a named client binds WITHOUT the
+     *  confirmation question (the naming IS the declaration, owner 2026-07-06). */
+    data class TripIntentPhrase(val destination: String, val clientNamed: Boolean)
+
+    // Trip-intent openers. The capture group is the destination/client phrase.
+    // Person markers (к / zu(m/r) / to Dr./Doktor/Herr/Frau …) flag clientNamed.
+    private val tripIntentPatterns = listOf(
+        // RU: я поехал/еду/выезжаю/поеду (в|на|к) X
+        Regex("^(?:я )?(?:поехал[а]?|еду|выезжаю|поеду) (?:в|на) (.+)$"),
+        Regex("^(?:я )?(?:поехал[а]?|еду|выезжаю|поеду) к (.+)$"),
+        // DE: (ich) fahre/fahr (jetzt) nach|zu(m|r) X · fahrt nach X
+        Regex("^(?:ich )?fahr[e]? (?:jetzt )?nach (.+)$"),
+        Regex("^(?:ich )?fahr[e]? (?:jetzt )?zu[mr]? (.+)$"),
+        Regex("^fahrt nach (.+)$"),
+        // EN: (i'm) driving/going/heading to X
+        Regex("^(?:i m |im )?(?:driving|going|heading) to (.+)$"),
+    )
+    // Zero-indexed patterns that carry a PERSON marker (к / zu). Titles inside
+    // the captured phrase also flag a named client.
+    private val personPatternIdx = setOf(1, 3)
+    private val personTitles =
+        Regex("^(?:доктор[уа]?|dr|doktor|herr[n]?|frau|госпож[еа]|господин[у]?) ", RegexOption.IGNORE_CASE)
+
+    /** Parse a free-form trip declaration out of [text]; null when it isn't one.
+     *  Runs AFTER the fixed-command registry so explicit commands keep priority. */
+    fun parseTripIntent(text: String): TripIntentPhrase? {
+        val normalized = text.lowercase()
+            .replace(Regex("[^\\p{L}\\p{N} ]"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
+        if (normalized.isBlank()) return null
+        for ((idx, re) in tripIntentPatterns.withIndex()) {
+            val m = re.find(normalized) ?: continue
+            val phrase = m.groupValues[1].trim()
+            if (phrase.isBlank()) continue
+            val named = idx in personPatternIdx || personTitles.containsMatchIn(phrase)
+            return TripIntentPhrase(destination = phrase, clientNamed = named)
+        }
+        return null
+    }
+
     /** Human-readable list of what the user can say in [mode] (for console hints). */
     fun availableLabels(mode: String): List<String> = commandsFor(mode).map { it.description }
 

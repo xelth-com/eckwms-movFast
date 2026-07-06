@@ -77,6 +77,9 @@ class TripRecordingService : Service() {
         const val EXTRA_PURPOSE_REF = "purpose_ref"
         const val EXTRA_PURPOSE_LABEL = "purpose_label"
         const val EXTRA_PURPOSE_SOURCE = "purpose_source"
+        // Voice intent: the declaration happened BEFORE the drive — this is the
+        // true purpose_declared_at (anti-fabrication anchor, earliest wins).
+        const val EXTRA_PURPOSE_DECLARED_AT = "purpose_declared_at"
         // Start-of-trip fields pre-set on the hex field menus (Km/Plate OCR).
         // They ride IN the start intent and are applied by the service in the
         // same coroutine that creates the trip — the old post-start UI write
@@ -152,7 +155,8 @@ class TripRecordingService : Service() {
                         intent.getStringExtra(EXTRA_PURPOSE_REF),
                         intent.getStringExtra(EXTRA_PURPOSE_LABEL),
                         intent.getStringExtra(EXTRA_PURPOSE_SOURCE),
-                        startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto
+                        startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto,
+                        intent.getLongExtra(EXTRA_PURPOSE_DECLARED_AT, 0L).takeIf { it > 0 }
                     )
                 } else {
                     // Driving (re)started on the open trip — a pending
@@ -305,7 +309,8 @@ class TripRecordingService : Service() {
         startOdoSource: String? = null,
         startOdoPhoto: String? = null,
         plate: String? = null,
-        platePhoto: String? = null
+        platePhoto: String? = null,
+        purposeDeclaredAt: Long? = null
     ) {
         val isPrivate = purpose == "private"
         startForegroundWithNotification(isPrivate)
@@ -322,10 +327,12 @@ class TripRecordingService : Service() {
                 startedAt = now,
                 manualStart = manual,
                 purpose = purpose,
-                // private trips carry no destination; declared_at = start moment
+                // private trips carry no destination; declared_at = the moment
+                // of the FIRST declaration — the voice intent's timestamp when
+                // the trip was declared before the drive, else the start moment.
                 purposeRef = if (isPrivate) null else purposeRef,
                 purposeLabel = if (isPrivate) null else purposeLabel,
-                purposeDeclaredAt = if (isPrivate) null else now,
+                purposeDeclaredAt = if (isPrivate) null else (purposeDeclaredAt ?: now),
                 purposeSource = if (isPrivate) null else purposeSource
             ).also { db.tripDao().upsertTrip(it) }
 

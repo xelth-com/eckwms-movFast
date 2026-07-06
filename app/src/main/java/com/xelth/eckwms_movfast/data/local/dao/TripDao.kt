@@ -22,6 +22,11 @@ interface TripDao {
     @Query("SELECT * FROM trips WHERE id = :id LIMIT 1")
     suspend fun getTrip(id: String): TripEntity?
 
+    // Newest completed trip — presets the voice trip intent (last known vehicle
+    // + its end odometer as the estimated start reading).
+    @Query("SELECT * FROM trips WHERE endedAt IS NOT NULL ORDER BY endedAt DESC LIMIT 1")
+    suspend fun lastEndedTrip(): TripEntity?
+
     @Query("SELECT * FROM trips ORDER BY startedAt DESC LIMIT :limit")
     fun observeTrips(limit: Int = 50): Flow<List<TripEntity>>
 

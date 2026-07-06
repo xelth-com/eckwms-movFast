@@ -46,6 +46,10 @@ object TripManager {
     // the day's Fahrtenbuch closes itself.
     private const val TENTATIVE_END_GRACE_MS = 6 * 3_600_000L
 
+    // A spoken trip declaration stays armed this long; no movement within it →
+    // the intent silently expires (console note at the next voice/trip touch).
+    private const val TRIP_INTENT_TTL_MS = 2 * 3_600_000L
+
     // Trip the recording service is ACTIVELY recording right now (in-memory,
     // same process). reconcileOpenTrip never closes this one — a live trip can
     // legitimately go long without points (no-signal stretch, Privatfahrt).
@@ -171,6 +175,120 @@ object TripManager {
         db.tripDao().setTentativeEndPhoto(open.id, photoId)
     }
 
+    // ── Voice trip intent (spoken declaration, consumed by movement) ─────────
+    // "я поехал в Карлсруэ" from the MAIN menu arms this; the next IN_VEHICLE
+    // transition starts the trip with the armed fields. declared_at = the VOICE
+    // moment (declared BEFORE the drive — the strongest anti-fabrication anchor).
+    // Spec: .eck/TRIP_PURPOSE.md §10.
+
+    data class TripIntent(
+        val label: String,
+        val ref: String?,
+        val declaredAt: Long,
+        val expiresAt: Long,
+        val vehicleId: String?,
+        val plate: String?,
+        val odoKm: Double?,
+        val odoSource: String?,   // "estimated" (last known) | "photo" | "manual"
+        val odoPhotoId: String?
+    )
+
+    private fun intentToJson(i: TripIntent): String = org.json.JSONObject().apply {
+        put("label", i.label)
+        i.ref?.let { put("ref", it) }
+        put("declared_at", i.declaredAt)
+        put("expires_at", i.expiresAt)
+        i.vehicleId?.let { put("vehicle_id", it) }
+        i.plate?.let { put("plate", it) }
+        i.odoKm?.let { put("odo_km", it) }
+        i.odoSource?.let { put("odo_source", it) }
+        i.odoPhotoId?.let { put("odo_photo", it) }
+    }.toString()
+
+    private fun intentFromJson(s: String): TripIntent? = try {
+        val o = org.json.JSONObject(s)
+        TripIntent(
+            label = o.getString("label"),
+            ref = o.optString("ref").takeIf { it.isNotEmpty() },
+            declaredAt = o.getLong("declared_at"),
+            expiresAt = o.getLong("expires_at"),
+            vehicleId = o.optString("vehicle_id").takeIf { it.isNotEmpty() },
+            plate = o.optString("plate").takeIf { it.isNotEmpty() },
+            odoKm = if (o.has("odo_km")) o.getDouble("odo_km") else null,
+            odoSource = o.optString("odo_source").takeIf { it.isNotEmpty() },
+            odoPhotoId = o.optString("odo_photo").takeIf { it.isNotEmpty() }
+        )
+    } catch (e: Exception) { null }
+
+    /** Arm a spoken trip declaration. Presets the last known vehicle and its end
+     *  odometer (source "estimated" — a guess, never a reading). Overwrites any
+     *  previous pending intent (the newest declaration wins). */
+    suspend fun armTripIntent(context: Context, label: String, ref: String? = null): TripIntent {
+        val last = AppDatabase.getInstance(context).tripDao().lastEndedTrip()
+        val now = System.currentTimeMillis()
+        val intent = TripIntent(
+            label = label,
+            ref = ref,
+            declaredAt = now,
+            expiresAt = now + TRIP_INTENT_TTL_MS,
+            vehicleId = last?.vehicleId,
+            plate = last?.vehiclePlate,
+            odoKm = last?.endOdometerKm,
+            odoSource = last?.endOdometerKm?.let { "estimated" },
+            odoPhotoId = null
+        )
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(intentToJson(intent))
+        Log.i(TAG, "trip intent armed: \"$label\" (ref=${ref ?: "-"}, odo≈${intent.odoKm ?: "-"})")
+        return intent
+    }
+
+    /** The pending intent, or null. Expired intents are cleared on read (SYNC —
+     *  callable from a BroadcastReceiver). */
+    fun peekTripIntent(): TripIntent? {
+        val json = com.xelth.eckwms_movfast.utils.SettingsManager.getTripIntentJson() ?: return null
+        val intent = intentFromJson(json) ?: run { clearTripIntent(); return null }
+        if (System.currentTimeMillis() > intent.expiresAt) {
+            clearTripIntent()
+            Log.i(TAG, "trip intent \"${intent.label}\" expired unconsumed")
+            return null
+        }
+        return intent
+    }
+
+    fun clearTripIntent() {
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(null)
+    }
+
+    /** Upgrade the armed intent's client binding (voice-named client resolved
+     *  against CRM, or the confirmed inferred candidate). */
+    fun bindTripIntentClient(ref: String?, label: String?) {
+        val cur = peekTripIntent() ?: return
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(
+            intentToJson(cur.copy(ref = ref ?: cur.ref, label = label ?: cur.label))
+        )
+    }
+
+    /** An odometer reading captured while the intent is armed (photo shortly
+     *  before/after the voice command) replaces the estimate — and is a REAL
+     *  reading (source photo/manual), not a guess. */
+    fun attachIntentOdometer(km: Double, source: String, photoId: String?) {
+        val cur = peekTripIntent() ?: return
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(
+            intentToJson(cur.copy(odoKm = km, odoSource = source, odoPhotoId = photoId ?: cur.odoPhotoId))
+        )
+        Log.i(TAG, "trip intent odometer set: $km km ($source)")
+    }
+
+    /** The OCR photo upload finishes after the value lands — attach the CAS id
+     *  to an armed intent's reading and upgrade its source to "photo". */
+    fun attachIntentOdoPhoto(photoId: String) {
+        val cur = peekTripIntent() ?: return
+        if (cur.odoKm == null) return
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(
+            intentToJson(cur.copy(odoPhotoId = photoId, odoSource = "photo"))
+        )
+    }
+
     /** Close a trip on its armed tentative end: ended AT THE PHOTO MOMENT with
      *  that odometer reading (source "scanned") and an honest note. */
     suspend fun closeWithArmedEnd(context: Context, trip: TripEntity) {
@@ -201,6 +319,7 @@ object TripManager {
         purposeRef: String? = null,
         purposeLabel: String? = null,
         purposeSource: String? = null,
+        purposeDeclaredAt: Long? = null,
         startOdometerKm: Double? = null,
         startOdometerSource: String? = null,
         startOdometerPhotoId: String? = null,
@@ -218,6 +337,9 @@ object TripManager {
             putExtra(TripRecordingService.EXTRA_PURPOSE_REF, purposeRef)
             putExtra(TripRecordingService.EXTRA_PURPOSE_LABEL, purposeLabel)
             putExtra(TripRecordingService.EXTRA_PURPOSE_SOURCE, purposeSource)
+            // Voice intent: the purpose was declared BEFORE the drive started —
+            // carry the true declaration moment into the trip (earliest wins).
+            purposeDeclaredAt?.let { putExtra(TripRecordingService.EXTRA_PURPOSE_DECLARED_AT, it) }
             startOdometerKm?.let { putExtra(TripRecordingService.EXTRA_START_ODO_KM, it) }
             putExtra(TripRecordingService.EXTRA_START_ODO_SOURCE, startOdometerSource)
             putExtra(TripRecordingService.EXTRA_START_ODO_PHOTO, startOdometerPhotoId)
@@ -225,6 +347,29 @@ object TripManager {
             putExtra(TripRecordingService.EXTRA_PLATE_PHOTO, platePhotoId)
         }
         ContextCompat.startForegroundService(context, intent)
+    }
+
+    /** Start a trip from the armed voice intent (called by the vehicle
+     *  auto-detector on IN_VEHICLE ENTER). Consumes the intent. SYNC prefs
+     *  read — safe from a BroadcastReceiver. Returns true when an intent
+     *  was consumed. */
+    fun startTripFromIntent(context: Context): Boolean {
+        val ti = peekTripIntent() ?: return false
+        clearTripIntent()
+        Log.i(TAG, "consuming trip intent \"${ti.label}\" on vehicle movement")
+        startTrip(
+            context, manual = false,
+            purpose = "business",
+            purposeRef = ti.ref,
+            purposeLabel = ti.label,
+            purposeSource = "voice",
+            purposeDeclaredAt = ti.declaredAt,
+            startOdometerKm = ti.odoKm,
+            startOdometerSource = ti.odoSource,
+            startOdometerPhotoId = ti.odoPhotoId,
+            plate = ti.plate
+        )
+        return true
     }
 
     /** Stop recording. Graceful: waits a few minutes before finalizing

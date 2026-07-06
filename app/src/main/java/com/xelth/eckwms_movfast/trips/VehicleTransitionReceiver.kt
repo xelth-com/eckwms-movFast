@@ -28,8 +28,16 @@ class VehicleTransitionReceiver : BroadcastReceiver() {
             if (event.activityType != DetectedActivity.IN_VEHICLE) continue
             when (event.transitionType) {
                 ActivityTransition.ACTIVITY_TRANSITION_ENTER -> {
-                    Log.i(TAG, "IN_VEHICLE enter → start trip recording")
-                    TripManager.startTrip(context, manual = false)
+                    // A spoken declaration ("я поехал в Karlsruhe") armed a trip
+                    // intent — movement is what actually starts it, with the
+                    // declared destination/client, last-known vehicle + odometer
+                    // and the TRUE (pre-drive) declaration timestamp.
+                    if (TripManager.startTripFromIntent(context)) {
+                        Log.i(TAG, "IN_VEHICLE enter → trip started from voice intent")
+                    } else {
+                        Log.i(TAG, "IN_VEHICLE enter → start trip recording")
+                        TripManager.startTrip(context, manual = false)
+                    }
                 }
                 ActivityTransition.ACTIVITY_TRANSITION_EXIT -> {
                     Log.i(TAG, "IN_VEHICLE exit → graceful stop")
