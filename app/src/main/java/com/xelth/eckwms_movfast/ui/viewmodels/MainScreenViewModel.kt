@@ -1665,11 +1665,25 @@ class MainScreenViewModel : ViewModel() {
     private fun fieldName(field: String) = when (field) {
         "plate" -> "Plate"; "km" -> "Km"; else -> "Purpose"
     }
+    // Estimated CURRENT odometer while a trip is recording (start reading +
+    // track distance so far). Shown on the Km hex with a ≈ prefix instead of
+    // the stale pre-set value; refreshed by MainScreen once a minute, cleared
+    // when the trip ends. Odometer photos stay the authoritative number.
+    var tripKmEstimate: String? = null
+        private set
+    fun setTripKmEstimate(v: String?) {
+        if (tripKmEstimate == v) return
+        tripKmEstimate = v
+        if (_isTripMode.value == true) renderTripGrid()
+    }
+
     /** Label for a field button on the start sub-menu. Once a value is set the hex
      *  shows the VALUE (icon + value) instead of the "Plate/Km/Purpose" caption —
      *  yellow/green buttons carry data, so the caption is redundant. Long values are
      *  truncated to what fits on a hex. */
     private fun fieldButtonLabel(field: String, icon: String, name: String): String {
+        // Live estimate wins on the Km hex while a trip is recording.
+        if (field == "km") tripKmEstimate?.let { return "$icon\n≈$it" }
         val v = fieldValue(field)?.trim()
         if (v.isNullOrBlank()) return "$icon\n$name"
         val shown = if (v.length > 10) v.take(9) + "…" else v

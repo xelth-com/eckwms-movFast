@@ -82,14 +82,22 @@ object TripManager {
 
     /** Start recording (idempotent — reuses an already-open trip).
      *  No-op without DSGVO consent. `purpose = "private"` → Privatfahrt:
-     *  the service records NO positions, only the trip frame for km-delta. */
+     *  the service records NO positions, only the trip frame for km-delta.
+     *  Start odometer / plate (hex-field OCR pre-sets) ride IN the intent and
+     *  are applied by the service atomically with the trip row — writing them
+     *  from the UI after the fact raced the service's async insert and lost. */
     fun startTrip(
         context: Context,
         manual: Boolean,
         purpose: String = "business",
         purposeRef: String? = null,
         purposeLabel: String? = null,
-        purposeSource: String? = null
+        purposeSource: String? = null,
+        startOdometerKm: Double? = null,
+        startOdometerSource: String? = null,
+        startOdometerPhotoId: String? = null,
+        plate: String? = null,
+        platePhotoId: String? = null
     ) {
         if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
             Log.w(TAG, "startTrip blocked: no recording consent")
@@ -102,6 +110,11 @@ object TripManager {
             putExtra(TripRecordingService.EXTRA_PURPOSE_REF, purposeRef)
             putExtra(TripRecordingService.EXTRA_PURPOSE_LABEL, purposeLabel)
             putExtra(TripRecordingService.EXTRA_PURPOSE_SOURCE, purposeSource)
+            startOdometerKm?.let { putExtra(TripRecordingService.EXTRA_START_ODO_KM, it) }
+            putExtra(TripRecordingService.EXTRA_START_ODO_SOURCE, startOdometerSource)
+            putExtra(TripRecordingService.EXTRA_START_ODO_PHOTO, startOdometerPhotoId)
+            putExtra(TripRecordingService.EXTRA_PLATE, plate)
+            putExtra(TripRecordingService.EXTRA_PLATE_PHOTO, platePhotoId)
         }
         ContextCompat.startForegroundService(context, intent)
     }

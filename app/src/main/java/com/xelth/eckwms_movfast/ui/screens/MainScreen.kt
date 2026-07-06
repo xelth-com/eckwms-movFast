@@ -200,6 +200,23 @@ fun MainScreen(
             granted && com.xelth.eckwms_movfast.trips.TripManager.enableAutoDetect(context)
         )
     }
+    // Km hex shows the ESTIMATED current odometer while a trip is recording
+    // (start reading + track distance so far) — refreshed once a minute.
+    LaunchedEffect(isTripMode) {
+        if (!isTripMode) {
+            mainViewModel.setTripKmEstimate(null)
+            return@LaunchedEffect
+        }
+        while (true) {
+            val est = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    com.xelth.eckwms_movfast.trips.TripManager.estimateCurrentOdometer(context)
+                } catch (e: Exception) { null }
+            }
+            mainViewModel.setTripKmEstimate(est?.toInt()?.toString())
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
 
     // Trip mode: console search (text + push-to-talk voice) + start (ticket tap
     // OR dictated/typed address) + odometer
@@ -252,34 +269,27 @@ fun MainScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            // Plate/Km pre-set on the hex field menus ride IN the start intent —
+            // the service applies them atomically with the trip row. (The old
+            // post-start getOpenTrip() write raced the service's async insert
+            // and silently lost the scanned odometer.) OCR photos are already
+            // in CAS at capture time; only the ids are linked here.
+            val pPlate = mainViewModel.pendingTripPlate()
+            val pKm = mainViewModel.pendingTripKm()
             com.xelth.eckwms_movfast.trips.TripManager.startTrip(
                 context, manual = true, purpose = tripPendingPurpose,
                 purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
-                purposeSource = tripPendingSource
+                purposeSource = tripPendingSource,
+                startOdometerKm = pKm,
+                startOdometerSource = if (pKm != null) "manual" else null,
+                startOdometerPhotoId = mainViewModel.pendingTripKmPhotoId(),
+                plate = pPlate,
+                platePhotoId = mainViewModel.pendingTripPlatePhotoId()
             )
-            // Apply Plate/Km pre-set on the hex field menus to the just-opened
-            // trip. If neither was set, fall back to the odometer/vehicle dialog.
-            val pPlate = mainViewModel.pendingTripPlate()
-            val pKm = mainViewModel.pendingTripKm()
-            // OCR photos are already saved to CAS at capture time; here we link them
-            // to the trip alongside the recognised value (never write a bogus 0 km
-            // just to carry a photo — the shot survives in CAS regardless).
-            val pKmPhoto = mainViewModel.pendingTripKmPhotoId()
-            val pPlatePhoto = mainViewModel.pendingTripPlatePhotoId()
             if (pPlate != null || pKm != null) {
-                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
-                    val target = db.tripDao().getOpenTrip()?.id
-                    if (target != null) {
-                        if (pKm != null) db.tripDao().setStartOdometer(target, pKm, "manual", pKmPhoto)
-                        if (pPlate != null) com.xelth.eckwms_movfast.trips.VehicleManager.resolveAndAttach(
-                            context, target, null, pPlate, pPlatePhoto
-                        )
-                        com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(db.tripDao().getOpenTrip())
-                    }
-                }
                 mainViewModel.markTripFieldsAuto()
             } else {
+                // Nothing pre-set → fall back to the odometer/vehicle dialog.
                 tripOdometerStart = true
             }
         }

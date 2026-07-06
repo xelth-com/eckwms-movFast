@@ -73,6 +73,16 @@ class TripRecordingService : Service() {
         const val EXTRA_PURPOSE_REF = "purpose_ref"
         const val EXTRA_PURPOSE_LABEL = "purpose_label"
         const val EXTRA_PURPOSE_SOURCE = "purpose_source"
+        // Start-of-trip fields pre-set on the hex field menus (Km/Plate OCR).
+        // They ride IN the start intent and are applied by the service in the
+        // same coroutine that creates the trip — the old post-start UI write
+        // raced the service's async insert (getOpenTrip() == null) and silently
+        // dropped the driver's scanned odometer/plate.
+        const val EXTRA_START_ODO_KM = "start_odo_km"
+        const val EXTRA_START_ODO_SOURCE = "start_odo_source"
+        const val EXTRA_START_ODO_PHOTO = "start_odo_photo"
+        const val EXTRA_PLATE = "plate"
+        const val EXTRA_PLATE_PHOTO = "plate_photo"
 
         private const val TAG = "TripRecordingService"
         private const val CHANNEL_ID = "trip_recording"
@@ -96,6 +106,11 @@ class TripRecordingService : Service() {
     private var gracefulStopJob: Job? = null
     private var fusedClient: FusedLocationProviderClient? = null
     private var locationCallback: LocationCallback? = null
+    // High-accuracy GPS ground truth, active ONLY while the phone is charging
+    // (car charger = free power budget). Runs alongside cell/fused sampling so
+    // each drive yields (cell, fused, gps) triples — the training corpus for
+    // the central track-calibration model (see ROADMAP "trip calibration").
+    private var gpsCallback: LocationCallback? = null
 
     private var tripId: String? = null
     // Most recent fused fix, so a driver-dropped checkpoint has a position even
@@ -120,13 +135,20 @@ class TripRecordingService : Service() {
                 // re-entered the vehicle at a traffic light / fuel stop)
                 gracefulStopJob?.cancel()
                 gracefulStopJob = null
+                val startOdoKm = intent.getDoubleExtra(EXTRA_START_ODO_KM, Double.NaN)
+                    .let { if (it.isNaN()) null else it }
+                val startOdoSource = intent.getStringExtra(EXTRA_START_ODO_SOURCE)
+                val startOdoPhoto = intent.getStringExtra(EXTRA_START_ODO_PHOTO)
+                val plate = intent.getStringExtra(EXTRA_PLATE)
+                val platePhoto = intent.getStringExtra(EXTRA_PLATE_PHOTO)
                 if (tripId == null) {
                     startRecording(
                         intent.getBooleanExtra(EXTRA_MANUAL, false),
                         intent.getStringExtra(EXTRA_PURPOSE) ?: "business",
                         intent.getStringExtra(EXTRA_PURPOSE_REF),
                         intent.getStringExtra(EXTRA_PURPOSE_LABEL),
-                        intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
+                        intent.getStringExtra(EXTRA_PURPOSE_SOURCE),
+                        startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto
                     )
                 } else if (intent.getBooleanExtra(EXTRA_MANUAL, false)) {
                     // Already recording (auto-detect won the race): the manual
@@ -140,6 +162,8 @@ class TripRecordingService : Service() {
                     val source = intent.getStringExtra(EXTRA_PURPOSE_SOURCE)
                     scope.launch {
                         applyDeclaredPurpose(id, purpose, ref, label, source)
+                        applyStartFields(id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
+                        AppDatabase.getInstance(applicationContext).tripDao().getTrip(id)
                             ?.let { TripManager.publishActiveTrip(it) }
                     }
                 }
@@ -195,9 +219,39 @@ class TripRecordingService : Service() {
             if (trip.purpose != "private") {
                 startCellSampling()
                 startFusedUpdates()
+                updateGpsSampling()
                 startCheckpoints(trip.id)
             }
         }
+    }
+
+    /** Apply the start odometer + vehicle plate to the trip. First reading wins —
+     *  a later start never overwrites a recorded odometer (it is evidence, like
+     *  the earliest purpose declaration). Returns the refreshed trip, or null
+     *  when there was nothing to apply. */
+    private suspend fun applyStartFields(
+        id: String,
+        odoKm: Double?,
+        odoSource: String?,
+        odoPhoto: String?,
+        plate: String?,
+        platePhoto: String?
+    ): TripEntity? {
+        if (odoKm == null && plate.isNullOrBlank()) return null
+        val db = AppDatabase.getInstance(applicationContext)
+        val open = db.tripDao().getTrip(id) ?: return null
+        if (odoKm != null && open.startOdometerKm == null) {
+            db.tripDao().setStartOdometer(id, odoKm, odoSource ?: "manual", odoPhoto)
+            Log.i(TAG, "start odometer applied to trip $id: $odoKm km (${odoSource ?: "manual"})")
+        }
+        if (!plate.isNullOrBlank()) {
+            try {
+                VehicleManager.resolveAndAttach(applicationContext, id, null, plate, platePhoto)
+            } catch (e: Exception) {
+                Log.w(TAG, "plate attach failed: ${e.message}")
+            }
+        }
+        return db.tripDao().getTrip(id)
     }
 
     /** Merge a driver-declared purpose onto the open trip. Refuses to flip a
@@ -233,7 +287,12 @@ class TripRecordingService : Service() {
         purpose: String,
         purposeRef: String? = null,
         purposeLabel: String? = null,
-        purposeSource: String? = null
+        purposeSource: String? = null,
+        startOdoKm: Double? = null,
+        startOdoSource: String? = null,
+        startOdoPhoto: String? = null,
+        plate: String? = null,
+        platePhoto: String? = null
     ) {
         val isPrivate = purpose == "private"
         startForegroundWithNotification(isPrivate)
@@ -263,6 +322,10 @@ class TripRecordingService : Service() {
                 applyDeclaredPurpose(trip.id, purpose, purposeRef, purposeLabel, purposeSource)
                     ?.let { trip = it }
             }
+            // Scanned/typed start odometer + plate arrive IN the start intent and
+            // are applied here, in the same coroutine that owns the trip row.
+            applyStartFields(trip.id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
+                ?.let { trip = it }
 
             tripId = trip.id
             TripManager.serviceRecordingTripId = trip.id
@@ -275,6 +338,7 @@ class TripRecordingService : Service() {
             if (trip.purpose != "private") {
                 startCellSampling()
                 startFusedUpdates()
+                updateGpsSampling()
                 startCheckpoints(trip.id)
             }
         }
@@ -295,6 +359,9 @@ class TripRecordingService : Service() {
             while (true) {
                 delay(wait)
                 wait = CHECKPOINT_INTERVAL_MS
+                // Charger can be (un)plugged mid-trip — re-evaluate the GPS
+                // ground-truth sampling on the checkpoint cadence.
+                updateGpsSampling()
                 try {
                     val json = TripManager.buildUploadJson(applicationContext, id) ?: continue
                     val ok = apiService.uploadTrip(json)
@@ -303,6 +370,58 @@ class TripRecordingService : Service() {
                     Log.w(TAG, "checkpoint upload failed: ${e.message}")
                 }
             }
+        }
+    }
+
+    // ── GPS ground truth while charging ──────────────────────────────────────
+
+    private fun isCharging(): Boolean = try {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+        bm.isCharging
+    } catch (e: Exception) { false }
+
+    /** Start/stop the high-accuracy GPS stream to match the charging state.
+     *  GPS points carry source="gps" through the normal pipeline (upload,
+     *  distance preference) AND pair with the simultaneous cell/fused samples
+     *  as training data for the central calibration model. Battery-neutral by
+     *  construction: only ever active on external power. */
+    @SuppressLint("MissingPermission")
+    private fun updateGpsSampling() {
+        val client = fusedClient ?: return
+        val shouldRun = tripId != null && isCharging() && hasLocationPermission()
+        val running = gpsCallback != null
+        if (shouldRun == running) return
+        if (shouldRun) {
+            val request = LocationRequest.Builder(
+                Priority.PRIORITY_HIGH_ACCURACY, SAMPLE_INTERVAL_MS
+            ).setMinUpdateDistanceMeters(25f).build()
+            val cb = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val id = tripId ?: return
+                    val loc = result.lastLocation ?: return
+                    lastLoc = loc
+                    scope.launch {
+                        AppDatabase.getInstance(applicationContext).tripDao().insertPoint(
+                            TripPointEntity(
+                                tripId = id,
+                                seq = seq.incrementAndGet(),
+                                ts = loc.time,
+                                source = "gps",
+                                lat = loc.latitude,
+                                lng = loc.longitude,
+                                accuracyM = loc.accuracy.toDouble()
+                            )
+                        )
+                    }
+                }
+            }
+            gpsCallback = cb
+            client.requestLocationUpdates(request, cb, mainLooper)
+            Log.i(TAG, "GPS ground-truth sampling ON (charging)")
+        } else {
+            gpsCallback?.let { client.removeLocationUpdates(it) }
+            gpsCallback = null
+            Log.i(TAG, "GPS ground-truth sampling OFF (not charging)")
         }
     }
 
@@ -548,6 +667,8 @@ class TripRecordingService : Service() {
         samplingJob?.cancel()
         checkpointJob?.cancel()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback = null
         tripId = null
         TripManager.serviceRecordingTripId = null
 
@@ -578,6 +699,8 @@ class TripRecordingService : Service() {
 
     override fun onDestroy() {
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
+        gpsCallback = null
         TripManager.serviceRecordingTripId = null
         scope.cancel()
         super.onDestroy()
