@@ -236,6 +236,10 @@ fun MainScreen(
     var tripPendingLabel by remember { mutableStateOf<String?>(null) }
     var tripPendingSource by remember { mutableStateOf("planned") }
     var tripPendingPurpose by remember { mutableStateOf("business") }
+    // Start hex = INTENT (like the spoken declaration): arm instead of starting;
+    // the next IN_VEHICLE transition starts the trip. Destination-based and
+    // private starts stay immediate.
+    var tripPendingArm by remember { mutableStateOf(false) }
     var tripOdometerStart by remember { mutableStateOf(false) }
     var tripOdometerEnd by remember { mutableStateOf(false) }
     // Known vehicles for the start picker (Fahrtenbuch); auto-fill when one.
@@ -277,14 +281,15 @@ fun MainScreen(
                 if (armed) {
                     mainViewModel.addLog("📍 Odometer stop recorded ($km km) — trip auto-ends in 6 h unless driving resumes")
                 } else {
-                    // No open trip: a reading captured while a voice trip intent
-                    // is armed (photo shortly AFTER the command) upgrades its
-                    // estimated odometer to a real reading.
+                    // No open trip: a reading captured while a start intent is
+                    // armed (photo shortly AFTER pressing Start / the voice
+                    // command) upgrades its estimated odometer to a real reading.
                     com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdometer(
                         km,
                         if (mainViewModel.pendingTripKmPhotoId() != null) "photo" else "manual",
                         mainViewModel.pendingTripKmPhotoId()
                     )
+                    mainViewModel.refreshTripGrid()  // Armed-hex checklist update
                 }
             }
         }
@@ -295,7 +300,8 @@ fun MainScreen(
             }
         }
         // Purpose typed/dictated while a trip is RECORDING → merge it onto the
-        // open trip now (the field alone only feeds the NEXT start).
+        // open trip now (the field alone only feeds the NEXT start). While a
+        // start intent is ARMED instead → it becomes the intent's destination.
         mainViewModel.onTripPurposeCaptured = { label ->
             tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 val open = com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
@@ -307,6 +313,12 @@ fun MainScreen(
                         purposeSource = "text"
                     )
                     mainViewModel.addLog("🚗 Ziel übernommen: „$label\" (laufende Fahrt)")
+                } else if (open == null &&
+                    com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent() != null
+                ) {
+                    com.xelth.eckwms_movfast.trips.TripManager.bindTripIntentClient(null, label)
+                    mainViewModel.addLog("🕐 Armed trip destination: „$label\"")
+                    mainViewModel.refreshTripGrid()  // Armed-hex checklist update
                 }
             }
         }
@@ -316,34 +328,73 @@ fun MainScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            // Plate/Km pre-set on the hex field menus ride IN the start intent —
-            // the service applies them atomically with the trip row. (The old
-            // post-start getOpenTrip() write raced the service's async insert
-            // and silently lost the scanned odometer.) OCR photos are already
-            // in CAS at capture time; only the ids are linked here.
-            val pPlate = mainViewModel.pendingTripPlate()
-            val pKm = mainViewModel.pendingTripKm()
-            com.xelth.eckwms_movfast.trips.TripManager.startTrip(
-                context, manual = true, purpose = tripPendingPurpose,
-                purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
-                purposeSource = tripPendingSource,
-                startOdometerKm = pKm,
-                startOdometerSource = if (pKm != null) "manual" else null,
-                startOdometerPhotoId = mainViewModel.pendingTripKmPhotoId(),
-                plate = pPlate,
-                platePhotoId = mainViewModel.pendingTripPlatePhotoId()
-            )
-            if (pPlate != null || pKm != null) {
-                mainViewModel.markTripFieldsAuto()
+            if (tripPendingArm) {
+                // Start hex = declared INTENT (same semantics as the spoken
+                // declaration): the trip starts on the next vehicle movement;
+                // no movement within the 2 h TTL → silently forgotten.
+                val armLabel = tripPendingLabel ?: ""
+                val armSource = tripPendingSource
+                tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val open = com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
+                    if (open != null) {
+                        mainViewModel.addLog("🚗 Trip already running")
+                        return@launch
+                    }
+                    com.xelth.eckwms_movfast.trips.TripManager
+                        .armTripIntent(context, armLabel, ref = null, source = armSource)
+                    // Explicitly set field values beat the last-trip presets.
+                    mainViewModel.pendingTripKm()?.let { km ->
+                        com.xelth.eckwms_movfast.trips.TripManager.attachIntentOdometer(
+                            km,
+                            if (mainViewModel.pendingTripKmPhotoId() != null) "photo" else "manual",
+                            mainViewModel.pendingTripKmPhotoId()
+                        )
+                    }
+                    mainViewModel.pendingTripPlate()?.let { p ->
+                        com.xelth.eckwms_movfast.trips.TripManager.bindTripIntentVehicle(null, p)
+                    }
+                    mainViewModel.addLog(
+                        "🕐 Start armed — trip begins on movement (auto-expires in 2 h)" +
+                            (armLabel.takeIf { it.isNotBlank() }?.let { " · „$it\"" } ?: "")
+                    )
+                    if (!com.xelth.eckwms_movfast.trips.TripManager.hasActivityPermission(context) ||
+                        !com.xelth.eckwms_movfast.utils.SettingsManager.getTripAutoDetect()
+                    ) {
+                        mainViewModel.addLog("⚠ Auto-Start is OFF — the armed trip can't begin; enable it in ⚙ Settings")
+                    }
+                    mainViewModel.refreshTripGrid()
+                }
             } else {
-                // Nothing pre-set → fall back to the odometer/vehicle dialog.
-                tripOdometerStart = true
+                // Plate/Km pre-set on the hex field menus ride IN the start intent —
+                // the service applies them atomically with the trip row. (The old
+                // post-start getOpenTrip() write raced the service's async insert
+                // and silently lost the scanned odometer.) OCR photos are already
+                // in CAS at capture time; only the ids are linked here.
+                val pPlate = mainViewModel.pendingTripPlate()
+                val pKm = mainViewModel.pendingTripKm()
+                com.xelth.eckwms_movfast.trips.TripManager.startTrip(
+                    context, manual = true, purpose = tripPendingPurpose,
+                    purposeRef = tripPendingRef, purposeLabel = tripPendingLabel,
+                    purposeSource = tripPendingSource,
+                    startOdometerKm = pKm,
+                    startOdometerSource = if (pKm != null) "manual" else null,
+                    startOdometerPhotoId = mainViewModel.pendingTripKmPhotoId(),
+                    plate = pPlate,
+                    platePhotoId = mainViewModel.pendingTripPlatePhotoId()
+                )
+                if (pPlate != null || pKm != null) {
+                    mainViewModel.markTripFieldsAuto()
+                } else {
+                    // Nothing pre-set → fall back to the odometer/vehicle dialog.
+                    tripOdometerStart = true
+                }
             }
         }
     }
     // Destination-based start (from a ticket / typed address) → always business.
     val tripStart: (String?, String?, String) -> Unit = { ref, label, src ->
         tripPendingPurpose = "business"
+        tripPendingArm = false
         tripPendingRef = ref; tripPendingLabel = label; tripPendingSource = src
         tripStartLauncher.launch(
             arrayOf(
@@ -352,10 +403,13 @@ fun MainScreen(
             )
         )
     }
-    // Hex sub-menu start (no destination): business or private. A free-text
-    // Purpose typed on the Purpose field hex-menu rides along as the label.
+    // Hex start (no destination): business ARMS an intent (starts on movement,
+    // like the spoken declaration); private starts immediately (records no
+    // positions anyway). A free-text Purpose typed on the Purpose field
+    // hex-menu rides along as the label.
     val tripStartWithPurpose: (String) -> Unit = { purpose ->
         tripPendingPurpose = purpose
+        tripPendingArm = purpose != "private"
         val purposeText = mainViewModel.pendingTripPurposeText()
         tripPendingRef = null
         tripPendingLabel = if (purpose == "private") null else purposeText
@@ -519,7 +573,8 @@ fun MainScreen(
                 )
                 android.widget.Toast.makeText(context, "📍 Checkpoint saved", android.widget.Toast.LENGTH_SHORT).show()
             }
-            // ⛽ Refuel: open the fuel HEX sub-menu, prefilling the odometer estimate.
+            // 🧾 Expense (fuel/parking/toll/receipt): open the expense HEX
+            // sub-menu, prefilling the odometer estimate.
             "trip_fuel" -> {
                 fuelReceiptPhotoId = null
                 tripScope.launch {
@@ -530,10 +585,12 @@ fun MainScreen(
             "trip_fuel_ocr" -> { tripScanMgr?.suspendScanService(); fuelOdoLauncher.launch(null) }
             "trip_fuel_receipt" -> { tripScanMgr?.suspendScanService(); fuelReceiptLauncher.launch(null) }
             "trip_fuel_save" -> {
-                com.xelth.eckwms_movfast.trips.TripManager.logFuel(
-                    context, mainViewModel.currentFuelOdometer(), mainViewModel.currentFuelSource(), fuelReceiptPhotoId
+                val expenseType = mainViewModel.currentExpenseType()
+                com.xelth.eckwms_movfast.trips.TripManager.logExpense(
+                    context, expenseType, mainViewModel.currentFuelOdometer(),
+                    mainViewModel.currentFuelSource(), fuelReceiptPhotoId
                 )
-                android.widget.Toast.makeText(context, "⛽ Fuel logged", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "🧾 Expense logged ($expenseType)", android.widget.Toast.LENGTH_SHORT).show()
             }
             // 📷 OCR on the Plate/Km field hex-menu → capture a photo, ML Kit reads
             // it, applyTripFieldValue fills the field (green). Suspend the hardware
@@ -1312,6 +1369,7 @@ fun MainScreen(
                                                 (ti.odoKm?.let { " · ab ≈${it.toInt()} km" } ?: "") +
                                                 (ti.plate?.let { " · $it" } ?: "")
                                         )
+                                        mainViewModel.refreshTripGrid()  // Start hex → yellow "Armed"
                                         // Client binding: a NAMED client binds directly on an
                                         // unambiguous match (the naming IS the declaration);
                                         // an inferred single candidate is prefilled and logged

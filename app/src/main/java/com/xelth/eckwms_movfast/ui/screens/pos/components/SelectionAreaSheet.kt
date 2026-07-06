@@ -164,7 +164,9 @@ fun SelectionAreaSheet(
                     content is Map<*, *> && content["type"] == "button" -> {
                         label = content["label"] as? String ?: ""
                         color = content["color"] as? String ?: "#3a3a3a"
-                        enabled = true
+                        // Buttons may carry an "enabled" flag (state-gated hexes
+                        // like trip Start/Stop) — dimmed + click-inert when false.
+                        enabled = content["enabled"] as? Boolean ?: true
                     }
                     else -> {
                         label = ""

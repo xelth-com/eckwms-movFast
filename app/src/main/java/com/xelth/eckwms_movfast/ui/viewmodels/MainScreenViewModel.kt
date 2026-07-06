@@ -578,7 +578,28 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
+    /** Checklist line for an armed start intent: what it still lacks (🔖 plate /
+     *  🔢 odometer / 🎯 purpose, "?"-marked), "✓" once everything is aboard.
+     *  Shown on the MAIN-MENU Trips hex — the armed state is visible (and
+     *  cancellable via trip mode) without entering trip mode. */
+    private fun intentChecklist(i: com.xelth.eckwms_movfast.trips.TripManager.TripIntent): String {
+        val missing = buildString {
+            if (i.plate.isNullOrBlank()) append("🔖?")
+            if (i.odoKm == null) append("🔢?")
+            if (i.label.isBlank()) append("🎯?")
+        }
+        return missing.ifEmpty { "✓" }
+    }
+
     private fun initializeGrid() {
+        // Trips is the trip-state indicator: blue-grey car while idle, YELLOW
+        // with the armed checklist while a start intent is pending (the
+        // "decorated" state lives HERE, not on the inner Start hex), green car
+        // (🚙 renders green on Android) while a Fahrt is recording — all
+        // visible without entering trip mode.
+        val tripActive = _tripRecording.value == true
+        val armedIntent = if (tripActive) null
+            else com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent()
         val buttons = listOf(
             MainMenuButton("settings", "⚙️\nSettings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
             MainMenuButton("repair", "🔧\nRepair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
@@ -590,7 +611,18 @@ class MainScreenViewModel : ViewModel() {
             MainMenuButton("qc", "QC", "#F44336", "navigate_qc", PRIORITIES.DEFAULT),
             MainMenuButton("explorer", "🔎\nExplorer", "#2196F3", "navigate_explorer", PRIORITIES.DEFAULT),
             MainMenuButton("pos", "💶\nPOS", "#4CAF50", "navigate_pos", PRIORITIES.DEFAULT),
-            MainMenuButton("trips", "🚗\nTrips", "#607D8B", "navigate_trips", PRIORITIES.DEFAULT)
+            MainMenuButton("trips",
+                when {
+                    tripActive -> "🚙\nTrip●"
+                    armedIntent != null -> "🕐 Armed\n" + intentChecklist(armedIntent)
+                    else -> "🚗\nTrips"
+                },
+                when {
+                    tripActive -> "#2E7D32"
+                    armedIntent != null -> "#F9A825"
+                    else -> "#607D8B"
+                },
+                "navigate_trips", PRIORITIES.DEFAULT)
         )
 
         val contentItems = buttons.map { button ->
@@ -1598,7 +1630,6 @@ class MainScreenViewModel : ViewModel() {
 
     fun exitTripMode() {
         _isTripMode.value = false
-        tripStartMenu = false
         tripSettingsMenu = false
         tripFieldMenu = null
         addLog("Exited Trip Mode")
@@ -1610,9 +1641,23 @@ class MainScreenViewModel : ViewModel() {
         if (_tripRecording.value != recording) {
             _tripRecording.value = recording
             _tripStatus.value = if (recording) "🚗 Trip running" else "Trips"
-            if (_isTripMode.value == true) renderTripGrid()
+            if (_isTripMode.value == true) {
+                renderTripGrid()
+            } else if (atRootMenu()) {
+                // Refresh the main menu so the Trips hex flips its car/colour
+                // indicator (red/idle ↔ green/recording).
+                initializeGrid()
+            }
         }
     }
+
+    /** True when no workspace mode is active (the root main-menu grid is showing) —
+     *  the only state where a background re-render of the main grid is safe. */
+    private fun atRootMenu(): Boolean =
+        _isRepairMode.value != true && _isRestockMode.value != true &&
+        _isInventoryMode.value != true && _isReceivingMode.value != true &&
+        _isTripMode.value != true && _isDeviceCheckMode.value != true &&
+        _isNetworkMode.value != true
 
     /** Auto-detect toggle reflection — set from MainScreen after the permission. */
     fun setTripAutoDetect(enabled: Boolean) {
@@ -1620,27 +1665,36 @@ class MainScreenViewModel : ViewModel() {
         if (_isTripMode.value == true) renderTripGrid()
     }
 
-    // Trip START/STOP sub-menu (replaces the old TripsScreen panel — everything
-    // on hexagons now). `🚗 Fahrt` opens it; ◀ goes back.
-    private var tripStartMenu = false
+    /** External re-render hook (MainScreen) — e.g. after arming a start intent
+     *  so the Start hex flips to the yellow "Armed" state. Also refreshes the
+     *  ROOT menu when it is showing: the main-menu Trips hex carries the armed
+     *  checklist now (voice-armed intents happen from the main menu). */
+    fun refreshTripGrid() {
+        if (_isTripMode.value == true) renderTripGrid()
+        else if (atRootMenu()) initializeGrid()
+    }
+
     // Trip SETTINGS sub-menu — holds the auto-detect + live-server toggles so
     // they aren't fat-fingered on the main grid. `⚙️ Settings` opens it; ◀ back.
     private var tripSettingsMenu = false
 
     // ── Trip FIELD entry (Kennzeichen / Kilometerstand / Purpose) ──────────────
-    // Three field buttons on the start sub-menu, each opening its own hex sub-menu
+    // Three field buttons on the trip grid, each opening its own hex sub-menu
     // with known values + a Photo→OCR key + a paged hex-KEYBOARD (all free hexes
     // become keys). No bottom text field. Button colour = state:
     //   red   = empty (nothing chosen)
     //   yellow= auto (system pulled a previous value, not user-confirmed)
     //   green = user (explicitly set/typed/OCR'd this trip)
     private var tripFieldMenu: String? = null   // null | "plate" | "km" | "purpose"
-    // ⛽ Fuel entry lives ON the hexes (no modal): the numeric keypad edits the
+    // 🧾 Expense entry lives ON the hexes (no modal): the numeric keypad edits the
     // odometer (shared tripEntryBuffer), the global 📷 becomes the receipt capture,
-    // a hex OCRs the exact odometer, and Save writes the fuel event.
+    // a hex OCRs the exact odometer, and Save writes the expense event. ONE button
+    // covers the whole family — a receipt photo alone is enough; picking a type
+    // (⛽/🅿/🛣) just annotates it and rides along to the server.
     private var tripFuelMenu = false
     private var tripFuelSource = "estimated"     // estimated | manual | scanned
     private var tripFuelReceiptOk = false
+    private var tripExpenseType: String? = null  // null (plain receipt) | fuel | parking | toll
     private var tripKeyPage = 0
     private var tripEntryBuffer = ""
     private var tripPlate: String? = null;   private var tripPlateSource = "empty"
@@ -1677,7 +1731,7 @@ class MainScreenViewModel : ViewModel() {
         if (_isTripMode.value == true) renderTripGrid()
     }
 
-    /** Label for a field button on the start sub-menu. Once a value is set the hex
+    /** Label for a field button on the trip grid. Once a value is set the hex
      *  shows the VALUE (icon + value) instead of the "Plate/Km/Purpose" caption —
      *  yellow/green buttons carry data, so the caption is redundant. Long values are
      *  truncated to what fits on a hex. */
@@ -1712,7 +1766,14 @@ class MainScreenViewModel : ViewModel() {
 
     private fun setTripField(field: String, value: String?, source: String) {
         when (field) {
-            "plate" -> { tripPlate = value; tripPlateSource = source }
+            "plate" -> {
+                tripPlate = value; tripPlateSource = source
+                // A plate set while a start intent is armed upgrades the intent's
+                // last-trip preset (no-op when nothing is armed).
+                if (source == "user") value?.takeIf { it.isNotBlank() }?.let {
+                    com.xelth.eckwms_movfast.trips.TripManager.bindTripIntentVehicle(null, it)
+                }
+            }
             "km" -> {
                 tripKm = value; tripKmSource = source
                 if (source == "user") value?.toDoubleOrNull()?.let { onTripKmCaptured?.invoke(it) }
@@ -1760,13 +1821,14 @@ class MainScreenViewModel : ViewModel() {
         _tripStatus.value = "${fieldName(f)}: ${tripEntryBuffer}▮"
     }
 
-    // ── ⛽ Fuel hex sub-menu (no modal) ────────────────────────────────────────
-    /** Open the fuel hex sub-menu, prefilling the odometer with the track estimate. */
+    // ── 🧾 Expense hex sub-menu (no modal) ────────────────────────────────────
+    /** Open the expense hex sub-menu, prefilling the odometer with the track estimate. */
     fun openFuelMenu(estimate: String?) {
         tripFuelMenu = true
         tripEntryBuffer = estimate ?: ""
         tripFuelSource = "estimated"
         tripFuelReceiptOk = false
+        tripExpenseType = null
         if (_isTripMode.value == true) renderTripGrid()
     }
     /** Odometer scanned (km OCR) → overwrite the buffer, mark it exact. */
@@ -1782,6 +1844,8 @@ class MainScreenViewModel : ViewModel() {
     }
     fun currentFuelOdometer(): Double? = tripEntryBuffer.trim().toDoubleOrNull()
     fun currentFuelSource(): String = tripFuelSource
+    /** The picked expense type, defaulting to a plain "receipt" when none was. */
+    fun currentExpenseType(): String = tripExpenseType ?: "receipt"
 
     /** Field sub-menu on hexes. Two shapes:
      *  • KM (number only): a numeric hex keypad (0-9 + dot) — big, fixed-position
@@ -1811,16 +1875,33 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
-    /** ⛽ Fuel sub-menu on hexes (mirrors the km field keypad + a Save + odometer
-     *  OCR). The receipt capture rides the global 📷 button (relabelled below). */
+    private val expenseTypes = listOf(
+        Triple("fuel", "⛽", "Fuel"),
+        Triple("parking", "🅿", "Parking"),
+        Triple("toll", "🛣", "Toll")
+    )
+    private fun expenseIcon(type: String?): String =
+        expenseTypes.firstOrNull { it.first == type }?.second ?: "🧾"
+
+    /** 🧾 Expense sub-menu on hexes (mirrors the km field keypad + a Save +
+     *  odometer OCR + the optional TYPE row). The receipt photo — enough by
+     *  itself — rides the global 📷 button (relabelled below); a picked type
+     *  is saved with the receipt info, tapping it again unpicks it. */
     private fun renderTripFuelMenu(uiItems: MutableList<Map<String, Any>>) {
-        // Save — green, shows the current odometer buffer.
+        // Save — green, shows the picked type icon + current odometer buffer.
         uiItems.add(mapOf("type" to "button",
-            "label" to "⛽\nSave\n" + tripEntryBuffer.ifBlank { "?" } + " km",
+            "label" to expenseIcon(tripExpenseType) + "\nSave\n" + tripEntryBuffer.ifBlank { "?" } + " km",
             "color" to "#2E7D32", "action" to "trip_fuel_save"))
         uiItems.add(mapOf("type" to "button", "label" to "⌫\nDel", "color" to "#546E7A", "action" to "trip_key_bs"))
         // OCR the exact odometer into the buffer.
         uiItems.add(mapOf("type" to "button", "label" to "📷\nScan odo", "color" to "#37474F", "action" to "trip_fuel_ocr"))
+        // Type row — optional annotation, selected renders blue.
+        expenseTypes.forEach { (key, icon, name) ->
+            uiItems.add(mapOf("type" to "button",
+                "label" to "$icon\n$name",
+                "color" to if (tripExpenseType == key) "#1565C0" else "#37474F",
+                "action" to "trip_expense_type:$key"))
+        }
         // Numeric keypad (same digits as the km field).
         keySetFor("km").forEach { k ->
             uiItems.add(mapOf("type" to "button", "label" to k, "color" to "#263238", "action" to "trip_key:$k"))
@@ -1836,27 +1917,6 @@ class MainScreenViewModel : ViewModel() {
             renderTripFuelMenu(uiItems)
         } else if (tripFieldMenu != null) {
             renderTripFieldMenu(uiItems, tripFieldMenu!!)
-        } else if (tripStartMenu) {
-            // ── Start/Stop sub-menu (on hexes, no separate panel) ──
-            // No full Back hex — the ✕ half-button already steps out of this menu.
-            if (recording) {
-                uiItems.add(mapOf("type" to "button", "label" to "⏹\nStop", "color" to "#C62828", "action" to "trip_stop"))
-            } else {
-                uiItems.add(mapOf("type" to "button", "label" to "🚗\nStart", "color" to "#2E7D32", "action" to "trip_start_business"))
-                uiItems.add(mapOf("type" to "button", "label" to "🔒\nPrivate", "color" to "#546E7A", "action" to "trip_start_private"))
-            }
-            // Three field buttons — colour shows state (red empty / yellow auto /
-            // green user-set); each opens its own hex sub-menu (known values +
-            // Photo→OCR + paged hex-keyboard). Replaces the old Km/Kfz dialog.
-            uiItems.add(mapOf("type" to "button",
-                "label" to fieldButtonLabel("plate", "🔖", "Plate"),
-                "color" to fieldColor(tripPlateSource), "action" to "trip_field:plate"))
-            uiItems.add(mapOf("type" to "button",
-                "label" to fieldButtonLabel("km", "🔢", "Km"),
-                "color" to fieldColor(tripKmSource), "action" to "trip_field:km"))
-            uiItems.add(mapOf("type" to "button",
-                "label" to fieldButtonLabel("purpose", "🎯", "Purpose"),
-                "color" to fieldColor(tripPurposeSource), "action" to "trip_field:purpose"))
         } else if (tripSettingsMenu) {
             // ── Settings sub-menu (on hexes): the two toggles live here now so
             // they aren't fat-fingered on the main trip grid. ✓/✕ shows state. ──
@@ -1878,14 +1938,22 @@ class MainScreenViewModel : ViewModel() {
                 "action" to "trip_toggle_liveshare"
             ))
         } else {
-            // LEFTMOST: a Settings hex (where Auto-Start used to be, deliberately
-            // the hard-to-reach left key) opens the sub-menu with the auto-detect
-            // + live-server toggles.
+            // Row-major flow onto the fixed hex geometry (row 0: col 1 free —
+            // Photo/Scan pinned at 3/5; row 1: cols 0/2 free — 🎤 Audio pinned
+            // at 4). Item order IS the layout:
+            //   row 1: Settings              row 2: Private · Me · (Audio)
+            //   row 3: Start · Checkpoint · Stop
+            //   row 4: Plate · Km · Purpose  then cities; Expense pinned at the bottom.
             uiItems.add(mapOf(
                 "type" to "button",
                 "label" to "⚙️\nSettings",
                 "color" to "#455A64",
                 "action" to "trip_open_settings"
+            ))
+            uiItems.add(mapOf(
+                "type" to "button", "label" to "🔒\nPrivate",
+                "color" to if (recording) "#424242" else "#546E7A",
+                "action" to "trip_start_private", "enabled" to !recording
             ))
             // 📍 Recenter the map on the current position (keeps zoom). A hex here —
             // no overlay button on the map (plenty of free hexes).
@@ -1895,33 +1963,53 @@ class MainScreenViewModel : ViewModel() {
                 "color" to "#37474F",
                 "action" to "trip_recenter"
             ))
-            // Photo / Scan / 🎤 are pinned globally via placeSystemButtons.
-            // Opens the on-hex start/stop sub-menu (no panel). Colour reflects the
-            // trip state: GREEN while a Fahrt is running, GREY when idle.
+            // Start = INTENT (like the spoken declaration): arming turns the hex
+            // yellow (tap cancels); the trip starts on movement, or the intent
+            // silently expires after 2 h (peekTripIntent clears it). The hex is a
+            // plain traffic light — grey idle, YELLOW armed, GREEN once Android
+            // actually detects driving. The checklist decoration lives on the
+            // MAIN-MENU Trips hex (initializeGrid), not here.
+            val armedIntent = if (recording) null
+                else com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent()
+            uiItems.add(when {
+                recording -> mapOf(
+                    "type" to "button", "label" to "🚗\nStart",
+                    "color" to "#2E7D32", "action" to "trip_start_business", "enabled" to false
+                )
+                armedIntent != null -> mapOf(
+                    "type" to "button", "label" to "🕐\nStart",
+                    "color" to "#F9A825", "action" to "trip_cancel_intent", "enabled" to true
+                )
+                else -> mapOf(
+                    "type" to "button", "label" to "🚗\nStart",
+                    "color" to "#607D8B", "action" to "trip_start_business", "enabled" to true
+                )
+            })
+            // One-tap "drop a stop" — records the current position as a manual
+            // checkpoint on THIS trip (multi-stop trip, no stop/restart) and
+            // uploads it immediately.
             uiItems.add(mapOf(
-                "type" to "button",
-                "label" to if (recording) "🚗\nTrip●" else "🚗\nNew Trip",
-                "color" to if (recording) "#2E7D32" else "#455A64",
-                "action" to "trip_open_start"
+                "type" to "button", "label" to "📍\nCheckpoint",
+                "color" to if (recording) "#00695C" else "#424242",
+                "action" to "trip_checkpoint", "enabled" to recording
             ))
-            // While recording, a one-tap "drop a stop" — records the current
-            // position as a manual checkpoint on THIS trip (multi-stop trip, no
-            // stop/restart) and uploads it immediately.
-            if (recording) {
-                uiItems.add(mapOf(
-                    "type" to "button",
-                    "label" to "📍\nCheckpoint",
-                    "color" to "#00695C",
-                    "action" to "trip_checkpoint"
-                ))
-                // Log a refuel (odometer + receipt photo) on this trip.
-                uiItems.add(mapOf(
-                    "type" to "button",
-                    "label" to "⛽\nFuel",
-                    "color" to "#00695C",
-                    "action" to "trip_fuel"
-                ))
-            }
+            uiItems.add(mapOf(
+                "type" to "button", "label" to "⏹\nStop",
+                "color" to if (recording) "#C62828" else "#424242",
+                "action" to "trip_stop", "enabled" to recording
+            ))
+            // Three field buttons (pulled out of the old start sub-menu) — colour
+            // shows state (red empty / yellow auto / green user-set); each opens
+            // its own hex sub-menu (known values + Photo→OCR + keypad/keyboard).
+            uiItems.add(mapOf("type" to "button",
+                "label" to fieldButtonLabel("plate", "🔖", "Plate"),
+                "color" to fieldColor(tripPlateSource), "action" to "trip_field:plate"))
+            uiItems.add(mapOf("type" to "button",
+                "label" to fieldButtonLabel("km", "🔢", "Km"),
+                "color" to fieldColor(tripKmSource), "action" to "trip_field:km"))
+            uiItems.add(mapOf("type" to "button",
+                "label" to fieldButtonLabel("purpose", "🎯", "Purpose"),
+                "color" to fieldColor(tripPurposeSource), "action" to "trip_field:purpose"))
             // City buttons (cities with waiting tickets). Tap → console shows that
             // city's tickets. "All" clears the filter.
             if (tripSelectedCity != null) {
@@ -1956,6 +2044,23 @@ class MainScreenViewModel : ViewModel() {
                 else -> "📷\nPhoto"
             }
         )
+        if (!tripFuelMenu && tripFieldMenu == null && !tripSettingsMenu) {
+            // 🧾 ONE expense button for the whole trip-cost family (fuel /
+            // parking / toll), pinned at the BOTTOM row, away from the driving
+            // controls. Inside: receipt photo (enough by itself), odometer OCR
+            // and optional type hexes. Cities flow around the reserved slot.
+            val bottomRow = (gridManager.dimensions.first - 1).coerceAtLeast(4)
+            val bottomCol = if (bottomRow % 2 == 0) 3 else 2   // centre full hex
+            gridManager.placeSystemElements(listOf(SystemElement(
+                bottomRow, bottomCol,
+                mapOf(
+                    "type" to "button", "label" to "🧾\nExpense",
+                    "color" to if (recording) "#00695C" else "#424242",
+                    "action" to "trip_fuel", "enabled" to recording
+                ),
+                PRIORITIES.SYSTEM_FIXED, "expense"
+            )))
+        }
         gridManager.placeItems(uiItems, priority = 100)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
         updateRenderCells()
@@ -1970,7 +2075,6 @@ class MainScreenViewModel : ViewModel() {
                 when {
                     tripFuelMenu -> { tripFuelMenu = false; renderTripGrid() }
                     tripFieldMenu != null -> { tripFieldMenu = null; renderTripGrid() }
-                    tripStartMenu -> { tripStartMenu = false; renderTripGrid() }
                     tripSettingsMenu -> { tripSettingsMenu = false; renderTripGrid() }
                     tripSelectedCity != null -> refreshTripDestinations()
                     else -> exitTripMode()
@@ -1984,9 +2088,6 @@ class MainScreenViewModel : ViewModel() {
                 refreshTripDestinations(city = action.removePrefix("trip_city:"))
                 "handled"
             }
-            // Open / close the start-stop sub-menu (stays in the grid).
-            action == "trip_open_start" -> { tripStartMenu = true; renderTripGrid(); "handled" }
-            action == "trip_submenu_back" -> { tripStartMenu = false; renderTripGrid(); "handled" }
             // Open / close the settings sub-menu (auto-detect + live-server toggles).
             action == "trip_open_settings" -> { tripSettingsMenu = true; renderTripGrid(); "handled" }
             action == "trip_settings_back" -> { tripSettingsMenu = false; renderTripGrid(); "handled" }
@@ -2013,9 +2114,14 @@ class MainScreenViewModel : ViewModel() {
                 if (tripFuelMenu) tripFuelSource = "manual"
                 updateFieldStatus(); renderTripGrid(); "handled"
             }
-            // ── ⛽ Fuel sub-menu actions (MainScreen owns camera + logFuel) ──
+            // ── 🧾 Expense sub-menu actions (MainScreen owns camera + logExpense) ──
             action == "trip_fuel_ocr" -> "trip_fuel_ocr"          // OCR exact odometer
             action == "trip_fuel_receipt" -> "trip_fuel_receipt"  // capture receipt
+            action.startsWith("trip_expense_type:") -> {
+                val t = action.removePrefix("trip_expense_type:")
+                tripExpenseType = if (tripExpenseType == t) null else t   // tap again = unpick
+                renderTripGrid(); "handled"
+            }
             action == "trip_fuel_save" -> { tripFuelMenu = false; renderTripGrid(); "trip_fuel_save" }
             action == "trip_key_page" -> { tripKeyPage++; renderTripGrid(); "handled" }
             // ⌨ Keyboard on a text field → MainScreen opens the Android soft keyboard
@@ -2041,12 +2147,17 @@ class MainScreenViewModel : ViewModel() {
             // applyTripFieldValue(field, text) with the recognised value.
             action == "trip_ocr" -> "trip_ocr:${tripFieldMenu ?: "plate"}"
             // Start/stop/odometer need MainScreen (TripManager + dialogs +
-            // permissions) — return the action and drop back to the main grid.
+            // permissions) — return the action; setTripRecording re-renders the
+            // grid when the state actually flips.
             action == "trip_start_business" || action == "trip_start_private" ||
-                action == "trip_stop" || action == "trip_odometer" -> {
-                tripStartMenu = false
+                action == "trip_stop" || action == "trip_odometer" -> action
+            // Cancel an armed (not yet consumed) start intent — tap on the
+            // yellow "Armed" hex. Pure prefs write, no context needed.
+            action == "trip_cancel_intent" -> {
+                com.xelth.eckwms_movfast.trips.TripManager.clearTripIntent()
+                addLog("🕐 Start intent cancelled")
                 renderTripGrid()
-                action
+                "handled"
             }
             // context-bound — handled in MainScreen (needs the permission flow)
             action == "trip_toggle_autodetect" -> "trip_toggle_autodetect"

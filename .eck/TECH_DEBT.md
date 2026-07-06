@@ -1,5 +1,21 @@
 # Tech Debt
 
+## Trips — open field-test issues (2026-07-06)
+
+- **2 h auto-trip with ZERO points (14:36–16:45 Walldorf→Würzburg leg).** The trip row
+  was created on IN_VEHICLE ENTER and finalized at arrival (EXIT → graceful stop resolved
+  the open trip through the DB), but not a single point — not even cell — was recorded in
+  between. Most likely the FGS died right after the row insert and the sticky restart never
+  came (or came without resuming sampling); the EXIT then started the service purely as a
+  command carrier. Needs a periodic alive-check (e.g. WorkManager heartbeat that restarts
+  the FGS when an open non-private trip has no fresh points for >10 min).
+- **A false IN_VEHICLE ENTER consumes the armed intent.** 18:39 the armed start fired on a
+  spurious ENTER while parked (9 stationary points), the driver closed the 2-min phantom
+  manually — and the intent was gone, so the REAL drive 20 min later would have started as a
+  plain unlabeled trip (it didn't start at all that day only because of the
+  package-replace bug, now fixed). Consider re-arming the intent when a from-intent trip
+  ends within ~3 min with <200 m of track.
+
 ## Active TODOs in Code
 
 1. ~~**`ScanScreen.kt:683`** — `TODO: Extract target location barcode from step params`~~
@@ -8,6 +24,25 @@
    `targetLocation` / `location` / `barcode`, first non-blank wins, URL-encoded). If no
    target is configured it opens the map with **no** highlight (the `warehouseMap` route's
    `target` arg is nullable) instead of the fake `p-LOC-001` placeholder.
+
+## Release & distribution
+
+- **Self-service + forced password-change UI — ✅ SHIPPED (`0fc42d5`, 2026-07-04).** Dialog in
+  the user/session menu + a non-dismissable FORCED variant after PIN login when the account is
+  flagged `mustChangePassword` (bulk-seeded staff). Calls `POST {base}/api/auth/change-password`
+  with the device Bearer + relay failover; `PasswordPolicy` validator (+7 JVM tests, suite 63
+  green). Activates automatically once the backend returns `mustChangePassword` on
+  `/api/users/verify-pin` or `/api/users/active` (9eck `9dbee89`).
+- **APK rollout to the rest of the PDA fleet — OPEN.** The `0fc42d5` paid-debug build was
+  installed (`adb install -r`) only on the one USB-connected Ranger2 (`MT15AEM24120007`). Every
+  other managed PDA still runs an older build and needs the same manual `adb`/MDM install — there
+  is NO in-app OTA/self-update path and no APK-serving server route, and the release keystore
+  (`../keystore.jks`) is absent on the dev box (only the machine's debug keystore signs, so
+  `install -r` upgrades cleanly on a device that already has a debug-signed build). Decide a real
+  distribution channel (MDM push / Play `free` flavor / a hosted APK on `movfast.de`).
+- **`versionCode` still `1`.** Never bumped across builds. `adb install -r` (same signature) works
+  regardless, but nothing can tell "newer" from "older", and any future update-check by
+  versionCode is a no-op. Bump per release.
 
 ## Structural Issues
 

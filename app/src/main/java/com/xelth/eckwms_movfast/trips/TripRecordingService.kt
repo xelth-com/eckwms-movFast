@@ -61,9 +61,11 @@ class TripRecordingService : Service() {
         // — records the current position as a `manual` point and forces an immediate
         // checkpoint upload, so one trip can hold several stops without stop/restart.
         const val ACTION_CHECKPOINT = "trip_checkpoint"
-        // Refuel event on the OPEN trip: records a `fuel` point (odometer + receipt
-        // photo id) — a Tankbeleg the server promotes to a durable fuel_events row.
+        // Expense event on the OPEN trip: records a `fuel`/`parking`/`toll`/
+        // `receipt` point (odometer + receipt photo id) — a tax document the
+        // server promotes into the durable fuel_events array.
         const val ACTION_FUEL = "trip_fuel"
+        const val EXTRA_EXPENSE_TYPE = "expense_type"   // fuel | parking | toll | receipt
         // Odometer photographed at a stop (validated by TripManager): drop a stop
         // marker, ARM the tentative end (6 h grace → auto-end at the photo moment)
         // and push an immediate checkpoint.
@@ -184,7 +186,8 @@ class TripRecordingService : Service() {
             ACTION_STOP_GRACEFUL -> scheduleGracefulStop()
             ACTION_STOP -> finalizeAndStop()
             ACTION_CHECKPOINT -> recordManualCheckpoint(intent.getStringExtra(EXTRA_LABEL))
-            ACTION_FUEL -> recordFuelEvent(
+            ACTION_FUEL -> recordExpenseEvent(
+                intent.getStringExtra(EXTRA_EXPENSE_TYPE) ?: "fuel",
                 intent.getDoubleExtra(EXTRA_ODO_KM, Double.NaN).let { if (it.isNaN()) null else it },
                 intent.getStringExtra(EXTRA_ODO_SOURCE),
                 intent.getStringExtra(EXTRA_PHOTO_ID)
@@ -566,8 +569,8 @@ class TripRecordingService : Service() {
      *  and the receipt photo CAS id, then uploads immediately. The server promotes
      *  it to a durable fuel_events row (survives point pruning — it's a tax doc). */
     @SuppressLint("MissingPermission")
-    private fun recordFuelEvent(odometerKm: Double?, source: String?, photoId: String?) {
-        val id = tripId ?: run { Log.w(TAG, "fuel ignored: no open trip"); return }
+    private fun recordExpenseEvent(type: String, odometerKm: Double?, source: String?, photoId: String?) {
+        val id = tripId ?: run { Log.w(TAG, "expense ignored: no open trip"); return }
         scope.launch {
             val loc = lastLoc ?: try {
                 if (hasLocationPermission()) fusedClient?.lastLocation?.let { task ->
@@ -584,21 +587,21 @@ class TripRecordingService : Service() {
                     lat = loc?.latitude,
                     lng = loc?.longitude,
                     accuracyM = loc?.accuracy?.toDouble(),
-                    kind = "fuel",
+                    kind = type,             // fuel | parking | toll | receipt
                     label = source,          // "estimated" | "scanned"
                     odometerKm = odometerKm,
                     photoId = photoId
                 )
             )
-            Log.i(TAG, "fuel event for trip $id (odo=${odometerKm ?: "-"}, src=$source, photo=${photoId != null})")
+            Log.i(TAG, "$type expense for trip $id (odo=${odometerKm ?: "-"}, src=$source, photo=${photoId != null})")
             try {
                 val json = TripManager.buildUploadJson(applicationContext, id)
                 if (json != null) {
                     val ok = apiService.uploadTrip(json)
-                    Log.i(TAG, "fuel upload for trip $id: ok=$ok")
+                    Log.i(TAG, "expense upload for trip $id: ok=$ok")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "fuel upload failed: ${e.message}")
+                Log.w(TAG, "expense upload failed: ${e.message}")
             }
         }
     }

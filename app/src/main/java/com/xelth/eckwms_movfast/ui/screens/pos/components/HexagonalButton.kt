@@ -13,7 +13,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,7 +73,7 @@ fun HexagonalButton(
     Box(
         modifier = modifier
             .clip(HexagonShape(side))
-            .alpha(if (enabled) 1f else 0.6f)
+            .alpha(if (enabled) 1f else 0.8f)
             .background(backgroundColor)
             .then(
                 if (onPress != null) {
@@ -88,22 +94,43 @@ fun HexagonalButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (enabled) {
-            val textColor = if (textColorHex != null) {
+        // Disabled buttons stay VISIBLE: the label + emoji render greyed-out
+        // (a saturation-0 layer turns even colour emoji grey) on the dimmed
+        // hex — clearly present, clearly inert. Empty filler slots pass an
+        // empty label, so nothing shows there either way.
+        val textColor = when {
+            !enabled -> Color(0xFF9E9E9E)
+            textColorHex != null ->
                 try { Color(android.graphics.Color.parseColor(textColorHex)) } catch (e: Exception) { Color.White }
-            } else Color.White
+            else -> Color.White
+        }
+        Text(
+            text = label,
+            color = textColor,
+            textAlign = TextAlign.Center,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .padding(4.dp)
+                .then(if (enabled) Modifier else Modifier.grayscale())
+        )
+    }
+}
 
-            Text(
-                text = label,
-                color = textColor,
-                textAlign = TextAlign.Center,
-                fontSize = fontSize,
-                lineHeight = lineHeight,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(4.dp)
-            )
+/** Render the content through a saturation-0 layer — the only way to grey out
+ *  colour emoji glyphs (a text colour can't tint them). */
+private fun Modifier.grayscale(): Modifier = drawWithCache {
+    val paint = Paint().apply {
+        colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
+    }
+    onDrawWithContent {
+        drawIntoCanvas { canvas ->
+            canvas.saveLayer(Rect(0f, 0f, size.width, size.height), paint)
+            drawContent()
+            canvas.restore()
         }
     }
 }

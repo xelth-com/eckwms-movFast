@@ -27,7 +27,7 @@ object VoiceCommandManager {
         "trip" to listOf(
             VoiceCommand(
                 patterns = listOf("neue fahrt", "fahrt starten", "starten", "losfahren", "los"),
-                action = "trip_open_start",
+                action = "trip_start_business",
                 description = "Neue Fahrt",
             ),
             VoiceCommand(

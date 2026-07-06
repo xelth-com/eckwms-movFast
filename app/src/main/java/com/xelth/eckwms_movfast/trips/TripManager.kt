@@ -190,7 +190,10 @@ object TripManager {
         val plate: String?,
         val odoKm: Double?,
         val odoSource: String?,   // "estimated" (last known) | "photo" | "manual"
-        val odoPhotoId: String?
+        val odoPhotoId: String?,
+        // How the intent was declared — becomes the trip's purpose_source
+        // (GoBD honesty): "voice" | "text" (typed purpose) | "manual" (Start hex).
+        val source: String = "voice"
     )
 
     private fun intentToJson(i: TripIntent): String = org.json.JSONObject().apply {
@@ -203,6 +206,7 @@ object TripManager {
         i.odoKm?.let { put("odo_km", it) }
         i.odoSource?.let { put("odo_source", it) }
         i.odoPhotoId?.let { put("odo_photo", it) }
+        put("source", i.source)
     }.toString()
 
     private fun intentFromJson(s: String): TripIntent? = try {
@@ -216,14 +220,22 @@ object TripManager {
             plate = o.optString("plate").takeIf { it.isNotEmpty() },
             odoKm = if (o.has("odo_km")) o.getDouble("odo_km") else null,
             odoSource = o.optString("odo_source").takeIf { it.isNotEmpty() },
-            odoPhotoId = o.optString("odo_photo").takeIf { it.isNotEmpty() }
+            odoPhotoId = o.optString("odo_photo").takeIf { it.isNotEmpty() },
+            source = o.optString("source").ifEmpty { "voice" }
         )
     } catch (e: Exception) { null }
 
-    /** Arm a spoken trip declaration. Presets the last known vehicle and its end
-     *  odometer (source "estimated" — a guess, never a reading). Overwrites any
-     *  previous pending intent (the newest declaration wins). */
-    suspend fun armTripIntent(context: Context, label: String, ref: String? = null): TripIntent {
+    /** Arm a trip declaration (spoken, or the Start hex — both mean "I'm about
+     *  to drive"; the next IN_VEHICLE transition starts the trip, no movement
+     *  within the 2 h TTL → silently forgotten). Presets the last known vehicle
+     *  and its end odometer (source "estimated" — a guess, never a reading).
+     *  Overwrites any previous pending intent (the newest declaration wins). */
+    suspend fun armTripIntent(
+        context: Context,
+        label: String,
+        ref: String? = null,
+        source: String = "voice"
+    ): TripIntent {
         val last = AppDatabase.getInstance(context).tripDao().lastEndedTrip()
         val now = System.currentTimeMillis()
         val intent = TripIntent(
@@ -235,10 +247,11 @@ object TripManager {
             plate = last?.vehiclePlate,
             odoKm = last?.endOdometerKm,
             odoSource = last?.endOdometerKm?.let { "estimated" },
-            odoPhotoId = null
+            odoPhotoId = null,
+            source = source
         )
         com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(intentToJson(intent))
-        Log.i(TAG, "trip intent armed: \"$label\" (ref=${ref ?: "-"}, odo≈${intent.odoKm ?: "-"})")
+        Log.i(TAG, "trip intent armed: \"$label\" (ref=${ref ?: "-"}, source=$source, odo≈${intent.odoKm ?: "-"})")
         return intent
     }
 
@@ -266,6 +279,17 @@ object TripManager {
         com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(
             intentToJson(cur.copy(ref = ref ?: cur.ref, label = label ?: cur.label))
         )
+    }
+
+    /** Override the armed intent's vehicle with an explicitly set one (plate
+     *  entered/OCR'd on the field hex) — beats the last-trip preset. */
+    fun bindTripIntentVehicle(vehicleId: String?, plate: String?) {
+        if (vehicleId == null && plate == null) return
+        val cur = peekTripIntent() ?: return
+        com.xelth.eckwms_movfast.utils.SettingsManager.saveTripIntentJson(
+            intentToJson(cur.copy(vehicleId = vehicleId ?: cur.vehicleId, plate = plate ?: cur.plate))
+        )
+        Log.i(TAG, "trip intent vehicle set: ${plate ?: vehicleId}")
     }
 
     /** An odometer reading captured while the intent is armed (photo shortly
@@ -361,8 +385,8 @@ object TripManager {
             context, manual = false,
             purpose = "business",
             purposeRef = ti.ref,
-            purposeLabel = ti.label,
-            purposeSource = "voice",
+            purposeLabel = ti.label.takeIf { it.isNotBlank() },
+            purposeSource = ti.source,
             purposeDeclaredAt = ti.declaredAt,
             startOdometerKm = ti.odoKm,
             startOdometerSource = ti.odoSource,
@@ -402,12 +426,21 @@ object TripManager {
         }
     }
 
-    /** Log a refuel on the OPEN trip: a `fuel` point with the odometer (estimated
-     *  or scanned) + receipt photo id. The server promotes it to a durable
-     *  fuel_events row (Tankbeleg). */
-    fun logFuel(context: Context, odometerKm: Double?, source: String, photoId: String?) {
+    /** Log a trip expense on the OPEN trip: a point of kind `fuel`/`parking`/
+     *  `toll`/`receipt` with the odometer (estimated or scanned) + receipt photo
+     *  id. The server promotes these kinds into the durable fuel_events array
+     *  (tax documents — Tankbeleg, Parkschein, Maut). A receipt photo alone is
+     *  a valid expense; the type is an optional annotation. */
+    fun logExpense(
+        context: Context,
+        type: String,
+        odometerKm: Double?,
+        source: String,
+        photoId: String?
+    ) {
         val intent = Intent(context, TripRecordingService::class.java).apply {
             action = TripRecordingService.ACTION_FUEL
+            putExtra(TripRecordingService.EXTRA_EXPENSE_TYPE, type)
             odometerKm?.let { putExtra(TripRecordingService.EXTRA_ODO_KM, it) }
             putExtra(TripRecordingService.EXTRA_ODO_SOURCE, source)
             if (!photoId.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_PHOTO_ID, photoId)
@@ -415,7 +448,7 @@ object TripManager {
         try {
             context.startService(intent)
         } catch (e: Exception) {
-            Log.w(TAG, "logFuel: service not running (${e.message})")
+            Log.w(TAG, "logExpense: service not running (${e.message})")
         }
     }
 
