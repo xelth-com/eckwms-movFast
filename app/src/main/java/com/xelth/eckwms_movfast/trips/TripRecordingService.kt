@@ -462,9 +462,15 @@ class TripRecordingService : Service() {
 
     // ── GPS ground truth while charging ──────────────────────────────────────
 
+    /** "On external power" — NOT BatteryManager.isCharging: a weak car/laptop
+     *  USB feed often nets a battery DRAIN under GPS+screen+LTE, so Android
+     *  reports "not charging" even though the plug is in (live case 2026-07-06:
+     *  laptop USB in the car, status=charging but isCharging=false → the GPS
+     *  stream never armed). The owner's rule is "poездка с включенной зарядкой"
+     *  = plugged in, regardless of the net charge direction. */
     private fun isCharging(): Boolean = try {
-        val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
-        bm.isCharging
+        val i = registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        (i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
     } catch (e: Exception) { false }
 
     /** Start/stop the high-accuracy GPS stream to match the charging state.
