@@ -176,6 +176,10 @@
      logs" dialog, and if declined the feature silently degrades to
      wake-without-scan (second press scans). Gated by the same
      `getAutoScanOnWake()` setting as show-over-lockscreen.
+   - 📖 **Full vendor-stack RE reference: `.eck/SCANNER_ENGINE_RE.md`** (SDK
+     statics bug, camera arbitration, trigger signal paths, wake behavior,
+     diagnostic cookbook, artifact archive location). Read it BEFORE debugging
+     any scanner issue — everything there was verified on device.
 
 10. ~~**`registered_device` keyed by legacy `Settings.Secure.ANDROID_ID`, not UUID.**~~
     ✅ **FIXED 2026-06-28** (two-repo change: Rust server `eckwms` + this app).
