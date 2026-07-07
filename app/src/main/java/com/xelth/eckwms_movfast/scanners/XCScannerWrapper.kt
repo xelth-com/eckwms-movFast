@@ -126,22 +126,49 @@ object XCScannerWrapper {
     }
 
     /**
+     * How many app camera screens currently hold the scan engine suspended for
+     * CameraX/ML-Kit coexistence. Every [suspendScanService] must be balanced by a
+     * [resumeScanService]; while this is > 0 the watchdog must NOT auto-resume (a
+     * screen legitimately owns the camera). See [ScannerManager] stuck-suspend check.
+     */
+    private val cameraHoldCount = java.util.concurrent.atomic.AtomicInteger(0)
+    fun cameraHoldCount(): Int = cameraHoldCount.get()
+
+    /**
      * Suspend scan service
-     * This releases camera resources
+     * This releases camera resources (so a CameraX/ML-Kit screen can use the camera).
      */
     fun suspendScanService() {
         if (!isInitialized) return
+        val holds = cameraHoldCount.incrementAndGet()
         XcBarcodeScanner.suspendScanService()
-        Log.d(TAG, "Scan service suspended")
+        Log.d(TAG, "Scan service suspended (camera holds=$holds)")
     }
 
     /**
-     * Resume scan service
+     * Resume scan service (balances a prior [suspendScanService]).
      */
     fun resumeScanService() {
         if (!isInitialized) return
+        val holds = cameraHoldCount.updateAndGet { if (it > 0) it - 1 else 0 }
         XcBarcodeScanner.resumeScanService()
-        Log.d(TAG, "Scan service resumed")
+        Log.d(TAG, "Scan service resumed (camera holds=$holds)")
+    }
+
+    /**
+     * Resume the engine for RECOVERY without touching [cameraHoldCount] — used by the
+     * watchdog / app-foreground pre-warm to un-stick a scan engine the *vendor* left
+     * suspended (screen-off / low-battery power management in `E3Util`), which our
+     * hold counter never accounted for.
+     */
+    fun forceResumeScanService() {
+        if (!isInitialized) return
+        try {
+            XcBarcodeScanner.resumeScanService()
+            Log.d(TAG, "Scan service force-resumed (recovery)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "forceResumeScanService failed: ${e.message}")
+        }
     }
 
     /**
@@ -152,12 +179,113 @@ object XCScannerWrapper {
         return XcBarcodeScanner.isScanServiceSuspending()
     }
 
+    /** [isScanServiceSuspending] that swallows a dead-binder throw (returns false). */
+    fun isScanServiceSuspendingSafe(): Boolean {
+        return try {
+            isInitialized && XcBarcodeScanner.isScanServiceSuspending()
+        } catch (e: Throwable) {
+            Log.w(TAG, "isScanServiceSuspendingSafe: binder call failed → ${e.message}")
+            false
+        }
+    }
+
     /**
      * Get service version
      * @return Service version string
      */
     fun getServiceVersion(): String {
         return XcBarcodeScanner.getServiceVersion()
+    }
+
+    // ---------------------------------------------------------------------
+    // Health probes (used by ScannerManager's watchdog)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Liveness probe: query the scan service's version over the binder.
+     * Returns null if the call throws (binder to the vendor `com.xcheng.scannere3`
+     * process is dead) OR the service is not initialized. A blank string is also
+     * treated as "no answer". A non-blank version means the service replied.
+     */
+    fun getServiceVersionSafe(): String? {
+        if (!isInitialized) return null
+        return try {
+            XcBarcodeScanner.getServiceVersion().takeIf { it.isNotBlank() }
+        } catch (e: Throwable) {
+            Log.w(TAG, "getServiceVersionSafe: binder call failed → ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Read the license state, swallowing any binder failure.
+     * @return one of the [LicenseState] constants, or [LicenseState.INVALID]-like
+     *         sentinel [LICENSE_UNREACHABLE] (-999) if the call itself threw.
+     */
+    fun getLicenseStateSafe(): Int {
+        return try {
+            XcBarcodeScanner.getLicenseState()
+        } catch (e: Throwable) {
+            Log.w(TAG, "getLicenseStateSafe: binder call failed → ${e.message}")
+            LICENSE_UNREACHABLE
+        }
+    }
+
+    /** Ask the SDK to (re)activate the license; best-effort. */
+    fun activateLicenseSafe() {
+        try {
+            XcBarcodeScanner.activateLicense()
+        } catch (e: Throwable) {
+            Log.w(TAG, "activateLicenseSafe failed → ${e.message}")
+        }
+    }
+
+    /** Sentinel returned by [getLicenseStateSafe] when the binder call throws. */
+    const val LICENSE_UNREACHABLE = -999
+
+    /**
+     * Rebind the AIDL connection to the vendor scan service — the *minimal* reset
+     * that revives a hung scanner WITHOUT restarting our whole process.
+     *
+     * Why the manual static-nulling is essential (verified by disassembling the
+     * vendor SDK `xcscanner_qrcode_v1.3.56.1.7`):
+     *   - `XcBarcodeScanner` keeps the binder (`a`), the ServiceConnection (`d`)
+     *     and the "initialized" flag (`e`) as **static** fields — they outlive our
+     *     Activities and only reset on process death.
+     *   - `init()` does `if (d != null) return;` → a second init() never rebinds.
+     *   - `deInit()` calls `unbindService(d)` *before* nulling `d`, and is NOT
+     *     exception-safe: once the vendor process has died, `unbindService` throws
+     *     "Service not registered", so `d` is left non-null.
+     *   - Net effect: after the vendor restarts, plain init()/deInit()+init() is a
+     *     no-op and the scanner stays dead until the app process is restarted (which
+     *     is the only thing that used to reset the static `d`).
+     * So we force `a/d/c/e` back to a clean slate here, guaranteeing the following
+     * init() actually calls bindService() and repopulates the binder.
+     */
+    fun forceReinitialize(context: Context) {
+        val cb = scanResultCallback
+        Log.w(TAG, ">>> forceReinitialize: rebind scan service (deInit → force-null statics → init)")
+        try {
+            if (isInitialized) XcBarcodeScanner.deInit(context)
+        } catch (e: Throwable) {
+            Log.w(TAG, "forceReinitialize: deInit threw → ${e.message}")
+        }
+        // Guarantee a clean slate even if deInit's unbindService() threw and left
+        // the static ServiceConnection set (which would make init() a no-op).
+        try {
+            XcBarcodeScanner.a = null
+            XcBarcodeScanner.d = null
+            XcBarcodeScanner.c = null
+            XcBarcodeScanner.e = false
+        } catch (e: Throwable) {
+            Log.w(TAG, "forceReinitialize: could not reset SDK statics → ${e.message}")
+        }
+        isInitialized = false
+        if (cb != null) {
+            initialize(context, cb)
+        } else {
+            Log.e(TAG, "forceReinitialize: no callback retained — cannot re-init")
+        }
     }
 
     /**

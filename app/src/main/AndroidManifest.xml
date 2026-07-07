@@ -20,6 +20,10 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- Re-arm trip auto-detect after reboot (normal permission, Play-safe) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Scanner watchdog: after briefly launching the vendor scan-engine app to
+         reset a hung process, move our own task back to the front (normal
+         permission, Play-safe; a plain startActivity would be blocked by BAL). -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
          flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
          the `free` (Play) build must not carry it. -->
@@ -27,6 +31,13 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Package visibility (Android 11+): the scanner watchdog may relaunch the
+         vendor scan-engine app to reset a "bad" process, so we must be able to see
+         and start com.xcheng.scannere3. -->
+    <queries>
+        <package android:name="com.xcheng.scannere3" />
+    </queries>
 
     <application
         android:name=".EckwmsApp"

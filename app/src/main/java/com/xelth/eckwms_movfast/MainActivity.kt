@@ -33,6 +33,7 @@ import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.PickingViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.utils.BitmapCache
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import com.xelth.eckwms_movfast.utils.SunlightModeManager
 
 class MainActivity : ComponentActivity() {
@@ -53,6 +54,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // One-press-from-sleep. On this PDA the scan trigger also wakes the device, so
+        // the first press is otherwise "spent" clearing the keyguard. The screen lock
+        // here is NON-secure (swipe, password quality 0) — showing over it and
+        // dismissing it bypasses no password — so we land straight on the app after a
+        // wake and onResume can auto-fire a scan. Opt-out via the same setting.
+        // NOTE: a SECURE PIN/pattern can never be bypassed by an app; requestDismissKeyguard
+        // would just surface the unlock prompt. Nothing here weakens a real lock.
+        if (SettingsManager.getAutoScanOnWake()) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            (getSystemService(android.app.KeyguardManager::class.java))
+                ?.requestDismissKeyguard(this, null)
+        }
 
         // Hide gesture indicator bar — maximize usable screen area
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
