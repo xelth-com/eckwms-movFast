@@ -137,22 +137,33 @@ object XCScannerWrapper {
     /**
      * Suspend scan service
      * This releases camera resources (so a CameraX/ML-Kit screen can use the camera).
+     * The hold is recorded even if the binder call fails — it mirrors "one of OUR
+     * camera screens is open", which stays true regardless of engine state, and the
+     * paired [resumeScanService] always releases it.
      */
     fun suspendScanService() {
-        if (!isInitialized) return
         val holds = cameraHoldCount.incrementAndGet()
-        XcBarcodeScanner.suspendScanService()
-        Log.d(TAG, "Scan service suspended (camera holds=$holds)")
+        if (!isInitialized) { Log.d(TAG, "suspendScanService: not initialized (hold recorded, holds=$holds)"); return }
+        try {
+            XcBarcodeScanner.suspendScanService()
+            Log.d(TAG, "Scan service suspended (camera holds=$holds)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "suspendScanService: binder call failed (hold kept, holds=$holds): ${e.message}")
+        }
     }
 
     /**
      * Resume scan service (balances a prior [suspendScanService]).
      */
     fun resumeScanService() {
-        if (!isInitialized) return
         val holds = cameraHoldCount.updateAndGet { if (it > 0) it - 1 else 0 }
-        XcBarcodeScanner.resumeScanService()
-        Log.d(TAG, "Scan service resumed (camera holds=$holds)")
+        if (!isInitialized) { Log.d(TAG, "resumeScanService: not initialized (hold released, holds=$holds)"); return }
+        try {
+            XcBarcodeScanner.resumeScanService()
+            Log.d(TAG, "Scan service resumed (camera holds=$holds)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "resumeScanService: binder call failed (holds=$holds): ${e.message}")
+        }
     }
 
     /**
@@ -223,6 +234,7 @@ object XCScannerWrapper {
      *         sentinel [LICENSE_UNREACHABLE] (-999) if the call itself threw.
      */
     fun getLicenseStateSafe(): Int {
+        if (!isInitialized) return LICENSE_UNREACHABLE
         return try {
             XcBarcodeScanner.getLicenseState()
         } catch (e: Throwable) {
@@ -265,6 +277,9 @@ object XCScannerWrapper {
     fun forceReinitialize(context: Context) {
         val cb = scanResultCallback
         Log.w(TAG, ">>> forceReinitialize: rebind scan service (deInit → force-null statics → init)")
+        // The hold count mirrors OUR open camera screens, which survive a rebind —
+        // don't reset it, just surface it (recover() defers while a screen holds).
+        cameraHoldCount.get().let { if (it > 0) Log.w(TAG, "forceReinitialize: $it camera hold(s) still active") }
         try {
             if (isInitialized) XcBarcodeScanner.deInit(context)
         } catch (e: Throwable) {

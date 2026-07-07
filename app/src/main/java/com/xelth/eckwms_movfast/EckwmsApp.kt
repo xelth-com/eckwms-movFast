@@ -53,8 +53,11 @@ class EckwmsApp : Application() {
         // Track foreground so the watchdog only does the (screen-flashing) hard
         // restart while we're actually in front of the user.
         registerScannerForegroundTracking()
-        // One-press-from-sleep: auto-scan when the device wakes with us in front.
+        // One-press-from-sleep: stamp wakes; a trigger press right after a wake
+        // takes the assisted resume-then-scan path.
         registerScanOnWake()
+        // Trigger presses also arrive as a system broadcast (works without key focus).
+        registerScanTriggerBroadcast()
 
         // Initialize WarehouseRepository for offline-first data management
         repository = WarehouseRepository.getInstance(this)
@@ -136,23 +139,48 @@ class EckwmsApp : Application() {
     }
 
     /**
-     * One-press-from-sleep. On this PDA the scan trigger also wakes the device, so the
-     * first press is "spent" waking + the engine isn't ready yet, forcing a second
-     * press to actually scan. We listen for SCREEN_ON (must be context-registered —
-     * the OS won't deliver it to a manifest receiver) and, when our app is foreground,
-     * auto-fire a scan once the engine has warmed up. SCREEN_OFF is ignored; the vendor
-     * handles suspend. Registered app-lifetime.
+     * Wake hook for one-press-from-sleep (must be context-registered — the OS won't
+     * deliver SCREEN_ON to a manifest receiver). [ScannerManager.onScreenOn] stamps
+     * the wake and, when READ_LOGS is granted, identifies the wake source from the
+     * system's `wakeup` log line: a scan-trigger keycode there means the user woke
+     * the device BY the trigger and gets the scan that press asked for; power
+     * button / charger / gestures log nothing and never beam. Registered app-lifetime.
      */
     private fun registerScanOnWake() {
         val filter = android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_ON)
         registerReceiver(object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
                 if (intent?.action == android.content.Intent.ACTION_SCREEN_ON) {
-                    Log.d(TAG, "SCREEN_ON → mark wake (auto-scan fires on next onResume)")
+                    Log.d(TAG, "SCREEN_ON → stamp wake + check wake source (scan-key wake = one-press scan)")
                     scannerManager.onScreenOn()
                 }
             }
         }, filter)
+    }
+
+    /**
+     * Second signal source for hardware trigger presses: the system broadcasts
+     * `com.xcheng.scanner.action.OPEN_SCAN_BROADCAST` (extra "scankey" = keycode)
+     * when a scan key goes down — found in the vendor's ScanTestReceiver. The
+     * primary source is MainActivity.dispatchKeyEvent (F8–F11 KeyEvents); this one
+     * also arrives when our activity does NOT have key focus (e.g. mid-wake, behind
+     * the keyguard). ScannerManager dedups the two. RECEIVER_EXPORTED: the sender is
+     * the system/vendor, not us, and the action is not a protected broadcast.
+     */
+    private fun registerScanTriggerBroadcast() {
+        val filter = android.content.IntentFilter("com.xcheng.scanner.action.OPEN_SCAN_BROADCAST")
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                if (intent?.action == "com.xcheng.scanner.action.OPEN_SCAN_BROADCAST") {
+                    scannerManager.onScanTriggerPressed("broadcast", intent.getIntExtra("scankey", -1))
+                }
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, android.content.Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(receiver, filter)
+        }
     }
 
     override fun onTerminate() {

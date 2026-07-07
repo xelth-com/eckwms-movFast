@@ -371,6 +371,32 @@ fun ScannerSettingsScreen(
                         )
                     }
 
+                    // One-press-from-sleep: show the app over the (non-secure swipe)
+                    // keyguard on wake so the trigger press that woke the device can
+                    // scan immediately. Takes effect on the next app start
+                    // (setShowWhenLocked is applied in MainActivity.onCreate).
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Wake into app on scan trigger", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Show over the lockscreen after wake so one trigger press scans (restart app to apply)",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        var autoScanOnWake by remember { mutableStateOf(SettingsManager.getAutoScanOnWake()) }
+                        Switch(
+                            checked = autoScanOnWake,
+                            onCheckedChange = { checked ->
+                                autoScanOnWake = checked
+                                SettingsManager.saveAutoScanOnWake(checked)
+                            }
+                        )
+                    }
+
                     // Grid Row Count
                     Column {
                         val currentRows = viewModel.gridRowCount.value ?: 7

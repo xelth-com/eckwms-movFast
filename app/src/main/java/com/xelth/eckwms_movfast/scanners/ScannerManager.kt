@@ -13,10 +13,10 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.xcheng.scanner.BarcodeType
 import com.xcheng.scanner.LicenseState
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import com.xcheng.scanner.NotificationType
 import com.xcheng.scanner.RegionSizeType
 import com.xcheng.scanner.TextCaseType
-import com.xelth.eckwms_movfast.utils.SettingsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 private const val TAG = "ScannerManager"
@@ -37,8 +38,20 @@ private const val INITIAL_GRACE_MS = 8_000L           // let init + license acti
 private const val SOFT_SETTLE_MS = 1_800L             // wait after a soft re-init before re-probe
 private const val HARD_RESTART_MIN_INTERVAL_MS = 5 * 60_000L
 private const val MAX_HARD_RESTARTS_PER_SESSION = 3
-/** Auto-scan-on-wake only if the app resumes within this long after SCREEN_ON. */
-private const val WAKE_SCAN_WINDOW_MS = 20_000L
+/** Within this long after SCREEN_ON a trigger press uses the assisted (resume-first)
+ *  scan path — the engine is likely still warming up from the vendor's own resume. */
+private const val WAKE_WARMUP_WINDOW_MS = 6_000L
+/** Two trigger signals (KeyEvent + vendor broadcast) within this window = one press. */
+private const val TRIGGER_DEDUP_MS = 150L
+/** How many times to re-check that we actually came back in front of the vendor UI. */
+private const val RETURN_RETRY_MAX = 3
+/** Hardware scan-trigger keycodes (vendor config: left=140/F10, front=141/F11,
+ *  right=142/F12; 138–139 included for other key layouts of the same family). */
+private val TRIGGER_KEYCODES = 138..142
+/** A `wakeup: anykeyWakeup` log line older than this cannot belong to THIS wake. */
+private const val WAKE_LOG_FRESHNESS_MS = 6_000L
+/** How long to wait for our activity to come up over the keyguard after a wake. */
+private const val WAKE_FOREGROUND_WAIT_MS = 3_000L
 
 /** Health of the hardware scan engine, surfaced for the UI + startScan self-heal. */
 enum class ScannerHealth { HEALTHY, RECOVERING, DOWN }
@@ -72,19 +85,24 @@ class ScannerManager private constructor(private val application: Application) {
     /** Observe from the UI to show a "scanner recovering / down" indicator. */
     val health: LiveData<ScannerHealth> get() = _health
 
-    /** elapsedRealtime of the last successful scan — a positive liveness signal. */
-    @Volatile private var lastScanTs: Long = 0L
+    /** Set by [EckwmsApp]'s ActivityLifecycleCallbacks. ALL watchdog recovery is
+     *  gated on this: recovery resumes/reopens the scan camera (device 2), which
+     *  must never happen while another app may be using the shared-ISP camera 0
+     *  (the system auto-suspends the scan engine for them — see .eck/TECH_DEBT.md
+     *  item 9). Defaults to FALSE: a headless process start (WorkManager sync,
+     *  boot) has no activity, and assuming foreground there would let the watchdog
+     *  fight other apps' camera sessions from the background. */
+    @Volatile var appInForeground: Boolean = false
 
-    /** Set by [EckwmsApp]'s ActivityLifecycleCallbacks. A hard restart (which
-     *  briefly launches the vendor UI) is only attempted while we're foreground. */
-    @Volatile var appInForeground: Boolean = true
-
-    private var suspectStreak = 0
-    private var hardRestartCount = 0
-    private var lastHardRestartTs = 0L
+    @Volatile private var suspectStreak = 0
+    @Volatile private var hardRestartCount = 0
+    @Volatile private var lastHardRestartTs = 0L
 
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var watchdogJob: Job? = null
+    /** Single-flights [recover] — concurrent recoveries would tear each other's
+     *  half-rebound binder apart and burn the hard-restart budget. */
+    private val recoverMutex = Mutex()
 
     /**
      * Инициализирует сканер с использованием ScannerSymResult
@@ -107,7 +125,7 @@ class ScannerManager private constructor(private val application: Application) {
 
             // A real decode is the strongest possible liveness signal — the engine
             // is clearly alive, so clear any pending "recovering/down" state.
-            lastScanTs = SystemClock.elapsedRealtime()
+            lastDecodeTs = SystemClock.elapsedRealtime()
             suspectStreak = 0
             hardRestartCount = 0
             if (_health.value != ScannerHealth.HEALTHY) setHealth(ScannerHealth.HEALTHY)
@@ -279,14 +297,14 @@ class ScannerManager private constructor(private val application: Application) {
      * opening any CameraX screen and [resumeScanService] after closing it.
      */
     fun suspendScanService() {
-        if (!isInitialized) { Log.d(TAG, "suspendScanService: not initialized"); return }
+        // Always delegate — the wrapper records the camera hold even when the engine
+        // is not initialized, so the watchdog never auto-resumes under an open screen.
         Log.d(TAG, ">>> suspendScanService (free camera for ML Kit)")
         XCScannerWrapper.suspendScanService()
     }
 
     /** Resume the hardware scanner after a CameraX/ML Kit session is done. */
     fun resumeScanService() {
-        if (!isInitialized) { Log.d(TAG, "resumeScanService: not initialized"); return }
         Log.d(TAG, ">>> resumeScanService (re-acquire scan camera)")
         XCScannerWrapper.resumeScanService()
     }
@@ -366,54 +384,88 @@ class ScannerManager private constructor(private val application: Application) {
         watchdogJob = null
     }
 
-    /**
-     * The MINIMAL scanner reset: rebind the AIDL connection to the vendor service.
-     * No process restart, no vendor-UI flash — just deInit → force-null the SDK's
-     * stuck statics → init (see [XCScannerWrapper.forceReinitialize]). This revives
-     * the common "binder went stale" hang (vendor recycled / stale after a dev
-     * reinstall). Suitable for a manual "restart scanner" button. Returns true if
-     * the engine answers as alive afterwards.
-     *
-     * If this returns false the vendor process itself is down/bad or the camera is
-     * wedged — that needs [recover]'s escalation (vendor relaunch), which the
-     * watchdog does automatically.
-     */
-    suspend fun rebindScanner(): Boolean {
-        Log.w(TAG, "rebindScanner: minimal reset (AIDL rebind, no app restart)")
-        setHealth(ScannerHealth.RECOVERING)
-        withContext(Dispatchers.Main) {
-            XCScannerWrapper.forceReinitialize(application)
-            configureScanner()
-        }
-        delay(SOFT_SETTLE_MS)
-        val alive = probe() == Probe.ALIVE
-        setHealth(if (alive) ScannerHealth.HEALTHY else ScannerHealth.DOWN)
-        Log.d(TAG, "rebindScanner: engine alive=$alive")
-        return alive
-    }
-
     /** elapsedRealtime of the last SCREEN_ON. */
     @Volatile private var lastScreenOnTs = 0L
-    /** false = a wake is pending an auto-scan; true = already fired / none pending. */
-    @Volatile private var wakeScanConsumed = true
+    /** Wall-clock time of the last SCREEN_ON — needed to window the logcat read. */
+    @Volatile private var lastScreenOnWallClock = 0L
+    /** elapsedRealtime of the last hardware trigger press (KeyEvent or vendor broadcast). */
+    @Volatile private var lastTriggerTs = 0L
+    /** elapsedRealtime of the last successful decode (set in the scan callback). */
+    @Volatile private var lastDecodeTs = 0L
 
     /**
-     * Record a device wake (SCREEN_ON) and try to auto-scan. On this PDA the scan
-     * trigger doubles as a wake key, so a single press should both wake AND scan.
-     * With MainActivity's setShowWhenLocked the app is already foreground over the
-     * (non-secure) swipe keyguard, so SCREEN_ON is the reliable trigger; [onAppResumed]
-     * is a backstop for the case where the app resumes a moment later.
+     * Record a device wake (SCREEN_ON), then find out WHO woke the device. The key
+     * press that wakes from sleep is consumed entirely by the system — no KeyEvent,
+     * no vendor broadcast, to anyone — but PowerManager logs
+     * `wakeup: ----deal anykeyWakeup keyCode = <n>` for key wakes (and nothing for
+     * power button / charger / gestures, verified on device). With READ_LOGS
+     * granted we read that line: if a scan-trigger key woke the device, the user
+     * asked for a scan — fire it. Without the grant (logcat then only returns our
+     * own lines) or with the setting off this degrades to just stamping the wake.
      */
     fun onScreenOn() {
-        lastScreenOnTs = SystemClock.elapsedRealtime()
-        wakeScanConsumed = false
-        // Let the lifecycle settle (activity resume over keyguard) then try.
-        watchdogScope.launch { delay(400); tryConsumeWakeScan() }
+        val wakeTs = SystemClock.elapsedRealtime()
+        val wakeWallClock = System.currentTimeMillis()
+        lastScreenOnTs = wakeTs
+        lastScreenOnWallClock = wakeWallClock
+        if (SettingsManager.getAutoScanOnWake()) {
+            watchdogScope.launch { scanIfWokenByTriggerKey(wakeTs, wakeWallClock) }
+        }
     }
 
     /**
-     * Called when an Activity resumes. Pre-warms the engine (resume if the vendor left
-     * it suspended) and, if a wake is still pending, fires the one-press-from-sleep scan.
+     * One-press-scan-from-sleep: if the fresh `wakeup` log line says a scan-trigger
+     * key woke the device, wait for our activity to come up over the keyguard
+     * (setShowWhenLocked) and treat the wake press as a real trigger press.
+     */
+    private suspend fun scanIfWokenByTriggerKey(wakeTs: Long, wakeWallClock: Long) {
+        val keyCode = readWakeKeyFromLog(wakeWallClock) ?: return
+        if (keyCode !in TRIGGER_KEYCODES) {
+            Log.d(TAG, "wake key $keyCode is not a scan trigger — no wake scan")
+            return
+        }
+        var waited = 0L
+        while (!appInForeground && waited < WAKE_FOREGROUND_WAIT_MS) {
+            delay(150); waited += 150
+        }
+        if (!appInForeground) {
+            Log.d(TAG, "wake scan skipped: activity did not reach foreground")
+            return
+        }
+        // A double-press wake may already have been served by the second press.
+        if (lastDecodeTs >= wakeTs) return
+        Log.d(TAG, "device woken by scan key $keyCode → one-press wake scan")
+        withContext(Dispatchers.Main) { onScanTriggerPressed("wake", keyCode) }
+    }
+
+    /**
+     * Read the keycode that woke the device from the system log (`wakeup` tag,
+     * PowerManager's anykey-wakeup handler). Requires READ_LOGS — a development
+     * permission granted per device over adb; without it logcat only returns our
+     * own process' lines and this returns null (feature silently off).
+     */
+    private fun readWakeKeyFromLog(wakeWallClock: Long): Int? {
+        return try {
+            val since = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+                .format(java.util.Date(wakeWallClock - WAKE_LOG_FRESHNESS_MS))
+            // -t '<time>' implies -d (dump and exit); -s silences all but the tag.
+            val proc = Runtime.getRuntime().exec(arrayOf("logcat", "-t", since, "-s", "wakeup:V"))
+            val out = proc.inputStream.bufferedReader().use { it.readText() }
+            proc.waitFor()
+            Regex("anykeyWakeup keyCode = (\\d+)").findAll(out).lastOrNull()
+                ?.groupValues?.get(1)?.toIntOrNull()
+        } catch (e: Throwable) {
+            Log.w(TAG, "wake-key log read failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Called when an Activity resumes. Pre-warms the engine (resume if the vendor
+     * left it suspended on SCREEN_OFF / low battery) so the next trigger press
+     * scans instantly. Safe: we are foreground, so no other app can be mid-session
+     * on the shared-ISP camera, and our own camera screens are counted in
+     * [XCScannerWrapper.cameraHoldCount].
      */
     fun onAppResumed() {
         if (!isInitialized) return
@@ -425,32 +477,71 @@ class ScannerManager private constructor(private val application: Application) {
                 withContext(Dispatchers.Main) { XCScannerWrapper.forceResumeScanService() }
             }
         }
-        tryConsumeWakeScan()
     }
 
     /**
-     * Fire exactly one scan per wake, from whichever trigger (SCREEN_ON / onResume)
-     * first finds the app foreground within the wake window. Never scans behind a
-     * lockscreen (gated on [appInForeground]) or while a camera screen owns the sensor.
+     * ONE entry point for a hardware trigger press, from both signal sources:
+     * MainActivity.dispatchKeyEvent (F8–F11) and the system's
+     * `com.xcheng.scanner.action.OPEN_SCAN_BROADCAST`. Because this only ever fires
+     * on a physical trigger press, it can never beam on a power-button/charger wake.
+     *
+     * Normally just [startScan]; switches to the assisted path (resume the engine,
+     * wait for the camera, then scan) when the engine is suspended — a stranded
+     * vendor suspend or a fresh wake where the trigger press itself woke the device
+     * and the engine hasn't re-acquired the camera yet. That is the
+     * one-press-from-sleep fix.
      */
-    private fun tryConsumeWakeScan() {
-        if (!isInitialized || wakeScanConsumed) return
-        if (!SettingsManager.getAutoScanOnWake()) return
-        if (SystemClock.elapsedRealtime() - lastScreenOnTs >= WAKE_SCAN_WINDOW_MS) return
-        if (!appInForeground) return                       // locked / woke elsewhere → wait
-        if (XCScannerWrapper.cameraHoldCount() > 0) return // a camera screen owns it
-        wakeScanConsumed = true
-        watchdogScope.launch {
-            withContext(Dispatchers.Main) { XCScannerWrapper.forceResumeScanService() }
-            var waited = 0
-            while (XCScannerWrapper.isScanServiceSuspendingSafe() && waited < 1500) {
-                delay(150); waited += 150
-            }
-            delay(250)  // small camera warmup margin
-            if (!appInForeground || XCScannerWrapper.cameraHoldCount() > 0) return@launch
-            Log.d(TAG, "tryConsumeWakeScan: firing startScan (one-press-from-sleep)")
-            withContext(Dispatchers.Main) { startScan() }
+    fun onScanTriggerPressed(source: String, keyCode: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastTriggerTs < TRIGGER_DEDUP_MS) { lastTriggerTs = now; return }
+        lastTriggerTs = now
+        // The vendor broadcast arrives even while we're backgrounded (the user may
+        // be pressing the trigger inside ANOTHER app, possibly mid-camera-session).
+        // Neither beam nor resume then — that's the other app's press, not ours.
+        if (!appInForeground) {
+            Log.d(TAG, "trigger press (source=$source) ignored: app not foreground")
+            return
         }
+        if (!isInitialized) initialize()
+        val justWoke = now - lastScreenOnTs <= WAKE_WARMUP_WINDOW_MS
+        val holdFree = XCScannerWrapper.cameraHoldCount() <= 0
+        val suspended = holdFree && XCScannerWrapper.isScanServiceSuspendingSafe()
+        Log.d(TAG, "trigger press (source=$source key=$keyCode justWoke=$justWoke suspended=$suspended)")
+        // Assist ONLY when the engine is actually suspended (the vendor's native
+        // trigger handling is deaf then, and can't produce a competing decode).
+        // When it is running — including right after a wake, thanks to the
+        // onAppResumed pre-warm — the vendor decodes the press natively; our
+        // immediate startScan merges into the same decode session, whereas the
+        // assisted path's ~400ms delay would start a SECOND session and double-scan
+        // (observed on device).
+        if (suspended) {
+            watchdogScope.launch { assistedScan(pressTs = now) }
+        } else {
+            startScan()
+        }
+    }
+
+    /**
+     * Resume a suspended engine, wait until it has the camera back, then scan.
+     * Used only in response to a physical trigger press ([onScanTriggerPressed]),
+     * so firing the beam at the end is exactly what the user asked for. If a decode
+     * already landed for this press (the vendor's native path beat us to it), the
+     * press has been served — don't start a second session.
+     */
+    private suspend fun assistedScan(pressTs: Long) {
+        withContext(Dispatchers.Main) { XCScannerWrapper.forceResumeScanService() }
+        var waited = 0
+        while (XCScannerWrapper.isScanServiceSuspendingSafe() && waited < 1500) {
+            delay(150); waited += 150
+        }
+        delay(250)  // small camera warmup margin
+        if (!appInForeground || XCScannerWrapper.cameraHoldCount() > 0) return
+        if (lastDecodeTs >= pressTs) {
+            Log.d(TAG, "assistedScan: press already served by a decode — skipping startScan")
+            return
+        }
+        Log.d(TAG, "assistedScan: firing startScan")
+        withContext(Dispatchers.Main) { startScan() }
     }
 
     /** One liveness probe of the vendor scan service (off the main thread). */
@@ -462,8 +553,11 @@ class ScannerManager private constructor(private val application: Application) {
             version == null && license == XCScannerWrapper.LICENSE_UNREACHABLE -> Probe.DEAD
             // Healthy steady state.
             license == LicenseState.ACTIVED -> Probe.ALIVE
-            // Just (re)initialized and still activating — treat as fine.
-            license == LicenseState.ACTIVATING && version != null -> Probe.ALIVE
+            // Activating, or the license server is unreachable (offline warehouse) —
+            // the engine itself answers and keeps decoding on its device-local
+            // activation; recovering here would churn re-inits forever while offline.
+            version != null && (license == LicenseState.ACTIVATING ||
+                license == LicenseState.NETWORK_ISSUE) -> Probe.ALIVE
             // Binder answers but the license dropped (camera/ISP wedge) — suspect.
             else -> Probe.SUSPECT
         }
@@ -471,13 +565,17 @@ class ScannerManager private constructor(private val application: Application) {
 
     private suspend fun tick() {
         if (!isInitialized) return
+        // EVERYTHING the watchdog does (resume, rebind, vendor relaunch) can reopen
+        // the scan camera. In the background that would fight other apps' sessions
+        // on the shared-ISP camera — the system auto-suspends the scan engine for
+        // them, and we must not undo that. Probe/heal only while we're in front.
+        if (!appInForeground) return
         // Stuck-suspend recovery. The vendor's E3Util releases the scan camera on
         // SCREEN_OFF / low battery (state → SUSPENDING) and can strand it there with
         // no event to resume — the binder + license stay healthy, so probe() below
         // reports ALIVE and would never notice. If nothing of ours legitimately holds
         // the camera (no CameraX screen open) and we're foreground, resume it.
-        if (appInForeground &&
-            XCScannerWrapper.cameraHoldCount() <= 0 &&
+        if (XCScannerWrapper.cameraHoldCount() <= 0 &&
             XCScannerWrapper.isScanServiceSuspendingSafe()
         ) {
             Log.w(TAG, "watchdog: engine stuck SUSPENDED (no camera hold) → resuming")
@@ -508,45 +606,80 @@ class ScannerManager private constructor(private val application: Application) {
      * Escalating recovery: (1) soft SDK re-init to rebind; if that doesn't bring
      * the engine back, (2) a rate-limited foreground relaunch of the vendor app to
      * reset a "bad" process. Runs on the watchdog (Default) dispatcher.
+     *
+     * Single-flighted via [recoverMutex] and deferred (not failed) while the app is
+     * backgrounded or one of our camera screens holds the sensor — recovery reopens
+     * the scan camera, which must never race a live camera-0 session on the shared
+     * ISP. The next watchdog tick / trigger press retries.
      */
     private suspend fun recover() {
-        setHealth(ScannerHealth.RECOVERING)
-
-        // Step 1 — soft: deInit + re-init the SDK (rebinds to the service, which
-        // Android auto-starts if the process is merely gone but not "bad").
-        Log.w(TAG, "recover: soft re-init of the scan SDK")
-        withContext(Dispatchers.Main) {
-            XCScannerWrapper.forceReinitialize(application)
-            configureScanner()
-        }
-        delay(SOFT_SETTLE_MS)
-        if (probe() == Probe.ALIVE) {
-            Log.d(TAG, "recover: soft re-init succeeded")
-            suspectStreak = 0
-            hardRestartCount = 0
-            setHealth(ScannerHealth.HEALTHY)
+        if (!recoverMutex.tryLock()) {
+            Log.d(TAG, "recover: already in progress — skipped")
             return
         }
-
-        // Step 2 — hard: relaunch the vendor app to clear a "bad process" mark.
-        if (tryHardRestart()) {
-            delay(SOFT_SETTLE_MS)
-            // Rebind to the freshly-started vendor process.
-            withContext(Dispatchers.Main) {
-                XCScannerWrapper.forceReinitialize(application)
-                configureScanner()
+        try {
+            if (!appInForeground) {
+                Log.w(TAG, "recover: app not foreground — deferred")
+                return
             }
-            delay(SOFT_SETTLE_MS)
-            if (probe() != Probe.DEAD) {
-                Log.d(TAG, "recover: hard restart revived the engine")
+            if (XCScannerWrapper.cameraHoldCount() > 0) {
+                Log.w(TAG, "recover: a camera screen holds the sensor — deferred")
+                setHealth(ScannerHealth.RECOVERING)
+                return
+            }
+            setHealth(ScannerHealth.RECOVERING)
+
+            // Step 1 — soft: deInit + re-init the SDK (rebinds to the service, which
+            // Android auto-starts if the process is merely gone but not "bad").
+            Log.w(TAG, "recover: soft re-init of the scan SDK")
+            if (softReinit() && probe() == Probe.ALIVE) {
+                Log.d(TAG, "recover: soft re-init succeeded")
                 suspectStreak = 0
+                hardRestartCount = 0
                 setHealth(ScannerHealth.HEALTHY)
                 return
             }
-        }
 
-        Log.e(TAG, "recover: engine still down after soft+hard recovery")
-        setHealth(ScannerHealth.DOWN)
+            // Step 2 — hard: relaunch the vendor app to clear a "bad process" mark.
+            if (tryHardRestart()) {
+                delay(SOFT_SETTLE_MS)
+                // Rebind to the freshly-started vendor process.
+                softReinit()
+                if (probe() != Probe.DEAD) {
+                    Log.d(TAG, "recover: hard restart revived the engine")
+                    suspectStreak = 0
+                    setHealth(ScannerHealth.HEALTHY)
+                    return
+                }
+            }
+
+            Log.e(TAG, "recover: engine still down after soft+hard recovery")
+            setHealth(ScannerHealth.DOWN)
+        } finally {
+            recoverMutex.unlock()
+        }
+    }
+
+    /**
+     * ForceReinitialize + wait for the (asynchronous) bindService to actually
+     * connect, THEN configure — config calls against a null binder are silent
+     * no-ops and would leave the engine with default symbologies/output settings.
+     * @return true if the binder answered within the settle window.
+     */
+    private suspend fun softReinit(): Boolean {
+        withContext(Dispatchers.Main) { XCScannerWrapper.forceReinitialize(application) }
+        var waited = 0L
+        while (XCScannerWrapper.getServiceVersionSafe() == null && waited < SOFT_SETTLE_MS * 2) {
+            delay(150); waited += 150
+        }
+        val bound = XCScannerWrapper.getServiceVersionSafe() != null
+        if (bound) {
+            withContext(Dispatchers.Main) { configureScanner() }
+            delay(SOFT_SETTLE_MS)
+        } else {
+            Log.w(TAG, "softReinit: binder did not come back within ${SOFT_SETTLE_MS * 2}ms")
+        }
+        return bound
     }
 
     /**
@@ -583,7 +716,7 @@ class ScannerManager private constructor(private val application: Application) {
                 // startActivity is blocked by Android's background-activity-start
                 // rule the moment the vendor window covers us (we lose our visible
                 // window), whereas moving our OWN task forward is permitted.
-                mainHandler.postDelayed({ returnToOurApp() }, 700)
+                mainHandler.postDelayed({ returnToOurApp(1) }, 700)
             } catch (e: Throwable) {
                 Log.e(TAG, "hard restart failed to launch $SCANNER_PKG: ${e.message}")
             }
@@ -591,8 +724,13 @@ class ScannerManager private constructor(private val application: Application) {
         return true
     }
 
-    /** Bring our own task back to the front after the vendor UI flash. */
-    private fun returnToOurApp() {
+    /**
+     * Bring our own task back to the front after the vendor UI flash. The vendor's
+     * cold start can finish AFTER our first move and resume on top again (observed
+     * on device), so verify via [appInForeground] (our lifecycle tracker) and retry
+     * a few times instead of trusting one shot.
+     */
+    private fun returnToOurApp(attempt: Int) {
         // Step 1: move our OWN task forward. This is permitted with REORDER_TASKS
         // even while we have no visible window (unlike a plain startActivity, which
         // Android blocks as a background-activity-start once the vendor covers us).
@@ -602,20 +740,34 @@ class ScannerManager private constructor(private val application: Application) {
             am.appTasks.firstOrNull()?.let { task ->
                 am.moveTaskToFront(task.taskInfo.taskId, 0)
                 moved = true
-                Log.d(TAG, "returnToOurApp: moved our task to front")
+                Log.d(TAG, "returnToOurApp: moved our task to front (attempt $attempt)")
             }
         } catch (e: Throwable) {
             Log.w(TAG, "returnToOurApp: moveTaskToFront failed: ${e.message}")
         }
-        // Step 2 (belt-and-suspenders): once we're front again a normal relaunch is
-        // no longer BAL-blocked, so re-issue our launcher intent to be sure.
-        try {
-            application.packageManager
-                .getLaunchIntentForPackage(application.packageName)
-                ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                ?.let { application.startActivity(it) }
-        } catch (e: Throwable) {
-            Log.w(TAG, "returnToOurApp: relaunch fallback failed (moved=$moved): ${e.message}")
+        // Step 2 (fallback only): if we could not move our task, try the launcher
+        // intent. Skipped when the move succeeded — firing both would re-order the
+        // freshly moved task a second time and can flash/relayout for nothing.
+        if (!moved) {
+            try {
+                application.packageManager
+                    .getLaunchIntentForPackage(application.packageName)
+                    ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    ?.let { application.startActivity(it) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "returnToOurApp: relaunch fallback failed: ${e.message}")
+            }
+        }
+        // Verify we actually ended up in front; if the vendor UI re-covered us,
+        // retry with backoff. appInForeground is maintained by our
+        // ActivityLifecycleCallbacks, so it flips false when the vendor covers us.
+        if (attempt < RETURN_RETRY_MAX) {
+            mainHandler.postDelayed({
+                if (!appInForeground) {
+                    Log.w(TAG, "returnToOurApp: still behind the vendor UI — retry ${attempt + 1}")
+                    returnToOurApp(attempt + 1)
+                }
+            }, 900L * attempt)
         }
     }
 

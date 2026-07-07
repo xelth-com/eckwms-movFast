@@ -24,6 +24,15 @@
          reset a hung process, move our own task back to the front (normal
          permission, Play-safe; a plain startActivity would be blocked by BAL). -->
     <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <!-- One-press-scan-from-sleep: the wake key press is consumed by the system,
+         but PowerManager logs `wakeup: anykeyWakeup keyCode = 140/141/142` — with
+         READ_LOGS we read that line on SCREEN_ON and fire the scan the user asked
+         for. Development permission: NOT granted by install; provisioned per
+         device via `adb shell pm grant <pkg> android.permission.READ_LOGS`.
+         Without the grant the feature degrades to a silent no-op. -->
+    <uses-permission
+        android:name="android.permission.READ_LOGS"
+        tools:ignore="ProtectedPermissions" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
          flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
          the `free` (Play) build must not carry it. -->

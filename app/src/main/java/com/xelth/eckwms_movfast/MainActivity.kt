@@ -471,11 +471,16 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_F10,
             KeyEvent.KEYCODE_F11 -> {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    android.util.Log.d("ScanTrigger", "hardware key ${event.keyCode} → startScan()")
+                    android.util.Log.d("ScanTrigger", "hardware key ${event.keyCode} → onScanTriggerPressed")
                     try {
-                        (application as EckwmsApp).scannerManager.startScan()
+                        // Single entry point: plain startScan when the engine is up,
+                        // assisted resume-then-scan when it's suspended (stranded
+                        // vendor suspend, or this very press just woke the device —
+                        // the one-press-from-sleep path).
+                        (application as EckwmsApp).scannerManager
+                            .onScanTriggerPressed("key", event.keyCode)
                     } catch (e: Exception) {
-                        android.util.Log.w("ScanTrigger", "startScan failed: ${e.message}")
+                        android.util.Log.w("ScanTrigger", "trigger handling failed: ${e.message}")
                     }
                 }
                 return true
