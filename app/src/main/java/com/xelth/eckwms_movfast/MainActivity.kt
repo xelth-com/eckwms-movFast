@@ -33,6 +33,7 @@ import com.xelth.eckwms_movfast.ui.theme.EckwmsmovFastTheme
 import com.xelth.eckwms_movfast.ui.viewmodels.PickingViewModel
 import com.xelth.eckwms_movfast.ui.viewmodels.ScanRecoveryViewModel
 import com.xelth.eckwms_movfast.utils.BitmapCache
+import com.xelth.eckwms_movfast.utils.SettingsManager
 import com.xelth.eckwms_movfast.utils.SunlightModeManager
 
 class MainActivity : ComponentActivity() {
@@ -53,6 +54,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // One-press-from-sleep. On this PDA the scan trigger also wakes the device, so
+        // the first press is otherwise "spent" clearing the keyguard. The screen lock
+        // here is NON-secure (swipe, password quality 0) — showing over it and
+        // dismissing it bypasses no password — so we land straight on the app after a
+        // wake and onResume can auto-fire a scan. Opt-out via the same setting.
+        // NOTE: a SECURE PIN/pattern can never be bypassed by an app; requestDismissKeyguard
+        // would just surface the unlock prompt. Nothing here weakens a real lock.
+        if (SettingsManager.getAutoScanOnWake()) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            (getSystemService(android.app.KeyguardManager::class.java))
+                ?.requestDismissKeyguard(this, null)
+        }
 
         // Hide gesture indicator bar — maximize usable screen area
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -456,11 +471,16 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_F10,
             KeyEvent.KEYCODE_F11 -> {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    android.util.Log.d("ScanTrigger", "hardware key ${event.keyCode} → startScan()")
+                    android.util.Log.d("ScanTrigger", "hardware key ${event.keyCode} → onScanTriggerPressed")
                     try {
-                        (application as EckwmsApp).scannerManager.startScan()
+                        // Single entry point: plain startScan when the engine is up,
+                        // assisted resume-then-scan when it's suspended (stranded
+                        // vendor suspend, or this very press just woke the device —
+                        // the one-press-from-sleep path).
+                        (application as EckwmsApp).scannerManager
+                            .onScanTriggerPressed("key", event.keyCode)
                     } catch (e: Exception) {
-                        android.util.Log.w("ScanTrigger", "startScan failed: ${e.message}")
+                        android.util.Log.w("ScanTrigger", "trigger handling failed: ${e.message}")
                     }
                 }
                 return true

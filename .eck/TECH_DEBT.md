@@ -140,6 +140,42 @@
      newest in git; the older `1.1.x` line is also in `app/libs/` but unused) — a
      newer XCheng SDK may handle coexistence natively. The bug was intermittent;
      keep watching. If it recurs, grab `dumpsys media.camera` at the moment of death.
+   - **Update 2026-07-07 (watchdog + minimal reset, no more app restarts):** the
+     "dead scanner" has three distinct causes and all are now auto-recovered by
+     `ScannerManager`'s watchdog (foreground-gated): (1) stale AIDL binder — the
+     SDK keeps binder/ServiceConnection/init-flag as *statics* and `deInit()` is
+     not exception-safe, so re-init used to be a no-op; fixed by
+     `XCScannerWrapper.forceReinitialize()` (deInit → force-null `a/d/c/e` → init),
+     the MINIMAL reset — an app restart is NOT needed; (2) vendor "bad process" —
+     revived by a rate-limited foreground flash of the vendor activity
+     (REORDER_TASKS + moveTaskToFront back); (3) stranded camera suspend — the
+     vendor's `E3Util` suspends the scan camera on SCREEN_OFF/low-battery and the
+     **system also auto-suspends it whenever ANY app opens a camera**
+     (`ACTION_STOP_SERVICE_AUTO` with a `cameraid` extra, seen in the decompiled
+     `ScanTestReceiver`). ⚠️ Therefore the watchdog/recovery MUST stay
+     foreground-gated (`appInForeground`, default **false**): force-resuming the
+     scan camera while another app streams camera 0 recreates the ISP wedge from
+     the background (this broke the system camera for other apps once, 2026-07-07).
+     Hardware trigger = `xctech-key` F8–F11 KeyEvents delivered to the foreground
+     activity (handled in `MainActivity.dispatchKeyEvent` →
+     `ScannerManager.onScanTriggerPressed`), plus the system broadcast
+     `com.xcheng.scanner.action.OPEN_SCAN_BROADCAST` (extra `scankey`) as a second
+     signal; scans are fired ONLY from these trigger signals, never from
+     SCREEN_ON (power-button/charger wakes must not beam).
+   - **One-press-scan-from-sleep (2026-07-07):** the trigger press that WAKES the
+     device is consumed by the system entirely (no KeyEvent, no broadcast — not
+     even to the vendor app), but PowerManager logs
+     `wakeup: ----deal anykeyWakeup keyCode = 140/141/142` for key wakes (left=
+     140/F10, front=141/F11, right=142/F12) and logs NOTHING for power button /
+     charger / gestures (verified on device). On SCREEN_ON,
+     `ScannerManager.scanIfWokenByTriggerKey` reads that line via `logcat -t` and
+     fires the scan the wake press asked for. ⚠️ Needs **READ_LOGS** (development
+     permission): provision each device once with
+     `adb shell pm grant com.xelth.eckwms_movfast android.permission.READ_LOGS`
+     (or MDM) — otherwise Android shows a one-time "allow access to all device
+     logs" dialog, and if declined the feature silently degrades to
+     wake-without-scan (second press scans). Gated by the same
+     `getAutoScanOnWake()` setting as show-over-lockscreen.
 
 10. ~~**`registered_device` keyed by legacy `Settings.Secure.ANDROID_ID`, not UUID.**~~
     ✅ **FIXED 2026-06-28** (two-repo change: Rust server `eckwms` + this app).

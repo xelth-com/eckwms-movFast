@@ -20,6 +20,19 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- Re-arm trip auto-detect after reboot (normal permission, Play-safe) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Scanner watchdog: after briefly launching the vendor scan-engine app to
+         reset a hung process, move our own task back to the front (normal
+         permission, Play-safe; a plain startActivity would be blocked by BAL). -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <!-- One-press-scan-from-sleep: the wake key press is consumed by the system,
+         but PowerManager logs `wakeup: anykeyWakeup keyCode = 140/141/142` — with
+         READ_LOGS we read that line on SCREEN_ON and fire the scan the user asked
+         for. Development permission: NOT granted by install; provisioned per
+         device via `adb shell pm grant <pkg> android.permission.READ_LOGS`.
+         Without the grant the feature degrades to a silent no-op. -->
+    <uses-permission
+        android:name="android.permission.READ_LOGS"
+        tools:ignore="ProtectedPermissions" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
          flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
          the `free` (Play) build must not carry it. -->
@@ -27,6 +40,13 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Package visibility (Android 11+): the scanner watchdog may relaunch the
+         vendor scan-engine app to reset a "bad" process, so we must be able to see
+         and start com.xcheng.scannere3. -->
+    <queries>
+        <package android:name="com.xcheng.scannere3" />
+    </queries>
 
     <application
         android:name=".EckwmsApp"

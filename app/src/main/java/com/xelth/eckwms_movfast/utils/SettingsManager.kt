@@ -268,6 +268,14 @@ object SettingsManager {
     fun saveTripAutoDetect(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit() }
     fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, true)
 
+    // One-press-from-sleep: auto-fire a scan when our app comes to the foreground
+    // shortly after the device woke (the scan trigger doubles as a wake key on this
+    // PDA, so the first press is otherwise "spent" waking). ON by default; users who
+    // find the camera firing on wake distracting can turn it off.
+    private const val KEY_AUTO_SCAN_ON_WAKE = "scanner_auto_scan_on_wake"
+    fun saveAutoScanOnWake(enabled: Boolean) { prefs.edit().putBoolean(KEY_AUTO_SCAN_ON_WAKE, enabled).commit() }
+    fun getAutoScanOnWake(): Boolean = prefs.getBoolean(KEY_AUTO_SCAN_ON_WAKE, true)
+
     // DSGVO consent (Einwilligung): revocable at any time via the switch. ON by
     // default per the owner decision above; no recording happens while false.
     private const val KEY_TRIP_CONSENT = "trip_recording_consent"
