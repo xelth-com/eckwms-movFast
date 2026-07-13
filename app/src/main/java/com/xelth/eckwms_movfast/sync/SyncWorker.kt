@@ -116,6 +116,28 @@ class SyncWorker(
             Log.w(TAG, "Vehicle refresh failed (non-fatal): ${e.message}")
         }
 
+        // 2g. Fahrtenbuch self-healing: retry every ended-but-unconfirmed trip
+        // each run. The trip_sync queue job is only a fast-path poke — it gets
+        // dropped after MAX_RETRIES (e.g. a whole afternoon on LTE with the
+        // master unreachable), and GoBD data must never be stranded by that.
+        // Idempotent by trip_uuid — a double delivery is harmless.
+        try {
+            val stranded = database.tripDao().getUnsyncedEnded()
+            for (trip in stranded) {
+                val payload = com.xelth.eckwms_movfast.trips.TripManager
+                    .buildUploadJson(applicationContext, trip.id) ?: continue
+                if (apiService.uploadTrip(payload)) {
+                    database.tripDao().markSynced(trip.id, System.currentTimeMillis())
+                    Log.i(TAG, "🚗 Stranded trip ${trip.id} delivered")
+                } else {
+                    Log.d(TAG, "Stranded trip ${trip.id} still undeliverable — master unreachable")
+                    break // no point hammering the remaining ones this run
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Stranded trip sweep failed (non-fatal): ${e.message}")
+        }
+
         // 3. Process Outgoing Queue
         return try {
             val job = database.syncQueueDao().getNextJob()
@@ -482,9 +504,15 @@ class SyncWorker(
             }
 
             Log.d(TAG, "🚀 Uploading local photo ${photo.uuid} → ${photo.receiverId}")
+            // Trip expense receipts ride the same pipeline: receiver_id carries
+            // the "expense:<type>" marker instead of a device barcode — upload
+            // as fuel_receipt with no barcode binding.
+            val isReceipt = photo.receiverId?.startsWith("expense:") == true
             val result = apiService.uploadImageFile(
-                photo.originalPath, deviceId, "repair_photo",
-                photo.receiverId, null, photo.uuid, avatarPath
+                photo.originalPath, deviceId,
+                if (isReceipt) "fuel_receipt" else "repair_photo",
+                if (isReceipt) null else photo.receiverId,
+                null, photo.uuid, avatarPath
             )
 
             when (result) {

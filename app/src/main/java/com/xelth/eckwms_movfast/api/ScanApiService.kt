@@ -580,6 +580,20 @@ class ScanApiService(private val context: Context) {
             }
         }
 
+        // 3. Relay fallback (mobile data, LAN master unreachable) — mirrors
+        //    uploadImage: land the bytes as an `image_upload` mesh-task.
+        if (result is ScanResult.Error &&
+            com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId().isNotEmpty()
+        ) {
+            val bytes = try { file.readBytes() } catch (e: Exception) { null }
+            if (bytes != null &&
+                uploadImageBytesViaRelay(bytes, deviceId, scanMode, barcodeData, orderId, imageId)
+            ) {
+                result = ScanResult.Success("upload", "Image uploaded via relay",
+                    JSONObject().put("relay", true).put("image_id", imageId).toString())
+            }
+        }
+
         Log.d(TAG, "uploadImageFile END - result: ${result::class.simpleName}, imageId: $imageId")
         return@withContext result
     }
@@ -801,20 +815,30 @@ class ScanApiService(private val context: Context) {
         bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?,
         quality: Int, orderId: String?, imageId: String
     ): Boolean {
+        val bytes = try {
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
+            stream.toByteArray()
+        } catch (e: Exception) {
+            Log.w(TAG, "Image relay: compress failed (${e.message})"); return false
+        }
+        return uploadImageBytesViaRelay(bytes, deviceId, scanMode, barcodeData, orderId, imageId)
+    }
+
+    /** Byte-level relay upload — shared by the bitmap path above and the
+     *  file-based path ([uploadImageFile], e.g. queued receipt photos). */
+    private suspend fun uploadImageBytesViaRelay(
+        bytes: ByteArray, deviceId: String, scanMode: String, barcodeData: String?,
+        orderId: String?, imageId: String
+    ): Boolean {
         val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
         if (master.isEmpty()) return false
         val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
         if (polygon.isEmpty()) return false
-        val token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
-        if (token.isEmpty()) return false
+        var token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+        if (token.isEmpty()) token = relaySilentReAuth() ?: return false
         val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
-        val b64 = try {
-            val stream = java.io.ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
-            android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
-        } catch (e: Exception) {
-            Log.w(TAG, "Image relay: compress failed (${e.message})"); return false
-        }
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
         val body = JSONObject().apply {
             put("token", token)
             put("device_id", deviceId)
@@ -826,28 +850,15 @@ class ScanApiService(private val context: Context) {
             put("mime_type", "image/webp")
             put("image_b64", b64)
         }
-        for (raw in polygon) {
-            val relayBase = raw.trimEnd('/')
-            val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId)
-            when (val outcome = relay.meshDispatch(master, "image_upload", body)) {
-                is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
-                    val res = pollRelayResult(relay, outcome.taskId)
-                    if (res != null && res.optBoolean("ok", false)) {
-                        Log.i(TAG, "Image delivered via relay $relayBase (ImageID: $imageId)")
-                        return true
-                    }
-                    Log.w(TAG, "Image relay via $relayBase: no ok ack — next relay")
-                }
-                is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
-                    Log.w(TAG, "Image relay rejected by $relayBase: ${outcome.message}")
-                    return false
-                }
-                is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
-                    Log.w(TAG, "Image relay $relayBase unavailable (${outcome.message}) — next relay")
-                }
+        return when (dispatchMeshTask(master, meshId, polygon, "image_upload", body)) {
+            MeshOutcome.OK -> true
+            MeshOutcome.BAD_TOKEN -> {
+                val fresh = relaySilentReAuth() ?: return false
+                body.put("token", fresh)
+                dispatchMeshTask(master, meshId, polygon, "image_upload", body) == MeshOutcome.OK
             }
+            MeshOutcome.FAIL -> false
         }
-        return false
     }
 
     /**
@@ -2254,7 +2265,9 @@ class ScanApiService(private val context: Context) {
 
     /** Deliver a trip payload to the (NAT'd) master via the relay polygon as a
      *  `trip_upload` mesh-task. Returns true on the master's ok ack. Adds the
-     *  device JWT as `token` for auth parity with the HTTP path. */
+     *  device JWT as `token` for auth parity with the HTTP path; a token
+     *  rejection triggers ONE relay-based silent re-auth + retry (the relay
+     *  path never sees an HTTP 401, so the usual refresh hook can't fire). */
     private suspend fun uploadTripViaRelay(payload: String): Boolean {
         val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
         if (master.isEmpty()) return false
@@ -2262,31 +2275,128 @@ class ScanApiService(private val context: Context) {
         if (polygon.isEmpty()) return false
         val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
         val body = try { JSONObject(payload) } catch (e: Exception) { return false }
-        val token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
-        if (token.isNotEmpty()) body.put("token", token)
+        var token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+        if (token.isEmpty()) token = relaySilentReAuth() ?: return false
+        body.put("token", token)
 
+        return when (dispatchMeshTask(master, meshId, polygon, "trip_upload", body)) {
+            MeshOutcome.OK -> true
+            MeshOutcome.BAD_TOKEN -> {
+                val fresh = relaySilentReAuth() ?: return false
+                body.put("token", fresh)
+                dispatchMeshTask(master, meshId, polygon, "trip_upload", body) == MeshOutcome.OK
+            }
+            MeshOutcome.FAIL -> false
+        }
+    }
+
+    private enum class MeshOutcome { OK, BAD_TOKEN, FAIL }
+
+    /** One polygon sweep of a mesh-task dispatch: queue on a relay, wait for the
+     *  master's ack, walk to the next relay on silence. BAD_TOKEN = the master
+     *  answered but rejected the device JWT — re-auth, don't walk further. */
+    private suspend fun dispatchMeshTask(
+        master: String, meshId: String, polygon: List<String>, kind: String, body: JSONObject
+    ): MeshOutcome {
         for (raw in polygon) {
             val relayBase = raw.trimEnd('/')
             val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId)
-            when (val outcome = relay.meshDispatch(master, "trip_upload", body)) {
+            when (val outcome = relay.meshDispatch(master, kind, body)) {
                 is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok -> {
                     val res = pollRelayResult(relay, outcome.taskId)
                     if (res != null && res.optBoolean("ok", false)) {
-                        Log.i(TAG, "Trip delivered via relay $relayBase")
-                        return true
+                        Log.i(TAG, "$kind delivered via relay $relayBase")
+                        return MeshOutcome.OK
                     }
-                    Log.w(TAG, "Trip relay via $relayBase: no ok ack — next relay")
+                    val err = res?.optString("error", "") ?: ""
+                    if (err.contains("token", ignoreCase = true)) {
+                        Log.w(TAG, "$kind via $relayBase: master rejected device token → re-auth")
+                        return MeshOutcome.BAD_TOKEN
+                    }
+                    Log.w(TAG, "$kind relay via $relayBase: no ok ack (${err.ifBlank { "timeout" }}) — next relay")
                 }
                 is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
-                    Log.w(TAG, "Trip relay rejected by $relayBase: ${outcome.message}")
-                    return false
+                    Log.w(TAG, "$kind relay rejected by $relayBase: ${outcome.message}")
+                    return MeshOutcome.FAIL
                 }
                 is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
-                    Log.w(TAG, "Trip relay $relayBase unavailable (${outcome.message}) — next relay")
+                    Log.w(TAG, "$kind relay $relayBase unavailable (${outcome.message}) — next relay")
                 }
             }
         }
-        return false
+        return MeshOutcome.FAIL
+    }
+
+    /** Relay-based silent re-auth (the mesh-queue twin of [performSilentAuth]):
+     *  the master rejected/misses our device JWT and HTTP is unreachable (mobile
+     *  data), so re-register over the SAME relay polygon pairing uses —
+     *  `device_challenge` → sign {deviceId, publicKey, nonce} → `device_register`.
+     *  The master resolves the device by its Ed25519 public key, so the existing
+     *  UUID is reused and a fresh JWT comes back. Field case 2026-07-13: trips
+     *  piled up behind "invalid or missing device token" acks forever, because
+     *  only the HTTP 401 path could refresh the token. */
+    private suspend fun relaySilentReAuth(): String? {
+        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+        if (master.isEmpty()) return null
+        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
+        if (polygon.isEmpty()) return null
+        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
+        return try {
+            val crypto = com.xelth.eckwms_movfast.utils.CryptoManager
+            val pubKey = crypto.getPublicKeyBase64()
+            // Pairing signs with the raw ANDROID_ID (the server re-resolves the
+            // canonical UUID by public key) — mirror it exactly.
+            val androidId = android.provider.Settings.Secure.getString(
+                context.contentResolver, android.provider.Settings.Secure.ANDROID_ID
+            ) ?: return null
+
+            // Phase 1: single-use challenge nonce from the master (replay-proof).
+            var nonce: String? = null
+            for (raw in polygon) {
+                val relay = com.xelth.eckwms_movfast.sync.RelayClient(raw.trimEnd('/'), deviceId, meshId)
+                val outcome = relay.meshDispatch(master, "device_challenge", JSONObject())
+                if (outcome is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok) {
+                    nonce = pollRelayResult(relay, outcome.taskId)
+                        ?.optString("nonce", "")?.takeIf { it.isNotBlank() }
+                    if (nonce != null) break
+                }
+            }
+            if (nonce == null) {
+                Log.w(TAG, "Relay re-auth: no challenge nonce from master")
+                return null
+            }
+
+            // Phase 2: nonce-bound signed registration → fresh token.
+            val sigData =
+                "{\"deviceId\":\"$androidId\",\"devicePublicKey\":\"$pubKey\",\"nonce\":\"$nonce\"}"
+            val signature = android.util.Base64.encodeToString(
+                crypto.sign(sigData.toByteArray()), android.util.Base64.NO_WRAP
+            )
+            val payload = JSONObject().apply {
+                put("deviceId", androidId)
+                put("devicePublicKey", pubKey)
+                put("signature", signature)
+                put("nonce", nonce)
+            }
+            for (raw in polygon) {
+                val relay = com.xelth.eckwms_movfast.sync.RelayClient(raw.trimEnd('/'), deviceId, meshId)
+                val outcome = relay.meshDispatch(master, "device_register", payload)
+                if (outcome is com.xelth.eckwms_movfast.sync.RelayDispatch.Ok) {
+                    val res = pollRelayResult(relay, outcome.taskId)
+                    val token = res?.optString("token", "")?.takeIf { it.isNotBlank() }
+                    if (token != null) {
+                        com.xelth.eckwms_movfast.utils.SettingsManager.saveAuthToken(token)
+                        Log.i(TAG, "✅ Relay re-auth: fresh device token saved")
+                        return token
+                    }
+                }
+            }
+            Log.w(TAG, "Relay re-auth: master never returned a token")
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "Relay re-auth failed: ${e.message}")
+            null
+        }
     }
 
     /** Poll a dispatched relay task for the master's ack (null on timeout). */

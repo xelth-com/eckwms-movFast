@@ -1143,6 +1143,14 @@ class MainScreenViewModel : ViewModel() {
             }
             "act_photo" -> "capture_photo_continuous"
             "act_scan" -> "capture_barcode_continuous"
+            // 🚗 long-press = trip mode with the LAST TRIPS listed in the
+            // console (offline view straight from Room — no server needed).
+            "navigate_trips" -> {
+                enterTripMode()
+                "trip_history"
+            }
+            // 🧾 long-press = the last logged expenses in the trip console.
+            "trip_fuel" -> "trip_expense_history"
             else -> onButtonClick(action) // fallback to normal click
         }
     }

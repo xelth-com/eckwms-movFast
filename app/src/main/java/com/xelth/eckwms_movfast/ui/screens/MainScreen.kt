@@ -235,6 +235,10 @@ fun MainScreen(
     // OR dictated/typed address) + odometer
     val tripScope = rememberCoroutineScope()
     val tripDestinations by mainViewModel.tripDestinations.observeAsState(emptyList())
+    // Long-press history overlay for the trip console (offline, straight from
+    // Room): 🚗 = last trips, 🧾 = last expenses. Any destination load (city
+    // tap / search) or leaving trip mode swaps the ticket list back in.
+    var tripHistoryRows by remember { mutableStateOf<List<ConsoleRow>?>(null) }
     var tripQuery by remember { mutableStateOf("") }
     var tripListening by remember { mutableStateOf(false) }
     val speech = remember { com.xelth.eckwms_movfast.utils.SpeechToText(context) }
@@ -281,6 +285,14 @@ fun MainScreen(
             kotlinx.coroutines.delay(350)
             mainViewModel.searchTripDestinations(tripQuery)
         }
+    }
+    // Fresh destinations (city tap / search result) replace the history overlay;
+    // leaving trip mode drops it entirely.
+    LaunchedEffect(tripDestinations) {
+        if (tripDestinations.isNotEmpty()) tripHistoryRows = null
+    }
+    LaunchedEffect(isTripMode) {
+        if (!isTripMode) tripHistoryRows = null
     }
     DisposableEffect(Unit) { onDispose { speech.destroy(); voiceRec.cancel() } }
 
@@ -531,15 +543,49 @@ fun MainScreen(
             android.widget.Toast.makeText(context, "🧾 Receipt captured", android.widget.Toast.LENGTH_SHORT).show()
             tripScope.launch {
                 val photoId = java.util.UUID.randomUUID().toString()
+                // A receipt is a tax document — persist it to DISK first (the
+                // 2026-07-13 field day lost one: upload-only + LTE + dead
+                // process = photo gone). The id is valid immediately; the
+                // local-photo pipeline retries the upload until the master
+                // becomes reachable.
                 try {
+                    val dir = java.io.File(context.filesDir, "photos").apply { mkdirs() }
+                    val photoFile = java.io.File(dir, "orig_$photoId.webp")
+                    java.io.FileOutputStream(photoFile).use { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+                    }
+                    val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                    db.localPhotoDao().insert(
+                        com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity(
+                            uuid = photoId,
+                            receiverId = "expense:" + mainViewModel.currentExpenseType(),
+                            originalPath = photoFile.absolutePath,
+                            avatarPath = null,
+                            syncStatus = com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity.STATUS_PENDING
+                        )
+                    )
+                    fuelReceiptPhotoId = photoId
+                    mainViewModel.setFuelReceiptOk(true)
+                    // Best-effort immediate delivery; a miss is fine — the
+                    // SyncWorker photo pipeline owns the retry.
                     val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
                     val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(context)
-                    val res = api.uploadImage(bitmap, deviceId, "fuel_receipt", null, quality = 75, existingImageId = photoId)
+                    val res = api.uploadImageFile(
+                        photoFile.absolutePath, deviceId, "fuel_receipt", null, null, photoId, null
+                    )
                     if (res is com.xelth.eckwms_movfast.api.ScanResult.Success) {
-                        fuelReceiptPhotoId = photoId
-                        mainViewModel.setFuelReceiptOk(true)
-                    } else mainViewModel.addLog("Receipt upload failed")
-                } catch (e: Exception) { android.util.Log.w("MainScreen", "receipt upload: ${e.message}") }
+                        db.localPhotoDao().updateSyncStatus(
+                            photoId,
+                            com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity.STATUS_SYNCED
+                        )
+                    } else {
+                        mainViewModel.addLog("🧾 Beleg lokal gespeichert — Upload folgt später")
+                        com.xelth.eckwms_movfast.sync.SyncManager.scheduleSync(context)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MainScreen", "receipt save: ${e.message}")
+                    mainViewModel.addLog("Receipt save failed: ${e.message}")
+                }
             }
         }
     }
@@ -1227,7 +1273,9 @@ fun MainScreen(
                         // populate it. Status/input/mic intentionally removed.
                         Column(modifier = Modifier.fillMaxSize()) {
                             ConsoleList(
-                                rows = tripDestinations.map { dest ->
+                                // History overlay (long-press 🚗/🧾) wins over
+                                // the destination/ticket list while it's shown.
+                                rows = tripHistoryRows ?: tripDestinations.map { dest ->
                                     ConsoleRow(
                                         id = dest.purposeRef,
                                         primary = dest.label,
@@ -1323,6 +1371,58 @@ fun MainScreen(
                             }
                             "capture_barcode_continuous" -> {
                                 navController.navigate("cameraScanScreen?scan_mode=barcode_continuous")
+                            }
+                            // 🚗 long-press → the last 20 trips as console rows
+                            // (local Room data — works with no server at all).
+                            "trip_history" -> tripScope.launch {
+                                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                                val df = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.GERMANY)
+                                val tf = java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMANY)
+                                tripHistoryRows = db.tripDao().getRecentTrips(20).map { t ->
+                                    val span = df.format(java.util.Date(t.startedAt)) +
+                                        (t.endedAt?.let { "–" + tf.format(java.util.Date(it)) } ?: " · läuft")
+                                    val km = if (t.startOdometerKm != null && t.endOdometerKm != null)
+                                        "${(t.endOdometerKm - t.startOdometerKm).toInt()} km"
+                                    else t.endOdometerKm?.let { "bis ${it.toInt()} km" }
+                                    ConsoleRow(
+                                        id = "trip_${t.id}",
+                                        primary = "🚗 $span",
+                                        secondary = listOfNotNull(
+                                            t.purposeLabel?.takeIf { it.isNotBlank() } ?: t.purpose,
+                                            t.vehiclePlate?.takeIf { it.isNotBlank() },
+                                            km
+                                        ).joinToString(" · "),
+                                        trailing = when (t.status) {
+                                            "synced" -> "✓"
+                                            "recording" -> "⏺"
+                                            else -> "⏳"
+                                        }
+                                    )
+                                }
+                            }
+                            // 🧾 long-press → the last 20 logged expenses.
+                            "trip_expense_history" -> tripScope.launch {
+                                val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
+                                val df = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.GERMANY)
+                                val icons = mapOf(
+                                    "fuel" to "⛽", "parking" to "🅿️",
+                                    "toll" to "🛣️", "receipt" to "🧾"
+                                )
+                                val rows = db.tripDao().getRecentExpenses(20).map { p ->
+                                    ConsoleRow(
+                                        id = "exp_${p.id}",
+                                        primary = (icons[p.kind] ?: "🧾") + " " +
+                                            df.format(java.util.Date(p.ts)) +
+                                            (p.odometerKm?.let { " · ${it.toInt()} km" } ?: ""),
+                                        secondary = p.label,
+                                        trailing = if (p.photoId != null) "📷" else null
+                                    )
+                                }
+                                if (rows.isEmpty()) {
+                                    mainViewModel.addLog("🧾 Keine Ausgaben erfasst")
+                                } else {
+                                    tripHistoryRows = rows
+                                }
                             }
                             else -> {
                                 // Intake sheet for repair slots only

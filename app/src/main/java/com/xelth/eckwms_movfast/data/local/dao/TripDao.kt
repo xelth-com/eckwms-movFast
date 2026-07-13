@@ -30,6 +30,23 @@ interface TripDao {
     @Query("SELECT * FROM trips ORDER BY startedAt DESC LIMIT :limit")
     fun observeTrips(limit: Int = 50): Flow<List<TripEntity>>
 
+    // Long-press on the 🚗 hex → the last trips as console rows (offline view).
+    @Query("SELECT * FROM trips ORDER BY startedAt DESC LIMIT :limit")
+    suspend fun getRecentTrips(limit: Int = 20): List<TripEntity>
+
+    // Long-press on the 🧾 expense hex → the last logged expenses across all
+    // trips (fuel/parking/toll/receipt points — the tax-relevant events).
+    @Query(
+        "SELECT * FROM trip_points WHERE kind IN ('fuel','parking','toll','receipt') " +
+        "ORDER BY ts DESC LIMIT :limit"
+    )
+    suspend fun getRecentExpenses(limit: Int = 20): List<TripPointEntity>
+
+    // Ended trips the server never confirmed — the SyncWorker sweep retries
+    // these every run (a dropped queue job must not strand GoBD data).
+    @Query("SELECT * FROM trips WHERE status = 'ended' ORDER BY startedAt ASC LIMIT :limit")
+    suspend fun getUnsyncedEnded(limit: Int = 20): List<TripEntity>
+
     @Query("SELECT * FROM trip_points WHERE tripId = :tripId ORDER BY seq ASC")
     suspend fun getPoints(tripId: String): List<TripPointEntity>
 
@@ -84,7 +101,13 @@ interface TripDao {
     @Query("UPDATE trips SET vehicleId = :vehicleId, vehiclePlate = :plate WHERE id = :id")
     suspend fun setVehicle(id: String, vehicleId: String?, plate: String?)
 
-    @Query("DELETE FROM trip_points WHERE tripId IN (SELECT id FROM trips WHERE status = 'synced' AND syncedAt < :olderThan)")
+    // DSGVO retention prunes only the raw auto track — expenses (fuel/parking/
+    // toll/receipt) and named checkpoints are tax documents and stay on-device
+    // (the app is self-sufficient without the server).
+    @Query(
+        "DELETE FROM trip_points WHERE kind = 'auto' AND " +
+        "tripId IN (SELECT id FROM trips WHERE status = 'synced' AND syncedAt < :olderThan)"
+    )
     suspend fun prunePointsOfOldSyncedTrips(olderThan: Long)
 
     // ── Tentative end (odometer-photo stop signal) ─────────────────────────────
