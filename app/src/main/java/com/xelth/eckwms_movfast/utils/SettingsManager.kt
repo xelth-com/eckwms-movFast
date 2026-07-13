@@ -769,6 +769,15 @@ object SettingsManager {
     fun getCurrentUserId(): String = prefs.getString(KEY_CURRENT_USER_ID, "") ?: ""
     fun getCurrentUserName(): String = prefs.getString(KEY_CURRENT_USER_NAME, "") ?: ""
 
+    // Cached roster of active users (JSON). The phone is usually OFF the master's
+    // LAN (different subnet / LTE) and there is no global URL, so the live fetch
+    // fails there; without a cache the user list is empty every launch. Persist
+    // the last good roster so users stay pickable offline (self-sufficient like
+    // trips/expenses). Only overwritten on a SUCCESSFUL fetch.
+    private const val KEY_USERS_ROSTER = "users_roster_json"
+    fun saveUsersRoster(json: String) = prefs.edit().putString(KEY_USERS_ROSTER, json).apply()
+    fun getUsersRoster(): String = prefs.getString(KEY_USERS_ROSTER, "") ?: ""
+
     // --- Mesh Networking ---
 
     private const val KEY_INSTANCE_ID = "instance_id"

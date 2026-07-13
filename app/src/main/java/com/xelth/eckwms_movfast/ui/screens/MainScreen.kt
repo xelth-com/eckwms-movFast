@@ -839,8 +839,10 @@ fun MainScreen(
         mainViewModel.onFetchUsers = { scanApiService.fetchActiveUsers() }
         mainViewModel.onVerifyPin = { userId, pin -> scanApiService.verifyUserPin(userId, pin) }
         mainViewModel.onChangePassword = { oldPw, newPw -> scanApiService.changePassword(oldPw, newPw) }
-        // Restore saved user + load user list from server
+        // Restore saved user + cached roster FIRST (usable offline / off-LAN),
+        // then refresh from server (a failed refresh keeps the cache).
         com.xelth.eckwms_movfast.ui.viewmodels.UserManager.restoreFromSettings()
+        com.xelth.eckwms_movfast.ui.viewmodels.UserManager.restoreRosterFromCache()
         mainViewModel.loadAvailableUsers()
     }
 

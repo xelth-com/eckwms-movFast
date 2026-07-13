@@ -2949,37 +2949,32 @@ class ScanApiService(private val context: Context) {
     // --- Multi-User API ---
 
     suspend fun fetchActiveUsers(): List<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>? = withContext(Dispatchers.IO) {
-        val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        // Route through the shared failover helper: active URL → silent re-auth
+        // on 401 → global. The old direct call skipped re-auth entirely, so a
+        // stale device JWT (the same root cause that stranded trips 2026-07-13)
+        // made this log "HTTP 401" and return null — users never loaded.
+        val result = authenticatedGetWithFailover("/api/users/active")
+        if (result !is ScanResult.Success) {
+            Log.w(TAG, "fetchActiveUsers failed: ${(result as? ScanResult.Error)?.message}")
+            return@withContext null
+        }
         try {
-            val url = URL("$baseUrl/api/users/active")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 15000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
-
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                val jsonArray = JSONArray(response)
-                val list = mutableListOf<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>()
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    list.add(com.xelth.eckwms_movfast.ui.viewmodels.AppUser(
-                        id = obj.getString("id"),
-                        username = obj.optString("username", ""),
-                        name = obj.optString("name", ""),
-                        role = obj.optString("role", "user"),
-                        mustChangePassword = obj.optBoolean("mustChangePassword", false)
-                    ))
-                }
-                Log.i(TAG, "Fetched ${list.size} active users")
-                return@withContext list
-            } else {
-                Log.w(TAG, "fetchActiveUsers: HTTP ${connection.responseCode}")
+            val jsonArray = JSONArray(result.data)
+            val list = mutableListOf<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>()
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                list.add(com.xelth.eckwms_movfast.ui.viewmodels.AppUser(
+                    id = obj.getString("id"),
+                    username = obj.optString("username", ""),
+                    name = obj.optString("name", ""),
+                    role = obj.optString("role", "user"),
+                    mustChangePassword = obj.optBoolean("mustChangePassword", false)
+                ))
             }
+            Log.i(TAG, "Fetched ${list.size} active users")
+            return@withContext list
         } catch (e: Exception) {
-            Log.e(TAG, "Error fetching active users", e)
+            Log.e(TAG, "Error parsing active users", e)
         }
         return@withContext null
     }

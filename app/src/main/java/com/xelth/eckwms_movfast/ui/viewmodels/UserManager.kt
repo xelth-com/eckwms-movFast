@@ -60,6 +60,49 @@ object UserManager {
 
     fun setAvailableUsers(users: List<AppUser>) {
         _availableUsers.value = users
+        // Cache the roster so it survives app restarts AND off-LAN sessions (the
+        // master is usually on a different subnet / unreachable — without this
+        // the picker is empty until the phone is back on the workshop LAN).
+        if (users.isNotEmpty()) {
+            try {
+                val arr = org.json.JSONArray()
+                users.forEach { u ->
+                    arr.put(org.json.JSONObject().apply {
+                        put("id", u.id); put("username", u.username); put("name", u.name)
+                        put("role", u.role); put("mustChangePassword", u.mustChangePassword)
+                    })
+                }
+                SettingsManager.saveUsersRoster(arr.toString())
+            } catch (e: Exception) {
+                android.util.Log.w("UserManager", "roster cache failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Load the cached roster into memory (call on start before the live fetch,
+     *  so users are pickable immediately and even fully offline). */
+    fun restoreRosterFromCache() {
+        val json = SettingsManager.getUsersRoster()
+        if (json.isBlank()) return
+        try {
+            val arr = org.json.JSONArray(json)
+            val list = ArrayList<AppUser>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(AppUser(
+                    id = o.getString("id"),
+                    username = o.optString("username", ""),
+                    name = o.optString("name", ""),
+                    role = o.optString("role", "user"),
+                    mustChangePassword = o.optBoolean("mustChangePassword", false)
+                ))
+            }
+            if (list.isNotEmpty() && _availableUsers.value.isEmpty()) {
+                _availableUsers.value = list
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("UserManager", "roster restore failed: ${e.message}")
+        }
     }
 
     /** Long press: login as user (Anmeldung). Resets viewingUser to self. */
