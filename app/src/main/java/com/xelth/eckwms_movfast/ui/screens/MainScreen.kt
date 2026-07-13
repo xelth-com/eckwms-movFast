@@ -200,6 +200,19 @@ fun MainScreen(
             granted && com.xelth.eckwms_movfast.trips.TripManager.enableAutoDetect(context)
         )
     }
+    // "Allow all the time" location — the OS shows its own settings page for
+    // this one (Android 11+). Without it an auto-detected recording is
+    // location-starved while the screen is off (0 track points).
+    val tripBgLocLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        mainViewModel.tripBgLocationGranted = granted
+        mainViewModel.addLog(
+            if (granted) "🌍 Standort „immer erlauben\" aktiv — Auto-Fahrten zeichnen jetzt auch bei ausgeschaltetem Bildschirm auf"
+            else "⚠ Ohne „immer erlauben\" bleibt der Track einer Auto-Fahrt leer, solange der Bildschirm aus ist"
+        )
+        mainViewModel.refreshTripGrid()
+    }
     // Km hex shows the ESTIMATED current odometer while a trip is recording
     // (start reading + track distance so far) — refreshed once a minute.
     LaunchedEffect(isTripMode) {
@@ -247,6 +260,8 @@ fun MainScreen(
         mutableStateOf<List<com.xelth.eckwms_movfast.data.local.entity.VehicleEntity>>(emptyList())
     }
     LaunchedEffect(Unit) {
+        mainViewModel.tripBgLocationGranted =
+            com.xelth.eckwms_movfast.trips.TripManager.hasBackgroundLocation(context)
         com.xelth.eckwms_movfast.trips.VehicleManager.refresh(context)
         tripVehicles = com.xelth.eckwms_movfast.trips.VehicleManager.knownVehicles(context)
         // Feed known plates to the Kennzeichen field sub-menu as quick-pick hexes.
@@ -328,10 +343,17 @@ fun MainScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            if (tripPendingArm) {
+            // Arming only makes sense when something can consume the intent —
+            // without Activity Recognition (permission + toggle) the armed trip
+            // could NEVER begin and silently expired after 2 h (2026-07-13 field
+            // case). No detector → start directly instead.
+            val canAutoStart = com.xelth.eckwms_movfast.trips.TripManager.hasActivityPermission(context) &&
+                com.xelth.eckwms_movfast.utils.SettingsManager.getTripAutoDetect()
+            if (tripPendingArm && canAutoStart) {
                 // Start hex = declared INTENT (same semantics as the spoken
                 // declaration): the trip starts on the next vehicle movement;
-                // no movement within the 2 h TTL → silently forgotten.
+                // no movement within the 2 h TTL → silently forgotten (the
+                // yellow hex force-starts it any time before that).
                 val armLabel = tripPendingLabel ?: ""
                 val armSource = tripPendingSource
                 tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -357,14 +379,21 @@ fun MainScreen(
                         "🕐 Start armed — trip begins on movement (auto-expires in 2 h)" +
                             (armLabel.takeIf { it.isNotBlank() }?.let { " · „$it\"" } ?: "")
                     )
-                    if (!com.xelth.eckwms_movfast.trips.TripManager.hasActivityPermission(context) ||
-                        !com.xelth.eckwms_movfast.utils.SettingsManager.getTripAutoDetect()
-                    ) {
-                        mainViewModel.addLog("⚠ Auto-Start is OFF — the armed trip can't begin; enable it in ⚙ Settings")
+                    // Auto-started recording is location-starved without "allow
+                    // all the time" — surface the system grant flow right here,
+                    // while the driver is still standing at the car.
+                    if (!com.xelth.eckwms_movfast.trips.TripManager.hasBackgroundLocation(context)) {
+                        mainViewModel.addLog("⚠ Standort „immer erlauben\" fehlt — ohne ihn bleibt der Track leer, bis der Bildschirm angeht")
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            tripBgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                        }
                     }
                     mainViewModel.refreshTripGrid()
                 }
             } else {
+                if (tripPendingArm) {
+                    mainViewModel.addLog("▶ Auto-Erkennung aus — Fahrt startet sofort")
+                }
                 // Plate/Km pre-set on the hex field menus ride IN the start intent —
                 // the service applies them atomically with the trip row. (The old
                 // post-start getOpenTrip() write raced the service's async insert
@@ -562,6 +591,25 @@ fun MainScreen(
             // Trip start/stop sub-menu (replaces the TripsScreen panel)
             "trip_start_business" -> tripStartWithPurpose("business")
             "trip_start_private" -> tripStartWithPurpose("private")
+            // Yellow armed hex: the driver forces the start NOW — detection
+            // didn't come (or won't). Consumes the intent with all its fields;
+            // started from the UI the FGS has full location rights.
+            "trip_force_start" -> {
+                if (com.xelth.eckwms_movfast.trips.TripManager.startTripFromIntent(context, manual = true)) {
+                    mainViewModel.addLog("🚗 Fahrt manuell gestartet (armed Intent übernommen)")
+                } else {
+                    mainViewModel.addLog("🕐 Kein armed Intent mehr — normal starten")
+                    mainViewModel.refreshTripGrid()
+                }
+            }
+            // ✕/✓ BG-Standort hex in the trip settings sub-menu.
+            "trip_bg_location" -> {
+                if (com.xelth.eckwms_movfast.trips.TripManager.hasBackgroundLocation(context)) {
+                    mainViewModel.addLog("🌍 Standort „immer erlauben\" ist bereits aktiv")
+                } else {
+                    tripBgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                }
+            }
             "trip_stop" -> tripOdometerEnd = true   // end-km dialog → finalize
             "trip_odometer" -> tripOdometerStart = true  // km + Kfz dialog
             "trip_recenter" -> mapRecenterTick++    // pan map to current position

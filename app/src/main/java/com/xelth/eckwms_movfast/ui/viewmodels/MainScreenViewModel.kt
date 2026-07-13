@@ -1570,6 +1570,21 @@ class MainScreenViewModel : ViewModel() {
         _tripAutoDetect.value = com.xelth.eckwms_movfast.utils.SettingsManager.getTripAutoDetect()
         _tripStatus.value = "Fahrten — Stadt wählen oder tippen/🎤"
         tripSelectedCity = null
+        // Re-hydrate the field hexes from an armed intent: the intent survives
+        // process death (prefs), the ViewModel fields don't — after a restart
+        // the driver saw EMPTY plate/km/purpose although the armed intent still
+        // carried them ("всё куда-то делось", 2026-07-13). Armed values show
+        // yellow ("auto") — user-set values in this session stay green.
+        com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent()?.let { ti ->
+            if (tripPlate.isNullOrBlank()) ti.plate?.let { tripPlate = it; tripPlateSource = "auto" }
+            if (tripKm.isNullOrBlank()) ti.odoKm?.let {
+                tripKm = if (it == Math.floor(it)) it.toLong().toString() else it.toString()
+                tripKmSource = "auto"
+            }
+            if (tripPurpose.isNullOrBlank()) ti.label.takeIf { l -> l.isNotBlank() }?.let {
+                tripPurpose = it; tripPurposeSource = "auto"
+            }
+        }
         addLog("Entered Trip Mode")
         renderTripGrid()
         refreshTripDestinations() // load the city chips
@@ -1707,6 +1722,9 @@ class MainScreenViewModel : ViewModel() {
     // Known/previous values shown as quick-pick hexes (populated from MainScreen).
     var tripKnownPlates: List<String> = emptyList()
     var tripKnownPurposes: List<String> = emptyList()
+    // "Allow all the time" location state (synced from MainScreen — the
+    // ViewModel has no context). Drives the ✓/✕ BG-Standort settings hex.
+    var tripBgLocationGranted: Boolean = true
 
     private fun fieldColor(source: String) = when (source) {
         "user" -> "#2E7D32"   // green
@@ -1937,6 +1955,16 @@ class MainScreenViewModel : ViewModel() {
                 "color" to "#455A64",
                 "action" to "trip_toggle_liveshare"
             ))
+            // "Allow all the time" location — without it auto-detected trips
+            // record ZERO points while the screen is off (Android strips
+            // location from a background-started FGS). Red = broken auto
+            // recording; tap opens the system grant flow (MainScreen).
+            uiItems.add(mapOf(
+                "type" to "button",
+                "label" to if (tripBgLocationGranted) "✓ BG\nStandort" else "✕ BG\nStandort",
+                "color" to if (tripBgLocationGranted) "#455A64" else "#C62828",
+                "action" to "trip_bg_location"
+            ))
         } else {
             // Row-major flow onto the fixed hex geometry (row 0: col 1 free —
             // Photo/Scan pinned at 3/5; row 1: cols 0/2 free — 🎤 Audio pinned
@@ -1964,11 +1992,15 @@ class MainScreenViewModel : ViewModel() {
                 "action" to "trip_recenter"
             ))
             // Start = INTENT (like the spoken declaration): arming turns the hex
-            // yellow (tap cancels); the trip starts on movement, or the intent
-            // silently expires after 2 h (peekTripIntent clears it). The hex is a
+            // yellow; the trip starts on movement, or the intent silently
+            // expires after 2 h (peekTripIntent clears it). The hex is a
             // plain traffic light — grey idle, YELLOW armed, GREEN once Android
-            // actually detects driving. The checklist decoration lives on the
-            // MAIN-MENU Trips hex (initializeGrid), not here.
+            // actually detects driving. Tapping the YELLOW hex forces the start
+            // NOW (2026-07-13 field case: Activity Recognition never fired for
+            // a whole drive — the driver needs a manual escape hatch, and a
+            // second tap on "Start" is what they try anyway). Cancelling an
+            // armed intent moved to the Stop hex. The checklist decoration
+            // lives on the MAIN-MENU Trips hex (initializeGrid), not here.
             val armedIntent = if (recording) null
                 else com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent()
             uiItems.add(when {
@@ -1977,8 +2009,8 @@ class MainScreenViewModel : ViewModel() {
                     "color" to "#2E7D32", "action" to "trip_start_business", "enabled" to false
                 )
                 armedIntent != null -> mapOf(
-                    "type" to "button", "label" to "🕐\nStart",
-                    "color" to "#F9A825", "action" to "trip_cancel_intent", "enabled" to true
+                    "type" to "button", "label" to "🕐▶\nStart",
+                    "color" to "#F9A825", "action" to "trip_force_start", "enabled" to true
                 )
                 else -> mapOf(
                     "type" to "button", "label" to "🚗\nStart",
@@ -1993,11 +2025,22 @@ class MainScreenViewModel : ViewModel() {
                 "color" to if (recording) "#00695C" else "#424242",
                 "action" to "trip_checkpoint", "enabled" to recording
             ))
-            uiItems.add(mapOf(
-                "type" to "button", "label" to "⏹\nStop",
-                "color" to if (recording) "#C62828" else "#424242",
-                "action" to "trip_stop", "enabled" to recording
-            ))
+            // Stop doubles as the armed-intent cancel (the yellow Start hex
+            // now force-starts instead of cancelling).
+            uiItems.add(when {
+                recording -> mapOf(
+                    "type" to "button", "label" to "⏹\nStop",
+                    "color" to "#C62828", "action" to "trip_stop", "enabled" to true
+                )
+                armedIntent != null -> mapOf(
+                    "type" to "button", "label" to "✕\nCancel",
+                    "color" to "#C62828", "action" to "trip_cancel_intent", "enabled" to true
+                )
+                else -> mapOf(
+                    "type" to "button", "label" to "⏹\nStop",
+                    "color" to "#424242", "action" to "trip_stop", "enabled" to false
+                )
+            })
             // Three field buttons (pulled out of the old start sub-menu) — colour
             // shows state (red empty / yellow auto / green user-set); each opens
             // its own hex sub-menu (known values + Photo→OCR + keypad/keyboard).
@@ -2150,7 +2193,8 @@ class MainScreenViewModel : ViewModel() {
             // permissions) — return the action; setTripRecording re-renders the
             // grid when the state actually flips.
             action == "trip_start_business" || action == "trip_start_private" ||
-                action == "trip_stop" || action == "trip_odometer" -> action
+                action == "trip_stop" || action == "trip_odometer" ||
+                action == "trip_force_start" || action == "trip_bg_location" -> action
             // Cancel an armed (not yet consumed) start intent — tap on the
             // yellow "Armed" hex. Pure prefs write, no context needed.
             action == "trip_cancel_intent" -> {

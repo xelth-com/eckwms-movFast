@@ -133,6 +133,16 @@ class TripRecordingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                // EVERY startForegroundService() delivery MUST be answered with
+                // startForeground() — even when a trip is already recording.
+                // IN_VEHICLE EXIT→ENTER flapping at a stop re-sends START while
+                // tripId != null; the else branch below used to skip the call →
+                // ForegroundServiceDidNotStartInTimeException killed the app 10 s
+                // later (field crash 2026-07-13 13:40). Idempotent: an already-
+                // foreground service just refreshes its notification; the fresh-
+                // start path refines it (private) right after. Called BEFORE the
+                // consent gate — the contract binds even when we abort.
+                startForegroundWithNotification(false)
                 // DSGVO: consent is checked at every entry point — also here,
                 // because the auto-detect receiver can outlive a revocation
                 if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
@@ -179,7 +189,12 @@ class TripRecordingService : Service() {
                             applyStartFields(id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
                         }
                         AppDatabase.getInstance(applicationContext).tripDao().getTrip(id)
-                            ?.let { TripManager.publishActiveTrip(it) }
+                            ?.let {
+                                // The unconditional startForeground above used the
+                                // business notification — correct it for a private trip.
+                                if (it.purpose == "private") startForegroundWithNotification(true)
+                                TripManager.publishActiveTrip(it)
+                            }
                     }
                 }
             }

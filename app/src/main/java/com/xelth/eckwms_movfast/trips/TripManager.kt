@@ -378,16 +378,18 @@ object TripManager {
         ContextCompat.startForegroundService(context, intent)
     }
 
-    /** Start a trip from the armed voice intent (called by the vehicle
-     *  auto-detector on IN_VEHICLE ENTER). Consumes the intent. SYNC prefs
-     *  read — safe from a BroadcastReceiver. Returns true when an intent
-     *  was consumed. */
-    fun startTripFromIntent(context: Context): Boolean {
+    /** Start a trip from the armed intent. Two callers: the vehicle
+     *  auto-detector on IN_VEHICLE ENTER (manual=false), and the yellow armed
+     *  Start hex — the driver forcing the start NOW because detection didn't
+     *  come (manual=true; from the UI the app is foreground, so the FGS gets
+     *  full location rights). Consumes the intent. SYNC prefs read — safe from
+     *  a BroadcastReceiver. Returns true when an intent was consumed. */
+    fun startTripFromIntent(context: Context, manual: Boolean = false): Boolean {
         val ti = peekTripIntent() ?: return false
         clearTripIntent()
-        Log.i(TAG, "consuming trip intent \"${ti.label}\" on vehicle movement")
+        Log.i(TAG, "consuming trip intent \"${ti.label}\" (${if (manual) "forced start" else "vehicle movement"})")
         startTrip(
-            context, manual = false,
+            context, manual = manual,
             purpose = "business",
             purposeRef = ti.ref,
             purposeLabel = ti.label.takeIf { it.isNotBlank() },
@@ -536,6 +538,17 @@ object TripManager {
     fun hasActivityPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) ==
             PackageManager.PERMISSION_GRANTED
+
+    /** "Allow all the time" location. Without it an auto-detected (background-
+     *  started) recording is silently stripped of location by Android 14/15 —
+     *  the FGS never truly foregrounds and every fused/cell sample is denied
+     *  until the app comes on screen (2026-07-13 field case: 0 points for a
+     *  27-min drive). Below Q background access rides on FINE. */
+    fun hasBackgroundLocation(context: Context): Boolean =
+        android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
     private fun transitionPendingIntent(context: Context): PendingIntent {
         val intent = Intent(context, VehicleTransitionReceiver::class.java).apply {

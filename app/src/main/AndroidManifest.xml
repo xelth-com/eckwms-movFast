@@ -18,6 +18,15 @@
     <!-- Trip recording (Fahrtenbuch): cell-tower tracking FGS + auto vehicle detection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- "Allow all the time" location: REQUIRED for auto-detected trips. An
+         FGS-location started from the background (Activity Recognition
+         IN_VEHICLE receiver) is silently denied while-in-use location on
+         Android 14/15 — the provider goes `unpermitted`, fused callbacks stop
+         and allCellInfo returns empty, so the whole drive records ZERO points
+         (field case 2026-07-13: 27 min drive, points only appeared the moment
+         the screen came on). Granted via a separate "Allow all the time"
+         request AFTER fine location (Android 11+ flow). -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <!-- Re-arm trip auto-detect after reboot (normal permission, Play-safe) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Scanner watchdog: after briefly launching the vendor scan-engine app to
