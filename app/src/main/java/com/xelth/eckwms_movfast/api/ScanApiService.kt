@@ -831,16 +831,8 @@ class ScanApiService(private val context: Context) {
         bytes: ByteArray, deviceId: String, scanMode: String, barcodeData: String?,
         orderId: String?, imageId: String
     ): Boolean {
-        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
-        if (master.isEmpty()) return false
-        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
-        if (polygon.isEmpty()) return false
-        var token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
-        if (token.isEmpty()) token = relaySilentReAuth() ?: return false
-        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
         val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
         val body = JSONObject().apply {
-            put("token", token)
             put("device_id", deviceId)
             put("image_id", imageId)
             put("scan_mode", scanMode)
@@ -850,15 +842,7 @@ class ScanApiService(private val context: Context) {
             put("mime_type", "image/webp")
             put("image_b64", b64)
         }
-        return when (dispatchMeshTask(master, meshId, polygon, "image_upload", body)) {
-            MeshOutcome.OK -> true
-            MeshOutcome.BAD_TOKEN -> {
-                val fresh = relaySilentReAuth() ?: return false
-                body.put("token", fresh)
-                dispatchMeshTask(master, meshId, polygon, "image_upload", body) == MeshOutcome.OK
-            }
-            MeshOutcome.FAIL -> false
-        }
+        return dispatchMeshTaskWithReAuth("image_upload", body).outcome == MeshOutcome.OK
     }
 
     /**
@@ -2269,35 +2253,20 @@ class ScanApiService(private val context: Context) {
      *  rejection triggers ONE relay-based silent re-auth + retry (the relay
      *  path never sees an HTTP 401, so the usual refresh hook can't fire). */
     private suspend fun uploadTripViaRelay(payload: String): Boolean {
-        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
-        if (master.isEmpty()) return false
-        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
-        if (polygon.isEmpty()) return false
-        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
         val body = try { JSONObject(payload) } catch (e: Exception) { return false }
-        var token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
-        if (token.isEmpty()) token = relaySilentReAuth() ?: return false
-        body.put("token", token)
-
-        return when (dispatchMeshTask(master, meshId, polygon, "trip_upload", body)) {
-            MeshOutcome.OK -> true
-            MeshOutcome.BAD_TOKEN -> {
-                val fresh = relaySilentReAuth() ?: return false
-                body.put("token", fresh)
-                dispatchMeshTask(master, meshId, polygon, "trip_upload", body) == MeshOutcome.OK
-            }
-            MeshOutcome.FAIL -> false
-        }
+        return dispatchMeshTaskWithReAuth("trip_upload", body).outcome == MeshOutcome.OK
     }
 
     private enum class MeshOutcome { OK, BAD_TOKEN, FAIL }
+    private data class MeshAck(val outcome: MeshOutcome, val ack: JSONObject? = null)
 
     /** One polygon sweep of a mesh-task dispatch: queue on a relay, wait for the
      *  master's ack, walk to the next relay on silence. BAD_TOKEN = the master
-     *  answered but rejected the device JWT — re-auth, don't walk further. */
+     *  answered but rejected the device JWT — re-auth, don't walk further.
+     *  `answered:true` in a non-ok ack (e.g. wrong PIN) is also definitive. */
     private suspend fun dispatchMeshTask(
         master: String, meshId: String, polygon: List<String>, kind: String, body: JSONObject
-    ): MeshOutcome {
+    ): MeshAck {
         for (raw in polygon) {
             val relayBase = raw.trimEnd('/')
             val relay = com.xelth.eckwms_movfast.sync.RelayClient(relayBase, deviceId, meshId)
@@ -2306,25 +2275,49 @@ class ScanApiService(private val context: Context) {
                     val res = pollRelayResult(relay, outcome.taskId)
                     if (res != null && res.optBoolean("ok", false)) {
                         Log.i(TAG, "$kind delivered via relay $relayBase")
-                        return MeshOutcome.OK
+                        return MeshAck(MeshOutcome.OK, res)
                     }
                     val err = res?.optString("error", "") ?: ""
                     if (err.contains("token", ignoreCase = true)) {
                         Log.w(TAG, "$kind via $relayBase: master rejected device token → re-auth")
-                        return MeshOutcome.BAD_TOKEN
+                        return MeshAck(MeshOutcome.BAD_TOKEN, res)
+                    }
+                    if (res != null && res.optBoolean("answered", false)) {
+                        // The master DID answer, just negatively (e.g. wrong PIN)
+                        // — a definitive result, don't walk more relays.
+                        return MeshAck(MeshOutcome.FAIL, res)
                     }
                     Log.w(TAG, "$kind relay via $relayBase: no ok ack (${err.ifBlank { "timeout" }}) — next relay")
                 }
                 is com.xelth.eckwms_movfast.sync.RelayDispatch.Fatal -> {
                     Log.w(TAG, "$kind relay rejected by $relayBase: ${outcome.message}")
-                    return MeshOutcome.FAIL
+                    return MeshAck(MeshOutcome.FAIL)
                 }
                 is com.xelth.eckwms_movfast.sync.RelayDispatch.Retryable -> {
                     Log.w(TAG, "$kind relay $relayBase unavailable (${outcome.message}) — next relay")
                 }
             }
         }
-        return MeshOutcome.FAIL
+        return MeshAck(MeshOutcome.FAIL)
+    }
+
+    /** Dispatch a device-JWT-gated mesh task with ONE re-auth retry on a token
+     *  rejection — the shared skeleton of every phone→master relay call
+     *  (trip_upload / image_upload / users_active / users_verify_pin). */
+    private suspend fun dispatchMeshTaskWithReAuth(kind: String, body: JSONObject): MeshAck {
+        val master = com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId()
+        if (master.isEmpty()) return MeshAck(MeshOutcome.FAIL)
+        val polygon = com.xelth.eckwms_movfast.utils.SettingsManager.relayFallbackCandidates()
+        if (polygon.isEmpty()) return MeshAck(MeshOutcome.FAIL)
+        val meshId = com.xelth.eckwms_movfast.utils.SettingsManager.getMeshId() ?: ""
+        var token = com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken()
+        if (token.isEmpty()) token = relaySilentReAuth() ?: return MeshAck(MeshOutcome.FAIL)
+        body.put("token", token)
+        val first = dispatchMeshTask(master, meshId, polygon, kind, body)
+        if (first.outcome != MeshOutcome.BAD_TOKEN) return first
+        val fresh = relaySilentReAuth() ?: return MeshAck(MeshOutcome.FAIL)
+        body.put("token", fresh)
+        return dispatchMeshTask(master, meshId, polygon, kind, body)
     }
 
     /** Relay-based silent re-auth (the mesh-queue twin of [performSilentAuth]):
@@ -2949,17 +2942,26 @@ class ScanApiService(private val context: Context) {
     // --- Multi-User API ---
 
     suspend fun fetchActiveUsers(): List<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>? = withContext(Dispatchers.IO) {
-        // Route through the shared failover helper: active URL → silent re-auth
-        // on 401 → global. The old direct call skipped re-auth entirely, so a
-        // stale device JWT (the same root cause that stranded trips 2026-07-13)
-        // made this log "HTTP 401" and return null — users never loaded.
+        // 1. Direct HTTP with failover: active URL → silent re-auth on 401 →
+        //    global. (The old direct call skipped re-auth entirely — a stale
+        //    device JWT made this 401 forever, same root cause as the stranded
+        //    trips of 2026-07-13.)
         val result = authenticatedGetWithFailover("/api/users/active")
-        if (result !is ScanResult.Success) {
-            Log.w(TAG, "fetchActiveUsers failed: ${(result as? ScanResult.Error)?.message}")
-            return@withContext null
+        val jsonArray: JSONArray? = when {
+            result is ScanResult.Success -> try { JSONArray(result.data) } catch (e: Exception) {
+                Log.e(TAG, "Error parsing active users", e); null
+            }
+            else -> {
+                // 2. Off-LAN (phone on another subnet / LTE, master NAT'd, no
+                //    global URL) → the mesh path, same as trips/photos: a
+                //    `users_active` mesh-task through the relay polygon.
+                Log.w(TAG, "fetchActiveUsers HTTP failed (${(result as? ScanResult.Error)?.message}) — trying relay mesh")
+                val ack = dispatchMeshTaskWithReAuth("users_active", JSONObject())
+                if (ack.outcome == MeshOutcome.OK) ack.ack?.optJSONArray("users") else null
+            }
         }
+        if (jsonArray == null) return@withContext null
         try {
-            val jsonArray = JSONArray(result.data)
             val list = mutableListOf<com.xelth.eckwms_movfast.ui.viewmodels.AppUser>()
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
@@ -2981,6 +2983,7 @@ class ScanApiService(private val context: Context) {
 
     suspend fun verifyUserPin(userId: String, pin: String): com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult = withContext(Dispatchers.IO) {
         val baseUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        var transportFailed = false
         try {
             val url = URL("$baseUrl/api/users/verify-pin")
             val connection = url.openConnection() as HttpURLConnection
@@ -3010,8 +3013,23 @@ class ScanApiService(private val context: Context) {
                 } catch (_: Exception) { false }
                 return@withContext com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult(ok = true, mustChangePassword = must)
             }
+            // HTTP answered (e.g. 401 wrong PIN) — definitive, no relay retry.
         } catch (e: Exception) {
-            Log.e(TAG, "Error verifying user PIN", e)
+            Log.e(TAG, "Error verifying user PIN (transport)", e)
+            transportFailed = true
+        }
+        // Off-LAN: the LAN master is unreachable — verify over the relay mesh
+        // (`users_verify_pin` mesh-task; the bcrypt check runs on the master).
+        if (transportFailed) {
+            val body = JSONObject().apply {
+                put("userId", userId)
+                put("pin", pin)
+            }
+            val ack = dispatchMeshTaskWithReAuth("users_verify_pin", body)
+            if (ack.outcome == MeshOutcome.OK) {
+                val must = ack.ack?.optBoolean("mustChangePassword", false) ?: false
+                return@withContext com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult(ok = true, mustChangePassword = must)
+            }
         }
         return@withContext com.xelth.eckwms_movfast.ui.viewmodels.PinAuthResult(ok = false, mustChangePassword = false)
     }
