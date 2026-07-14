@@ -11,6 +11,52 @@
 
 
 
+## 2026-07-14 — Canonical single-letter smart-tag alphabet (on-device verified)
+
+Driven interactively; live on-device verification on the paid Ranger2 kiosk mesh.
+
+### Smart-tag alphabet: the V2 type byte IS the ASCII letter
+- `EckSecurityManager.kt` — V2 decode now maps the 1-byte entity type to a single
+  ASCII letter (the byte value itself), with `CANONICAL_TYPES` (`i b p o l u c h
+  d a`). Old numeric bytes (`0x10`=company, `0x11`=person, `0x12`=opp, `0x20`=
+  product, `0x21`=partner) kept as `LEGACY_ENTITY_PREFIX`, decode-only — printed
+  tags keep working. New letters: `c`=company, `h`=person(human), `d`=deal
+  (opportunity), `a`=article(product). The source system is NOT encoded in the
+  type anymore (origin lives server-side in `external_ref`).
+- `ScanRecoveryViewModel.kt` — CRM router accepts `c-/h-/d-{uuid}` (plus legacy
+  `company-/person-/opp-` spellings), mapping the letter back to the internal
+  wordy type for the `/api/crm/:type` path.
+- `.eck/SMART_CODES.md` — rewrote the V2 section: canonical letter table, legacy
+  byte fallback, and documented that TWO V2 containers exist with DIFFERENT field
+  order — the plain label container (server `print.rs`, `[type][flags][uuid]`)
+  and the encrypted container (phone decrypt, `[uuid][type][flags]`). Both are
+  printed on physical labels, so field order is frozen per container; only the
+  type-byte convention is shared.
+- Server side (repo 9eck.com, commit 39c9d6b): `core/src/utils/smart_tag.rs`
+  `CANONICAL_TYPES`, `wms/src/handlers/pda.rs` parse_typed_code/crm_table accept
+  the new letters. App commit 9f1274d.
+
+### Verification (paid-debug APK, on device)
+- Built `assemblePaidDebug`, installed on Ranger2, launched clean.
+- Generated REAL encrypted V2 QRs under the kiosk's actual `ENC_KEY`
+  (AES-192-GCM + custom Base32, `[16B UUID][1B letter][2B flags]`), for `c`/`h`/
+  `d`, self-verified by round-trip decrypt, rendered as QR PNGs.
+- Live logcat on scan: `EckSecurity: V2 decryption SUCCESS: c-… (entity=0x63)`,
+  `h-… (0x68)`, `d-… (0x64)` → `SCAN_ROUTER: CRM entity detected: type=company/
+  person/opp`. `entity=0x63/0x68/0x64` are ASCII `c/h/d`. On-device `scan_history`
+  Room table showed the decoded `c-/d-` codes persisted; NO legacy `company-/opp-`
+  prefix ever produced. All three letters confirmed end-to-end.
+
+### Ops notes (flaky USB)
+- Ranger2 USB is chronically flaky on a bad cable: adb `offline`/`unauthorized`
+  churn, logcat streams die mid-scan. Reading the on-device `scan_history` Room DB
+  via `run-as` + `adb exec-out ... cat` (pull DB+WAL, query with host sqlite/
+  Python) survived every USB drop where the logcat stream did not. A good cable
+  fixed the live stream. Pattern reinforced: for this device, prefer prefs/DB
+  reads over logcat streaming.
+
+---
+
 ## 2026-06-30 — Pairing relay-failover, in-place pairing UX & network indicator
 
 Driven interactively with live on-device verification (paid kiosk mesh `7e6fe40d…`).
