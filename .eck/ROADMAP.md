@@ -87,7 +87,16 @@ Movement control + task-visit verification, eventually a tax-grade Fahrtenbuch
 - [x] **Fahrtenbuch report (Phase 3, 2026-06-12)**: server seals every resolved trip (SHA-256 canonical aggregate → Hedera HCS when configured, seal survives point pruning, re-resolution appends a new seal version), odometer chain validation per device (gap flagged, e.g. +25 km unaccounted), monthly export GET /api/trips/export?month=&format=csv|pdf (German Finanzamt columns incl. GoBD-Siegel)
 - [x] **Navigation assist (Phase 4, 2026-06-12)**: 🧭 google.navigation intent on visit cards (coords stay on device), one-shot GPS precise-arrival check within 1 km of open targets (5-min per-visit cooldown). ActionProof-on-arrival deferred (check-in events already carry position)
 - [ ] Trips overlay on the WMS dashboard Leaflet map
-- [ ] Open-trip checkpoint upload (currently uploads only on finalize)
+- [x] Open-trip checkpoint upload — live-verified 2026-07-13 (checkpoints of the
+  evening trip reached the office master mid-drive via relay)
+- [ ] **Memory footprint while recording (2026-07-13 ANR field case)**: the FGS
+  keeps the WHOLE process at foreground priority — including the MapLibre heap
+  of the (backgrounded) activity, ~246 MB RSS — competing with Google-Maps
+  navigation on the 4-GB Ranger2 (swap thrash → launcher/Quickstep ANR; our app
+  was absent from the ANR CPU list, but the resident-RAM share is ours to trim).
+  Do: release MapLibre resources (tile cache, surface, style) in onStop /
+  background and restore lazily on return; audit receipt/OCR bitmaps for
+  recycle-after-compress; re-measure RSS while recording with screen off.
 - [x] OPENCELLID_API_KEY provisioned on pda.repair + eck1/2/3 (2026-06-13); cells resolve to coords, cell_tower cache fills (resolve-once)
 - [x] **paid/free product-flavor split (2026-06-13)**: paid = sideload/MDM (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS in src/paid/, battery-exemption dialog, BuildConfig.ENTERPRISE=true); free = Google Play (no restricted permission, .free app id, battery-settings deep-link). Build `assemblePaidDebug` / `assembleFreeDebug`. aapt-verified.
 - [x] **Trip-recording OS-kill hardening (2026-06-13)**: finalizeAndStop DB-fallback (Fahrt beenden survives an OS-killed FGS); battery/background-restriction detection + guard UI; per-paid-PDA provisioning via adb (`dumpsys deviceidle whitelist +pkg` + `appops set pkg RUN_ANY_IN_BACKGROUND allow`) or device-owner
