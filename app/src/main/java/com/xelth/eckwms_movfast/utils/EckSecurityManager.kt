@@ -27,19 +27,38 @@ object EckSecurityManager {
     private const val BASE32_CHARS = "0123456789ABCDEFGHJKLMNPQRTUVWXY"
     private val BASE32_LOOKUP = IntArray(256) { -1 }
 
-    // Entity type → prefix mapping
-    private val ENTITY_PREFIX = mapOf(
-        0x00 to "i",      // WMS Item
-        0x01 to "b",      // WMS Box
-        0x02 to "p",      // WMS Location
-        0x03 to "o",      // WMS Order
-        0x04 to "l",      // WMS Label
-        0x05 to "u",      // WMS User
-        0x10 to "company",    // Twenty Company
-        0x11 to "person",     // Twenty Person
-        0x12 to "opp",        // Twenty Opportunity
-        0x20 to "oprod",      // Odoo Product
-        0x21 to "opartner",   // Odoo Partner
+    // Canonical (2026-07-14): the type byte IS the ASCII letter of the prefix.
+    // One letter per entity, source system is NOT encoded in the type (a partner
+    // mirrored from Odoo/Twenty scans the same as a native one; origin lives in
+    // external_ref on the record). Tickets/mail have no scan type — they attach
+    // to scannable entities via graph edges.
+    private val CANONICAL_TYPES = setOf(
+        'i', // item
+        'b', // box
+        'p', // place / location
+        'o', // order
+        'l', // label
+        'u', // user
+        'c', // company (partner)
+        'h', // person / human (partner)
+        'd', // deal / opportunity
+        'a', // article / product
+    )
+
+    // Legacy numeric type bytes from already-printed V2 tags — decode-only,
+    // never generated anymore. They collapse into the canonical letters.
+    private val LEGACY_ENTITY_PREFIX = mapOf(
+        0x00 to "i",  // WMS Item
+        0x01 to "b",  // WMS Box
+        0x02 to "p",  // WMS Location
+        0x03 to "o",  // WMS Order
+        0x04 to "l",  // WMS Label
+        0x05 to "u",  // WMS User
+        0x10 to "c",  // Twenty Company      (was "company")
+        0x11 to "h",  // Twenty Person       (was "person")
+        0x12 to "d",  // Twenty Opportunity  (was "opp")
+        0x20 to "a",  // Odoo Product        (was "oprod")
+        0x21 to "c",  // Odoo Partner        (was "opartner")
     )
 
     init {
@@ -186,7 +205,9 @@ object EckSecurityManager {
             val lsb = bb.long
             val uuid = UUID(msb, lsb)
 
-            val typePrefix = ENTITY_PREFIX[entityType] ?: "x"
+            val typeChar = entityType.toChar()
+            val typePrefix = if (typeChar in CANONICAL_TYPES) typeChar.toString()
+                else LEGACY_ENTITY_PREFIX[entityType] ?: "x"
             val result = "$typePrefix-$uuid"
             Log.d(TAG, "V2 decryption SUCCESS: $result (entity=0x${"%02x".format(entityType)})")
             return result

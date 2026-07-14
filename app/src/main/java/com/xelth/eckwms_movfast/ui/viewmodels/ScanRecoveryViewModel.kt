@@ -1414,11 +1414,19 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
         }
 
         // --- CRM ENTITY ROUTING ---
-        // Intercept CRM entity types locally: company-{uuid}, person-{uuid}, opp-{uuid}
-        val crmMatch = Regex("^(company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
+        // Intercept CRM entity types locally. Canonical single-letter prefixes
+        // c-/h-/d-{uuid} (company/person/deal); legacy multi-letter spellings
+        // still accepted from old tags and old app versions. Internal entity
+        // type names stay wordy — they are API path segments (/api/crm/:type).
+        val crmMatch = Regex("^(c|h|d|company|person|opp)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", RegexOption.IGNORE_CASE)
             .matchEntire(effectiveCode)
         if (crmMatch != null) {
-            val entityType = crmMatch.groupValues[1].lowercase()
+            val entityType = when (val t = crmMatch.groupValues[1].lowercase()) {
+                "c" -> "company"
+                "h" -> "person"
+                "d" -> "opp"
+                else -> t
+            }
             val entityId = crmMatch.groupValues[2]
             android.util.Log.d("SCAN_ROUTER", "CRM entity detected: type=$entityType id=$entityId")
             addLog("[Router] → CRM: $entityType $entityId")
