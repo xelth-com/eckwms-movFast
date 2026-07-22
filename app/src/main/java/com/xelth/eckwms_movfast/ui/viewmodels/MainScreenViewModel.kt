@@ -174,8 +174,10 @@ class MainScreenViewModel : ViewModel() {
     var onSaveRepairPhoto: ((Int, Bitmap) -> Unit)? = null
     var onLoadRepairPhoto: ((Int) -> Bitmap?)? = null
     var onDeleteRepairPhoto: ((Int) -> Unit)? = null
-    // UUID-based photo persistence (backed by LocalPhotoDao + SettingsManager)
-    var onSavePhoto: ((uuid: String, slotIndex: Int, bitmap: Bitmap) -> Unit)? = null
+    // CAS-id photo persistence (backed by LocalPhotoDao + SettingsManager).
+    // Returns the ContentHash UUID of the stored bytes — the SyncWorker later
+    // claims exactly this id, and the server verifies it against the content.
+    var onSavePhoto: ((slotIndex: Int, bitmap: Bitmap) -> String?)? = null
     var onLoadSlotPhotoUuids: (suspend (slotIndex: Int) -> List<String>)? = null
     var onDeleteSlotPhotos: (suspend (slotIndex: Int) -> Unit)? = null
     var onBindSlotPhotos: (suspend (slotIndex: Int, receiverId: String) -> Unit)? = null
@@ -1338,10 +1340,9 @@ class MainScreenViewModel : ViewModel() {
             // Track all photos for avatar picker (limit 20)
             if (active.allPhotos.size < 20) active.allPhotos.add(copy)
 
-            // Save to UUID-based immutable storage
-            val uuid = java.util.UUID.randomUUID().toString()
-            active.photoUuids.add(uuid)
-            onSavePhoto?.invoke(uuid, active.index, copy)
+            // Save to CAS-id immutable storage (id = ContentHash of the bytes)
+            val uuid = onSavePhoto?.invoke(active.index, copy)
+            uuid?.let { active.photoUuids.add(it) }
 
             // First photo becomes the background, subsequent don't change it
             if (active.photo == null) {

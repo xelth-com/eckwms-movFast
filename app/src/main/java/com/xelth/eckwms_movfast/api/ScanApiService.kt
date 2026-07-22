@@ -541,11 +541,22 @@ class ScanApiService(private val context: Context) {
      * @return Result of the upload operation
      */
     suspend fun uploadImageFile(filePath: String, deviceId: String, scanMode: String, barcodeData: String?, orderId: String? = null, existingImageId: String? = null, avatarPath: String? = null): ScanResult = withContext(Dispatchers.IO) {
-        val imageId = existingImageId ?: UUID.randomUUID().toString()
         val file = java.io.File(filePath)
 
         if (!file.exists()) {
             return@withContext ScanResult.Error("File not found: $filePath")
+        }
+
+        // The CAS id MUST be the MurmurHash3 UUID of the file bytes — the server
+        // verifies the claim and rejects anything else. Legacy queue entries carry
+        // random UUIDs from before this rule; recompute and claim the real id
+        // (local bookkeeping stays keyed by the caller's id).
+        val fileBytes = try { file.readBytes() } catch (e: Exception) {
+            return@withContext ScanResult.Error("File read failed: ${e.message}")
+        }
+        val imageId = com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(fileBytes)
+        if (existingImageId != null && existingImageId != imageId) {
+            Log.w(TAG, "uploadImageFile: healing legacy id $existingImageId → CAS $imageId")
         }
 
         val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
@@ -585,10 +596,7 @@ class ScanApiService(private val context: Context) {
         if (result is ScanResult.Error &&
             com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId().isNotEmpty()
         ) {
-            val bytes = try { file.readBytes() } catch (e: Exception) { null }
-            if (bytes != null &&
-                uploadImageBytesViaRelay(bytes, deviceId, scanMode, barcodeData, orderId, imageId)
-            ) {
+            if (uploadImageBytesViaRelay(fileBytes, deviceId, scanMode, barcodeData, orderId, imageId)) {
                 result = ScanResult.Success("upload", "Image uploaded via relay",
                     JSONObject().put("relay", true).put("image_id", imageId).toString())
             }
@@ -753,8 +761,18 @@ class ScanApiService(private val context: Context) {
      * @return Result of the upload operation
      */
     suspend fun uploadImage(bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String? = null, existingImageId: String? = null): ScanResult = withContext(Dispatchers.IO) {
-        // Generate ID at the Edge if not provided (Source of Truth)
-        val imageId = existingImageId ?: UUID.randomUUID().toString()
+        // Compress ONCE up front: the CAS id MUST be the MurmurHash3 UUID of the
+        // exact bytes the server receives — the server verifies the claim and
+        // rejects anything else (a random UUID never lands). Every retry/failover/
+        // relay below reuses these same bytes, so the claim stays valid.
+        val imageBytes = java.io.ByteArrayOutputStream().let { stream ->
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
+            stream.toByteArray()
+        }
+        val imageId = com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(imageBytes)
+        if (existingImageId != null && existingImageId != imageId) {
+            Log.w(TAG, "uploadImage: caller id $existingImageId != CAS $imageId — claiming the CAS id")
+        }
 
         val activeUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
         val globalUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getGlobalServerUrl().removeSuffix("/")
@@ -762,7 +780,7 @@ class ScanApiService(private val context: Context) {
         Log.d(TAG, "uploadImage START - activeUrl: $activeUrl, globalUrl: $globalUrl, scanMode: $scanMode, imageId: $imageId, Thread: ${Thread.currentThread().name}")
 
         // 1. Try Active URL first
-        var result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+        var result = internalUploadImage(activeUrl, imageBytes, deviceId, scanMode, barcodeData, orderId, imageId)
 
         Log.d(TAG, "uploadImage FIRST_ATTEMPT result: ${result::class.simpleName}, imageId: $imageId")
 
@@ -771,7 +789,7 @@ class ScanApiService(private val context: Context) {
             Log.w(TAG, "🔑 uploadImage 401 - attempting silent re-auth...")
             val newToken = performSilentAuth()
             if (newToken != null) {
-                result = internalUploadImage(activeUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+                result = internalUploadImage(activeUrl, imageBytes, deviceId, scanMode, barcodeData, orderId, imageId)
             }
         }
 
@@ -779,7 +797,7 @@ class ScanApiService(private val context: Context) {
         if (result is ScanResult.Error && globalUrl.isNotEmpty() && activeUrl != globalUrl) {
             Log.w(TAG, "⚠️ Upload to $activeUrl failed. Failover to Global. ImageID: $imageId")
             // Retry with SAME imageId - critical for deduplication!
-            result = internalUploadImage(globalUrl, bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)
+            result = internalUploadImage(globalUrl, imageBytes, deviceId, scanMode, barcodeData, orderId, imageId)
 
             Log.d(TAG, "uploadImage FAILOVER result: ${result::class.simpleName}, imageId: $imageId")
 
@@ -791,11 +809,11 @@ class ScanApiService(private val context: Context) {
 
         // 3. Still failed (both direct URLs unreachable — e.g. phone on mobile data,
         //    LAN master out of reach) → relay fallback: land the photo in CAS through
-        //    the relay polygon, mirroring uploadTrip. Reuses the SAME imageId.
+        //    the relay polygon, mirroring uploadTrip. Reuses the SAME bytes + imageId.
         if (result is ScanResult.Error &&
             com.xelth.eckwms_movfast.utils.SettingsManager.getHomeInstanceId().isNotEmpty()
         ) {
-            if (uploadImageViaRelay(bitmap, deviceId, scanMode, barcodeData, quality, orderId, imageId)) {
+            if (uploadImageBytesViaRelay(imageBytes, deviceId, scanMode, barcodeData, orderId, imageId)) {
                 result = ScanResult.Success("upload", "Image uploaded via relay",
                     JSONObject().put("relay", true).put("image_id", imageId).toString())
             }
@@ -803,30 +821,19 @@ class ScanApiService(private val context: Context) {
 
         Log.d(TAG, "uploadImage END - final result: ${result::class.simpleName}, imageId: $imageId")
 
-        return@withContext result
-    }
-
-    /** Relay fallback for image upload — the phone can't reach the LAN master's
-     *  /api/upload/image (mobile data), so it base64s the WEBP into an
-     *  `image_upload` mesh-task on the relay polygon targeting the master (device
-     *  JWT gated). Mirrors [uploadTripViaRelay]; reuses the caller's imageId so the
-     *  CAS dedupe is stable across a later direct re-upload. */
-    private suspend fun uploadImageViaRelay(
-        bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?,
-        quality: Int, orderId: String?, imageId: String
-    ): Boolean {
-        val bytes = try {
-            val stream = java.io.ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
-            stream.toByteArray()
-        } catch (e: Exception) {
-            Log.w(TAG, "Image relay: compress failed (${e.message})"); return false
+        // Callers can't know the CAS id up front (it's derived from the compressed
+        // bytes here) — hand it back uniformly so they can reference the photo.
+        return@withContext when (result) {
+            is ScanResult.Success -> result.copy(
+                data = JSONObject().put("image_id", imageId).put("response", result.data).toString()
+            )
+            else -> result
         }
-        return uploadImageBytesViaRelay(bytes, deviceId, scanMode, barcodeData, orderId, imageId)
     }
 
-    /** Byte-level relay upload — shared by the bitmap path above and the
-     *  file-based path ([uploadImageFile], e.g. queued receipt photos). */
+    /** Byte-level relay upload — shared by [uploadImage] (pre-compressed bitmap
+     *  bytes) and [uploadImageFile] (e.g. queued receipt photos). imageId must be
+     *  the ContentHash UUID of `bytes` — the master verifies the CAS claim. */
     private suspend fun uploadImageBytesViaRelay(
         bytes: ByteArray, deviceId: String, scanMode: String, barcodeData: String?,
         orderId: String?, imageId: String
@@ -847,9 +854,10 @@ class ScanApiService(private val context: Context) {
 
     /**
      * Internal helper for image upload
-     * @param imageId Required client-generated unique ID for deduplication
+     * @param imageBytes The exact compressed bytes — imageId must be their ContentHash UUID
+     * @param imageId Content-derived CAS UUID (the server verifies the claim)
      */
-    private suspend fun internalUploadImage(baseUrl: String, bitmap: Bitmap, deviceId: String, scanMode: String, barcodeData: String?, quality: Int, orderId: String?, imageId: String): ScanResult {
+    private suspend fun internalUploadImage(baseUrl: String, imageBytes: ByteArray, deviceId: String, scanMode: String, barcodeData: String?, orderId: String?, imageId: String): ScanResult {
         val boundary = "Boundary-${System.currentTimeMillis()}"
         val finalUrl = "$baseUrl/api/upload/image"
         Log.e(TAG, "Target URL for Image Upload: $finalUrl (ImageID: $imageId)")
@@ -908,11 +916,6 @@ class ScanApiService(private val context: Context) {
                 writer.append("Content-Disposition: form-data; name=\"orderId\"").append("\r\n")
                 writer.append("\r\n").append(it).append("\r\n").flush()
             }
-
-            // Compress image and calculate checksum
-            val stream = java.io.ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
-            val imageBytes = stream.toByteArray()
 
             val crc = CRC32()
             crc.update(imageBytes)

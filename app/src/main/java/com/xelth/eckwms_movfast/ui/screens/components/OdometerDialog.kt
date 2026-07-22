@@ -85,17 +85,20 @@ fun OdometerDialog(
                     kmText = km.toInt().toString()
                     source = "photo"
                 }
-                val id = UUID.randomUUID().toString()
                 try {
                     val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
                     val deviceId = SettingsManager.getDeviceId(context)
                     val result = api.uploadImage(
-                        bitmap, deviceId, "odometer_photo", null,
-                        quality = 75, existingImageId = id
+                        bitmap, deviceId, "odometer_photo", null, quality = 75
                     )
                     if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
-                        photoId = id
-                        source = "photo"
+                        // CAS id is derived from the compressed bytes inside
+                        // uploadImage — read the verified claim back.
+                        val id = org.json.JSONObject(result.data).optString("image_id")
+                        if (id.isNotEmpty()) {
+                            photoId = id
+                            source = "photo"
+                        }
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("OdometerDialog", "Photo upload failed: ${e.message}")
@@ -119,16 +122,15 @@ fun OdometerDialog(
                     selectedVehicleId = vehicles.firstOrNull { it.plate == plate }?.id
                 }
                 // Upload the plate photo to CAS as evidence ("once-photographed").
-                val id = UUID.randomUUID().toString()
                 try {
                     val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
                     val deviceId = SettingsManager.getDeviceId(context)
                     val result = api.uploadImage(
-                        bitmap, deviceId, "plate_photo", null,
-                        quality = 75, existingImageId = id
+                        bitmap, deviceId, "plate_photo", null, quality = 75
                     )
                     if (result is com.xelth.eckwms_movfast.api.ScanResult.Success) {
-                        platePhotoId = id
+                        val id = org.json.JSONObject(result.data).optString("image_id")
+                        if (id.isNotEmpty()) platePhotoId = id
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("OdometerDialog", "Plate photo upload failed: ${e.message}")

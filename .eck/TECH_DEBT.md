@@ -1,5 +1,21 @@
 # Tech Debt
 
+## Photo CAS ids (2026-07-22)
+
+- **Two dangling expense→photo references.** The fuel receipts of 2026-07-13
+  (`ef6b75f4…`) and 2026-07-20 (`1bc2eda5…`) were queued under random UUIDs
+  before the CAS-claim rule was enforced; their expense records on the server
+  still reference those ids, while the healed uploads landed under the real
+  content-hash ids (`0e38f1cb…`, `47f758d8…`). Server-side heal if it ever
+  matters: insert `file_resource:<old-id> {replaced_by: <new-id>}` stubs —
+  `resolve_latest_file` follows `replaced_by` chains, so old links would
+  resolve. Only these two receipts are affected (dimi's test expenses).
+- **Slot photos upload twice under two CAS ids.** A repair slot photo is
+  compressed twice (quality 75 for local storage / `getImageQuality()` for the
+  immediate upload) → two different byte streams → two CAS entries for one
+  shot. Harmless (both land, CAS dedupes re-uploads), but wasteful; unify the
+  quality and reuse the bytes if storage ever matters.
+
 ## Process split (`:trips`) — accepted risks (2026-07-20)
 
 The trip stack (FGS + auto-detect receivers + Room invalidation hub) runs in the

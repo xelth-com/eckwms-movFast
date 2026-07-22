@@ -503,16 +503,18 @@ fun MainScreen(
                 } else {
                     mainViewModel.addLog("OCR: nothing recognised")
                 }
-                // Save the shot to CAS regardless of OCR success (evidence). The id
-                // is stashed on the field and attached to the trip at start.
-                val photoId = java.util.UUID.randomUUID().toString()
+                // Save the shot to CAS regardless of OCR success (evidence). The
+                // CAS id is derived from the compressed bytes inside uploadImage
+                // (the server verifies the claim) — read it back from the result
+                // and stash it on the field to attach to the trip at start.
                 try {
                     val api = com.xelth.eckwms_movfast.api.ScanApiService(context)
                     val deviceId = com.xelth.eckwms_movfast.utils.SettingsManager.getDeviceId(context)
                     val kind = if (field == "plate") "plate_photo" else "odometer_photo"
-                    val res = api.uploadImage(bitmap, deviceId, kind, null, quality = 75, existingImageId = photoId)
+                    val res = api.uploadImage(bitmap, deviceId, kind, null, quality = 75)
                     if (res is com.xelth.eckwms_movfast.api.ScanResult.Success) {
-                        mainViewModel.setTripFieldPhotoId(field, photoId)
+                        val photoId = org.json.JSONObject(res.data).optString("image_id")
+                        if (photoId.isNotEmpty()) mainViewModel.setTripFieldPhotoId(field, photoId)
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("MainScreen", "field OCR photo upload failed: ${e.message}")
@@ -558,18 +560,22 @@ fun MainScreen(
         if (bitmap != null) {
             android.widget.Toast.makeText(context, "🧾 Receipt captured", android.widget.Toast.LENGTH_SHORT).show()
             tripScope.launch {
-                val photoId = java.util.UUID.randomUUID().toString()
                 // A receipt is a tax document — persist it to DISK first (the
                 // 2026-07-13 field day lost one: upload-only + LTE + dead
-                // process = photo gone). The id is valid immediately; the
-                // local-photo pipeline retries the upload until the master
-                // becomes reachable.
+                // process = photo gone). The id is the ContentHash CAS UUID of
+                // the exact compressed bytes — the server verifies the claim,
+                // so a random UUID would never land. The id is valid
+                // immediately; the local-photo pipeline retries the upload
+                // until the master becomes reachable.
                 try {
+                    val receiptBytes = java.io.ByteArrayOutputStream().let { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+                        out.toByteArray()
+                    }
+                    val photoId = com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(receiptBytes)
                     val dir = java.io.File(context.filesDir, "photos").apply { mkdirs() }
                     val photoFile = java.io.File(dir, "orig_$photoId.webp")
-                    java.io.FileOutputStream(photoFile).use { out ->
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
-                    }
+                    photoFile.writeBytes(receiptBytes)
                     val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
                     db.localPhotoDao().insert(
                         com.xelth.eckwms_movfast.data.local.entity.LocalPhotoEntity(
@@ -785,13 +791,20 @@ fun MainScreen(
         mainViewModel.onDeleteRepairPhoto = { index ->
             com.xelth.eckwms_movfast.utils.SettingsManager.deleteRepairPhoto(index)
         }
-        // UUID-based photo persistence (immutable CAS)
+        // CAS-id photo persistence: the id IS the ContentHash of the stored
+        // bytes (the server rejects any other claim), so hash-then-write.
         val db = com.xelth.eckwms_movfast.data.local.AppDatabase.getInstance(context)
         val localPhotoDao = db.localPhotoDao()
-        mainViewModel.onSavePhoto = { uuid, slotIndex, bitmap ->
-            val origPath = com.xelth.eckwms_movfast.utils.SettingsManager.savePhotoOriginal(uuid, bitmap)
+        mainViewModel.onSavePhoto = { slotIndex, bitmap ->
+            val bytes = java.io.ByteArrayOutputStream().let { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 75, out)
+                out.toByteArray()
+            }
+            val uuid = com.xelth.eckwms_movfast.utils.ContentHash.uuidFromBytes(bytes)
+            val origPath = com.xelth.eckwms_movfast.utils.SettingsManager.savePhotoOriginalBytes(uuid, bytes)
             // DB insert is fire-and-forget via ScanRecoveryViewModel's scope
             viewModel.insertLocalPhoto(uuid, slotIndex, origPath)
+            uuid
         }
         mainViewModel.onLoadSlotPhotoUuids = { slotIndex ->
             localPhotoDao.getBySlotIndex(slotIndex).map { it.uuid }

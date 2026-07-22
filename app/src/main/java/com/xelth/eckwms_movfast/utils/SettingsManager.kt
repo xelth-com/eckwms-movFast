@@ -615,6 +615,15 @@ object SettingsManager {
         return file.absolutePath
     }
 
+    /** Save pre-compressed photo bytes to photos/orig_{uuid}.webp, return file path.
+     *  Used when the uuid is the ContentHash of exactly these bytes (CAS claim). */
+    fun savePhotoOriginalBytes(uuid: String, bytes: ByteArray): String {
+        val file = File(photosDir(), "orig_$uuid.webp")
+        file.writeBytes(bytes)
+        Log.d("SettingsManager", "Saved photo orig_$uuid (${file.length() / 1024}KB)")
+        return file.absolutePath
+    }
+
     /** Save smart-crop avatar to photos/avatar_{uuid}.webp, return file path */
     fun savePhotoAvatar(uuid: String, bitmap: Bitmap): String {
         val file = File(photosDir(), "avatar_$uuid.webp")
