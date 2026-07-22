@@ -19,6 +19,11 @@ interface TripDao {
     @Query("SELECT * FROM trips WHERE status = 'recording' ORDER BY startedAt DESC LIMIT 1")
     suspend fun getOpenTrip(): TripEntity?
 
+    // Live open-trip row for the main-process UI bridge (TripManager.startUiBridge):
+    // re-emits via cross-process invalidation when the :trips recorder writes.
+    @Query("SELECT * FROM trips WHERE status = 'recording' ORDER BY startedAt DESC LIMIT 1")
+    fun observeOpenTrip(): Flow<TripEntity?>
+
     @Query("SELECT * FROM trips WHERE id = :id LIMIT 1")
     suspend fun getTrip(id: String): TripEntity?
 

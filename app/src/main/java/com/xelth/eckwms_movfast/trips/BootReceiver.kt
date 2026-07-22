@@ -31,10 +31,10 @@ class BootReceiver : BroadcastReceiver() {
             SettingsManager.init(context.applicationContext)
             if (SettingsManager.getTripAutoDetect()) {
                 val ok = TripManager.enableAutoDetect(context.applicationContext)
-                Log.i("BootReceiver", "Re-registered trip auto-detect (${intent.action}): $ok")
+                TripLog.i("BootReceiver", "Re-registered trip auto-detect (${intent.action}): $ok")
             }
         } catch (e: Exception) {
-            Log.e("BootReceiver", "re-register failed (${intent.action}): ${e.message}", e)
+            TripLog.e("BootReceiver", "re-register failed (${intent.action}): ${e.message}", e)
         }
     }
 }

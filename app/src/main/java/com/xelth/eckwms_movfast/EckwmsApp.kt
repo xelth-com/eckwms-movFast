@@ -38,6 +38,23 @@ class EckwmsApp : Application() {
         CryptoManager.initialize(this)
         Log.d(TAG, "CryptoManager initialized")
 
+        // Persistent per-process file log + last-death reasons (field post-mortem
+        // without adb: logcat main buffer churns in seconds on this device).
+        com.xelth.eckwms_movfast.trips.TripLog.init(
+            this, com.xelth.eckwms_movfast.utils.ProcessUtils.shortTag(this)
+        )
+        com.xelth.eckwms_movfast.trips.TripLog.logProcessStart(this)
+
+        // The `:trips` process hosts ONLY the trip recording stack (FGS +
+        // auto-detect receivers + Room invalidation hub). Everything below —
+        // scanner SDK binder, watchdog, WebSocket, mic/light sensors,
+        // WorkManager — stays out so the process is small enough to survive
+        // the memory pressure that kills the main process mid-drive.
+        if (com.xelth.eckwms_movfast.utils.ProcessUtils.isTripsProcess()) {
+            Log.d(TAG, ":trips process — lightweight init only")
+            return
+        }
+
         // Initialize HybridMessageSender for WebSocket+HTTP transport
         HybridMessageSender.init(this)
         Log.d(TAG, "HybridMessageSender initialized")
@@ -53,8 +70,8 @@ class EckwmsApp : Application() {
         // Track foreground so the watchdog only does the (screen-flashing) hard
         // restart while we're actually in front of the user.
         registerScannerForegroundTracking()
-        // One-press-from-sleep: stamp wakes; a trigger press right after a wake
-        // takes the assisted resume-then-scan path.
+        // Wake ack (buzz, no laser) + stamp: the NEXT trigger press right after a
+        // wake takes the assisted resume-then-scan path.
         registerScanOnWake()
         // Trigger presses also arrive as a system broadcast (works without key focus).
         registerScanTriggerBroadcast()
@@ -95,6 +112,11 @@ class EckwmsApp : Application() {
         // Initialize Adaptive Audio (mic-based ambient noise → volume adjustment)
         AdaptiveAudioManager.init(this)
         Log.d(TAG, "AdaptiveAudioManager initialized")
+
+        // Main-process UI bridge: TripManager.activeTrip now mirrors the Room
+        // open-trip row, so the UI keeps seeing recording state even though the
+        // recorder publishes from the separate :trips process.
+        com.xelth.eckwms_movfast.trips.TripManager.startUiBridge(this)
 
         // Запуск автоматического тестирования API сканера при запуске
         // Log.d(TAG, "Запуск автоматического тестирования API сканера...")
@@ -139,19 +161,18 @@ class EckwmsApp : Application() {
     }
 
     /**
-     * Wake hook for one-press-from-sleep (must be context-registered — the OS won't
-     * deliver SCREEN_ON to a manifest receiver). [ScannerManager.onScreenOn] stamps
-     * the wake and, when READ_LOGS is granted, identifies the wake source from the
-     * system's `wakeup` log line: a scan-trigger keycode there means the user woke
-     * the device BY the trigger and gets the scan that press asked for; power
-     * button / charger / gestures log nothing and never beam. Registered app-lifetime.
+     * Wake hook (must be context-registered — the OS won't deliver SCREEN_ON to a
+     * manifest receiver). [ScannerManager.onScreenOn] stamps the wake and vibrates
+     * a short ack: the wake key press is consumed by the system (no KeyEvent, no
+     * laser), so the worker's contract is buzz-without-laser = "woke up, press
+     * again to scan". Registered app-lifetime.
      */
     private fun registerScanOnWake() {
         val filter = android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_ON)
         registerReceiver(object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
                 if (intent?.action == android.content.Intent.ACTION_SCREEN_ON) {
-                    Log.d(TAG, "SCREEN_ON → stamp wake + check wake source (scan-key wake = one-press scan)")
+                    Log.d(TAG, "SCREEN_ON → stamp wake + vibrate ack")
                     scannerManager.onScreenOn()
                 }
             }
@@ -183,12 +204,21 @@ class EckwmsApp : Application() {
         }
     }
 
+    /** Memory-pressure breadcrumbs: a TRIM_MEMORY line followed by silence in
+     *  the per-process trip log is the signature of an LMK kill under load. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.xelth.eckwms_movfast.trips.TripLog.w(TAG, "onTrimMemory level=$level")
+    }
+
     override fun onTerminate() {
         super.onTerminate()
 
-        // Освобождение ресурсов сканера
-        scannerManager.stopWatchdog()
-        scannerManager.cleanup()
+        // Освобождение ресурсов сканера (not initialized in the :trips process)
+        if (::scannerManager.isInitialized) {
+            scannerManager.stopWatchdog()
+            scannerManager.cleanup()
+        }
         Log.d(TAG, "Приложение завершает работу")
     }
 }

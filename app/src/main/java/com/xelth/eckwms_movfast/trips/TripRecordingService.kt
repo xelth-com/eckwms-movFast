@@ -107,12 +107,42 @@ class TripRecordingService : Service() {
         // interval above. Matters on memory-starved PDAs where the FGS gets culled
         // every few minutes during a drive (Android Auto etc. exhausting swap).
         private const val CHECKPOINT_FIRST_MS = 75_000L
+        // A driver-pressed 📍 checkpoint IS a declared stop: if the fused fixes
+        // show no consistent movement beyond the radius within this window,
+        // finalize the trip at the stop. Activity Recognition EXIT never fires
+        // with the phone indoors (gym/Castrop field cases 2026-07-20) — the
+        // checkpoint is the reliable signal because the DRIVER declares it.
+        // "Movement" is a CONSENSUS, not a single fix (owner correction, same
+        // drive): one garage/multipath outlier must not disarm the watch —
+        // MOVE_VOTES of the last MOVE_WINDOW decent fixes (accuracy ≤ GATE_M)
+        // must be beyond the radius. Fused cadence while driving is ~30 s, so
+        // 3-of-5 ≈ 1.5–2.5 min of sustained движение.
+        private const val CHECKPOINT_STATIONARY_CLOSE_MS = 10 * 60_000L
+        private const val CHECKPOINT_MOVE_RADIUS_M = 300f
+        private const val CHECKPOINT_MOVE_WINDOW = 5
+        private const val CHECKPOINT_MOVE_VOTES = 3
+        private const val CHECKPOINT_FIX_GATE_M = 100f
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var samplingJob: Job? = null
     private var checkpointJob: Job? = null
+    // Cross-process "recorder is alive" signal (the UI runs in another process
+    // and can't see our statics): refresh the heartbeat file every minute for
+    // EVERY trip — private trips have no points, so without this the UI-side
+    // reconciler would stale-close a live Privatfahrt after 30 min.
+    private var heartbeatJob: Job? = null
     private var gracefulStopJob: Job? = null
+    // Stationary watch armed by a driver checkpoint (see the constants above).
+    // In-memory only: a process death between checkpoint and close loses the
+    // watch — accepted for v1 (the trip then simply stays open, old behavior).
+    // checkpointStopDists holds the last MOVE_WINDOW distances-from-anchor of
+    // gated fixes ARMED-SINCE; guarded by synchronized(checkpointStopLock)
+    // (fused callback on the main looper vs. the close timer on the IO scope).
+    @Volatile private var checkpointStopAnchor: android.location.Location? = null
+    private var checkpointStopJob: Job? = null
+    private val checkpointStopLock = Any()
+    private val checkpointStopDists = ArrayDeque<Float>()
     private var fusedClient: FusedLocationProviderClient? = null
     private var locationCallback: LocationCallback? = null
     // High-accuracy GPS ground truth, active ONLY while the phone is charging
@@ -154,6 +184,7 @@ class TripRecordingService : Service() {
                 // re-entered the vehicle at a traffic light / fuel stop)
                 gracefulStopJob?.cancel()
                 gracefulStopJob = null
+                disarmCheckpointStopWatch("trip (re)started")
                 val startOdoKm = intent.getDoubleExtra(EXTRA_START_ODO_KM, Double.NaN)
                     .let { if (it.isNaN()) null else it }
                 val startOdoSource = intent.getStringExtra(EXTRA_START_ODO_SOURCE)
@@ -187,6 +218,14 @@ class TripRecordingService : Service() {
                             // (editable until trip end; earliest declared_at wins).
                             applyDeclaredPurpose(id, purpose, ref, label, source)
                             applyStartFields(id, startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto)
+                        } else if (source != null) {
+                            // Auto-start consuming an ARMED intent (next destination
+                            // declared at a checkpoint stop): only declaration paths
+                            // set purpose_source, so this is just as deliberate as a
+                            // manual start — merge it. The start-field presets are
+                            // meant for a NEW trip and stay off the continuing one
+                            // (its start odometer/plate are already established).
+                            applyDeclaredPurpose(id, purpose, ref, label, source)
                         }
                         AppDatabase.getInstance(applicationContext).tripDao().getTrip(id)
                             ?.let {
@@ -250,7 +289,8 @@ class TripRecordingService : Service() {
             TripManager.serviceRecordingTripId = trip.id
             seq.set(db.tripDao().pointCount(trip.id))
             TripManager.publishActiveTrip(trip)
-            Log.i(TAG, "Resumed open trip ${trip.id} after sticky restart (post-kill)")
+            startHeartbeat(trip.id)
+            TripLog.i(TAG, "Resumed open trip ${trip.id} after sticky restart (post-kill)")
             if (trip.purpose != "private") {
                 startCellSampling()
                 startFusedUpdates()
@@ -374,7 +414,8 @@ class TripRecordingService : Service() {
             TripManager.serviceRecordingTripId = trip.id
             seq.set(db.tripDao().pointCount(trip.id))
             TripManager.publishActiveTrip(trip)
-            Log.i(TAG, "Recording trip ${trip.id} (resumed=${existing != null}, manual=$manual, purpose=${trip.purpose})")
+            startHeartbeat(trip.id)
+            TripLog.i(TAG, "Recording trip ${trip.id} (resumed=${existing != null}, manual=$manual, purpose=${trip.purpose})")
 
             // Privatfahrt: NO positions are sampled at all — the trip exists
             // only as a time frame for the odometer delta (1%-Regelung)
@@ -385,6 +426,25 @@ class TripRecordingService : Service() {
                 startCheckpoints(trip.id)
             }
         }
+    }
+
+    /** Refresh the cross-process heartbeat file every minute (first write
+     *  immediately). Runs for private trips too — it is the only liveness
+     *  signal a point-less trip has. */
+    private fun startHeartbeat(id: String) {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (true) {
+                TripManager.writeServiceHeartbeat(applicationContext, id)
+                delay(60_000L)
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        TripManager.clearServiceHeartbeat(applicationContext)
     }
 
     // ── Periodic mid-trip checkpoint upload ──────────────────────────────────
@@ -417,9 +477,9 @@ class TripRecordingService : Service() {
                 try {
                     val json = TripManager.buildUploadJson(applicationContext, id) ?: continue
                     val ok = apiService.uploadTrip(json)
-                    Log.i(TAG, "checkpoint upload for trip $id: ok=$ok")
+                    TripLog.i(TAG, "checkpoint upload for trip $id: ok=$ok")
                 } catch (e: Exception) {
-                    Log.w(TAG, "checkpoint upload failed: ${e.message}")
+                    TripLog.w(TAG, "checkpoint upload failed: ${e.message}")
                 }
             }
         }
@@ -429,6 +489,7 @@ class TripRecordingService : Service() {
      *  expired) — tear down sampling and the FGS without re-ending the trip. */
     private fun shutdownAfterExternalClose() {
         samplingJob?.cancel()
+        stopHeartbeat()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
         gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
         gpsCallback = null
@@ -566,6 +627,12 @@ class TripRecordingService : Service() {
                 )
             )
             Log.i(TAG, "manual checkpoint for trip $id (label=${label ?: "-"}, pos=${loc != null})")
+            // The driver declared a stop — arm the stationary auto-close (never
+            // for private trips: they get no fused fixes, so "drove away" would
+            // be indistinguishable from "still parked").
+            if (db.tripDao().getTrip(id)?.purpose != "private") {
+                armCheckpointStopWatch(loc)
+            }
             // Force an immediate upload so the stop reaches the WMS now.
             try {
                 val json = TripManager.buildUploadJson(applicationContext, id)
@@ -711,6 +778,27 @@ class TripRecordingService : Service() {
                     val id = tripId ?: return
                     val loc = result.lastLocation ?: return
                     lastLoc = loc
+                    // Driving away from a declared checkpoint stop cancels the
+                    // stationary auto-close (same trip continues, multi-stop).
+                    // Consensus vote, not a single fix — see the constants.
+                    checkpointStopAnchor?.let { anchor ->
+                        if (loc.accuracy <= CHECKPOINT_FIX_GATE_M) {
+                            val moving = synchronized(checkpointStopLock) {
+                                checkpointStopDists.addLast(loc.distanceTo(anchor))
+                                while (checkpointStopDists.size > CHECKPOINT_MOVE_WINDOW) {
+                                    checkpointStopDists.removeFirst()
+                                }
+                                checkpointStopDists.count { it > CHECKPOINT_MOVE_RADIUS_M } >=
+                                    CHECKPOINT_MOVE_VOTES
+                            }
+                            if (moving) {
+                                disarmCheckpointStopWatch(
+                                    "sustained movement: ≥$CHECKPOINT_MOVE_VOTES of last " +
+                                        "$CHECKPOINT_MOVE_WINDOW fixes beyond ${CHECKPOINT_MOVE_RADIUS_M.toInt()} m"
+                                )
+                            }
+                        }
+                    }
                     scope.launch {
                         AppDatabase.getInstance(applicationContext).tripDao().insertPoint(
                             TripPointEntity(
@@ -773,10 +861,61 @@ class TripRecordingService : Service() {
         }
     }
 
+    /** Arm the stationary watch on a driver-declared checkpoint stop. Without a
+     *  position we cannot tell "drove away" from "parked in a basement" — then
+     *  we leave the old behavior (trip stays open) instead of guessing. */
+    private fun armCheckpointStopWatch(loc: android.location.Location?) {
+        if (loc == null) {
+            TripLog.i(TAG, "checkpoint stop watch NOT armed (no position at checkpoint)")
+            return
+        }
+        checkpointStopAnchor = loc
+        synchronized(checkpointStopLock) { checkpointStopDists.clear() }
+        checkpointStopJob?.cancel()
+        checkpointStopJob = scope.launch {
+            delay(CHECKPOINT_STATIONARY_CLOSE_MS)
+            if (checkpointStopAnchor == null || tripId == null) return@launch
+            // Last-moment counter-check: departure in the final minutes may not
+            // have reached the disarm consensus yet — refuse to close if even a
+            // partial window (≥2 gated fixes) is already beyond the radius.
+            val recentBeyond = synchronized(checkpointStopLock) {
+                checkpointStopDists.count { it > CHECKPOINT_MOVE_RADIUS_M }
+            }
+            if (recentBeyond >= 2) {
+                disarmCheckpointStopWatch("movement at close check ($recentBeyond recent fixes beyond radius)")
+                return@launch
+            }
+            TripLog.i(
+                TAG,
+                "checkpoint stop: no movement for ${CHECKPOINT_STATIONARY_CLOSE_MS / 60000} min — finalizing trip $tripId"
+            )
+            finalizeAndStop()
+        }
+        TripLog.i(
+            TAG,
+            "checkpoint stop watch armed (+${CHECKPOINT_STATIONARY_CLOSE_MS / 60000} min, radius ${CHECKPOINT_MOVE_RADIUS_M.toInt()} m, " +
+                "disarm=$CHECKPOINT_MOVE_VOTES/$CHECKPOINT_MOVE_WINDOW fixes)"
+        )
+    }
+
+    private fun disarmCheckpointStopWatch(reason: String) {
+        if (checkpointStopAnchor == null && checkpointStopJob == null) return
+        checkpointStopAnchor = null
+        synchronized(checkpointStopLock) { checkpointStopDists.clear() }
+        checkpointStopJob?.cancel()
+        checkpointStopJob = null
+        TripLog.i(TAG, "checkpoint stop watch disarmed ($reason)")
+    }
+
     private fun finalizeAndStop() {
         val memberId = tripId
         samplingJob?.cancel()
         checkpointJob?.cancel()
+        checkpointStopJob?.cancel()
+        checkpointStopJob = null
+        checkpointStopAnchor = null
+        synchronized(checkpointStopLock) { checkpointStopDists.clear() }
+        stopHeartbeat()
         locationCallback?.let { fusedClient?.removeLocationUpdates(it) }
         gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
         gpsCallback = null
@@ -813,13 +952,13 @@ class TripRecordingService : Service() {
                     db.tripDao().endTrip(id, System.currentTimeMillis())
                     TripManager.publishActiveTrip(null)
                     TripManager.queueTripSync(applicationContext, id)
-                    Log.i(TAG, "Trip $id finalized (${db.tripDao().pointCount(id)} points, resumed=${memberId == null})")
+                    TripLog.i(TAG, "Trip $id finalized (${db.tripDao().pointCount(id)} points, resumed=${memberId == null})")
                 } else {
-                    Log.w(TAG, "finalizeAndStop: no open trip to finalize")
+                    TripLog.w(TAG, "finalizeAndStop: no open trip to finalize")
                     TripManager.publishActiveTrip(null)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "finalize failed: ${e.message}", e)
+                TripLog.e(TAG, "finalize failed: ${e.message}", e)
             } finally {
                 stopSelf()
             }
@@ -831,6 +970,11 @@ class TripRecordingService : Service() {
         gpsCallback?.let { fusedClient?.removeLocationUpdates(it) }
         gpsCallback = null
         TripManager.serviceRecordingTripId = null
+        // Heartbeat must not outlive the service: scope.cancel() below kills the
+        // refresh loop, and a leftover file would make the UI reconciler defer
+        // to a recorder that no longer exists (up to the 5 min freshness window).
+        TripManager.clearServiceHeartbeat(applicationContext)
+        TripLog.i(TAG, "service destroyed (tripId=${tripId ?: "-"})")
         scope.cancel()
         super.onDestroy()
     }

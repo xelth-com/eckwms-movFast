@@ -131,6 +131,14 @@ abstract class AppDatabase : RoomDatabase() {
                 // that can't happen through normal forward updates, so retained
                 // Fahrtenbuch data is safe across every upgrade path.
                 .fallbackToDestructiveMigrationOnDowngrade()
+                // The trip recorder writes from the `:trips` process while the
+                // UI reads from the main one: WAL makes concurrent cross-process
+                // access safe, multi-instance invalidation keeps main-process
+                // Flows live when :trips writes (the invalidation service is
+                // pinned to :trips in the manifest so binding it never spawns
+                // the heavy main process).
+                .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+                .enableMultiInstanceInvalidation()
                 .build()
         }
     }

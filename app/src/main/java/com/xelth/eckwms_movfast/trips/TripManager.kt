@@ -55,11 +55,71 @@ object TripManager {
     // legitimately go long without points (no-signal stretch, Privatfahrt).
     @Volatile internal var serviceRecordingTripId: String? = null
 
+    // The recorder runs in the `:trips` process, so the static above is invisible
+    // to the UI process — the cross-process "service is alive" signal is a tiny
+    // heartbeat file the service refreshes every minute (atomic tmp+rename).
+    // Fresh heartbeat = never stale-close the trip, route commands via Intents.
+    private const val HEARTBEAT_FRESH_MS = 5 * 60_000L
+
+    private fun heartbeatFile(context: Context) =
+        java.io.File(context.filesDir, "trip_service_heartbeat")
+
+    internal fun writeServiceHeartbeat(context: Context, tripId: String) {
+        try {
+            val f = heartbeatFile(context)
+            val tmp = java.io.File(f.parentFile, f.name + ".tmp")
+            tmp.writeText("$tripId|${System.currentTimeMillis()}")
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                tmp.renameTo(f)
+            }
+        } catch (_: Exception) {
+            // Heartbeat is advisory — never disturb recording over it.
+        }
+    }
+
+    internal fun clearServiceHeartbeat(context: Context) {
+        try { heartbeatFile(context).delete() } catch (_: Exception) {}
+    }
+
+    /** Is the recording service (in whichever process) actively on this trip?
+     *  Same process: the static. Cross-process: a heartbeat younger than 5 min. */
+    fun isServiceRecording(context: Context, tripId: String): Boolean {
+        if (serviceRecordingTripId == tripId) return true
+        return try {
+            val parts = heartbeatFile(context).readText().split('|')
+            parts.size == 2 && parts[0] == tripId &&
+                System.currentTimeMillis() - (parts[1].toLongOrNull() ?: 0L) < HEARTBEAT_FRESH_MS
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private val _activeTrip = MutableLiveData<TripEntity?>(null)
     val activeTrip: LiveData<TripEntity?> = _activeTrip
 
     fun publishActiveTrip(trip: TripEntity?) {
         _activeTrip.postValue(trip)
+    }
+
+    // Main-process bridge: the recorder's publishActiveTrip() happens in the
+    // :trips process, so the UI's copy of this LiveData would stay silent. Mirror
+    // the Room open-trip row instead — cross-process invalidation re-emits it on
+    // every :trips write. Started once from EckwmsApp (main process only).
+    @Volatile private var uiBridgeStarted = false
+
+    fun startUiBridge(context: Context) {
+        if (uiBridgeStarted) return
+        uiBridgeStarted = true
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                AppDatabase.getInstance(appContext).tripDao().observeOpenTrip()
+                    .collect { _activeTrip.postValue(it) }
+            } catch (e: Exception) {
+                Log.e(TAG, "UI bridge died: ${e.message}", e)
+            }
+        }
     }
 
     // VisibleForTesting: pure staleness decision. Last activity = newest point,
@@ -78,7 +138,7 @@ object TripManager {
     suspend fun reconcileOpenTrip(context: Context): TripEntity? {
         val db = AppDatabase.getInstance(context)
         val open = db.tripDao().getOpenTrip() ?: return null
-        if (open.id == serviceRecordingTripId) return open
+        if (isServiceRecording(context, open.id)) return open
         open.tentativeEndTs?.let { armTs ->
             return if (armedEndExpired(armTs, System.currentTimeMillis())) {
                 closeWithArmedEnd(context, open)
@@ -96,7 +156,7 @@ object TripManager {
                 java.time.Instant.ofEpochMilli(endedAt).toString()
         )
         queueTripSync(context, open.id)
-        Log.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
+        TripLog.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
         return null
     }
 
@@ -143,7 +203,7 @@ object TripManager {
             return false
         }
         val now = System.currentTimeMillis()
-        if (serviceRecordingTripId == open.id) {
+        if (isServiceRecording(context, open.id)) {
             val intent = Intent(context, TripRecordingService::class.java).apply {
                 action = TripRecordingService.ACTION_ODO
                 putExtra(TripRecordingService.EXTRA_ODO_KM, km)
@@ -433,6 +493,61 @@ object TripManager {
         }
     }
 
+    /** Outcome of [declareNextDestination] — drives the console feedback. */
+    enum class NextDest { ARMED_NO_TRIP, ARMED_AT_STOP, MERGED_LIVE }
+
+    /** Driver names where the NEXT leg goes (ticket-row tap or spoken while a
+     *  trip exists; owner wish 2026-07-20 — "на чекпойнте дай ввести
+     *  следующую цель").
+     *  - No open trip → classic armed intent (next trip starts with it).
+     *  - Open trip with an ARMED TENTATIVE END (odometer photographed at this
+     *    stop) → labeled checkpoint `→ <Ziel>` on the open trip + armed intent
+     *    presetting THIS stop's odometer reading and the trip's vehicle. The
+     *    declaration survives both futures: driving on consumes the intent on
+     *    IN_VEHICLE ENTER and the service merges the purpose onto the SAME
+     *    trip (multi-stop); a stale-/tentative-end close hands it to the next
+     *    trip with the true (pre-drive) declaration moment.
+     *  - Open trip still live without a stop reading → merge onto the running
+     *    trip NOW (the long-standing voice semantics — waiting for an ENTER
+     *    transition that never comes mid-drive would lose it) + checkpoint. */
+    suspend fun declareNextDestination(
+        context: Context,
+        label: String,
+        ref: String? = null,
+        source: String = "planned"
+    ): NextDest {
+        val open = AppDatabase.getInstance(context).tripDao().getOpenTrip() ?: run {
+            armTripIntent(context, label, ref, source)
+            Log.i(TAG, "next destination \"$label\" armed (no open trip)")
+            return NextDest.ARMED_NO_TRIP
+        }
+        if (isServiceRecording(context, open.id)) {
+            checkpointNow(context, "→ $label")
+        }
+        if (open.tentativeEndTs != null) {
+            armTripIntent(context, label, ref, source)
+            val stopKm = open.tentativeEndOdoKm
+            if (stopKm != null) {
+                attachIntentOdometer(
+                    stopKm,
+                    if (open.tentativeEndPhotoId != null) "photo" else "manual",
+                    open.tentativeEndPhotoId
+                )
+            } else {
+                estimateCurrentOdometer(context)?.let { attachIntentOdometer(it, "estimated", null) }
+            }
+            bindTripIntentVehicle(open.vehicleId, open.vehiclePlate)
+            Log.i(TAG, "next destination \"$label\" armed at checkpoint stop of trip ${open.id}")
+            return NextDest.ARMED_AT_STOP
+        }
+        startTrip(
+            context, manual = true, purpose = "business",
+            purposeRef = ref, purposeLabel = label, purposeSource = source
+        )
+        Log.i(TAG, "next destination \"$label\" merged onto live trip ${open.id}")
+        return NextDest.MERGED_LIVE
+    }
+
     /** Log a trip expense on the OPEN trip: a point of kind `fuel`/`parking`/
      *  `toll`/`receipt` with the odometer (estimated or scanned) + receipt photo
      *  id. The server promotes these kinds into the durable fuel_events array
@@ -603,21 +718,42 @@ object TripManager {
 
     // ── Sync payload ─────────────────────────────────────────────────────────
 
-    /** Queue an ended trip for upload and poke the SyncWorker. */
+    /** Queue an ended trip for upload and poke the SyncWorker.
+     *
+     *  In the `:trips` process there is no WorkManager (it stays main-process-
+     *  only by design) — upload directly over the same HTTP→relay path the
+     *  checkpoints use. The main process's periodic SyncWorker sweep
+     *  (getUnsyncedEnded) remains the retry net for anything that fails here. */
     fun queueTripSync(context: Context, tripId: String) {
+        val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val db = AppDatabase.getInstance(context)
+                val db = AppDatabase.getInstance(appContext)
+                if (com.xelth.eckwms_movfast.utils.ProcessUtils.isTripsProcess()) {
+                    val json = buildUploadJson(appContext, tripId) ?: return@launch
+                    val ok = try {
+                        com.xelth.eckwms_movfast.api.ScanApiService(appContext).uploadTrip(json)
+                    } catch (e: Exception) {
+                        false
+                    }
+                    // Only an ENDED trip may be marked synced — this path also
+                    // fires for open-trip checkpoint pushes (closeStale callers).
+                    if (ok && db.tripDao().getTrip(tripId)?.status == TripEntity.STATUS_ENDED) {
+                        db.tripDao().markSynced(tripId, System.currentTimeMillis())
+                    }
+                    TripLog.i(TAG, "trip $tripId direct upload from :trips: ok=$ok")
+                    return@launch
+                }
                 db.syncQueueDao().addToQueue(
                     SyncQueueEntity(
                         type = "trip_sync",
                         payload = JSONObject().put("trip_id", tripId).toString()
                     )
                 )
-                SyncManager.scheduleSync(context)
+                SyncManager.scheduleSync(appContext)
                 Log.d(TAG, "Trip $tripId queued for sync")
             } catch (e: Exception) {
-                Log.e(TAG, "queueTripSync failed: ${e.message}", e)
+                TripLog.e(TAG, "queueTripSync failed: ${e.message}", e)
             }
         }
     }
@@ -717,8 +853,12 @@ object TripManager {
             trip.vehicleId?.let { put("vehicle_id", it) }
             trip.vehiclePlate?.let { put("vehicle_plate", it) }
             trip.note?.let { put("note", it) }
+            // In the :trips process UserManager is never logged in — fall back to
+            // the persisted current user (prefs snapshot from process start).
             val userId = com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id
-            if (!userId.isNullOrEmpty()) put("driver_user_id", userId)
+                ?.takeIf { it.isNotEmpty() }
+                ?: com.xelth.eckwms_movfast.utils.SettingsManager.getCurrentUserId()
+            if (userId.isNotEmpty()) put("driver_user_id", userId)
             put("points", pointsJson)
             smoothed?.let { s ->
                 put("smoothed_km", Math.round(s.distanceKm * 10.0) / 10.0)

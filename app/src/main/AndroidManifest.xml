@@ -33,15 +33,6 @@
          reset a hung process, move our own task back to the front (normal
          permission, Play-safe; a plain startActivity would be blocked by BAL). -->
     <uses-permission android:name="android.permission.REORDER_TASKS" />
-    <!-- One-press-scan-from-sleep: the wake key press is consumed by the system,
-         but PowerManager logs `wakeup: anykeyWakeup keyCode = 140/141/142` — with
-         READ_LOGS we read that line on SCREEN_ON and fire the scan the user asked
-         for. Development permission: NOT granted by install; provisioned per
-         device via `adb shell pm grant <pkg> android.permission.READ_LOGS`.
-         Without the grant the feature degrades to a silent no-op. -->
-    <uses-permission
-        android:name="android.permission.READ_LOGS"
-        tools:ignore="ProtectedPermissions" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared ONLY in the `paid`
          flavor (src/paid/AndroidManifest.xml) — Google Play restricts it, so
          the `free` (Play) build must not carry it. -->
@@ -124,22 +115,41 @@
         </service>
 
         <!-- Trip recording (Fahrtenbuch): passive cell-tower track, no GPS.
-             The ongoing notification is the transparency indicator. -->
+             The ongoing notification is the transparency indicator.
+
+             The whole trip stack lives in the SMALL `:trips` process: under
+             memory pressure (Google Maps + music while driving) lmkd prefers
+             killing the fat UI process — a ~30 MB FGS process survives loads
+             that culled the 300+ MB monolith every few minutes. EckwmsApp
+             gates its init by process, so :trips never binds the scanner SDK,
+             WebSocket, camera or WorkManager. -->
         <service
             android:name=".trips.TripRecordingService"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="location"
+            android:process=":trips" />
         <receiver
             android:name=".trips.VehicleTransitionReceiver"
-            android:exported="false" />
+            android:exported="false"
+            android:process=":trips" />
         <receiver
             android:name=".trips.BootReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:process=":trips">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Room cross-process invalidation hub. Pinned to the SMALL process:
+             every process using the DB binds this service, and binding spawns
+             its host — hosting it in the default process would resurrect the
+             heavy UI process on every :trips write, defeating the split. -->
+        <service
+            android:name="androidx.room.MultiInstanceInvalidationService"
+            android:process=":trips"
+            tools:node="merge" />
     </application>
 </manifest>

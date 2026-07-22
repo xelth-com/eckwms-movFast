@@ -39,14 +39,14 @@ class VehicleTransitionReceiver : BroadcastReceiver() {
                 // declared destination/client, last-known vehicle + odometer
                 // and the TRUE (pre-drive) declaration timestamp.
                 if (TripManager.startTripFromIntent(context)) {
-                    Log.i(TAG, "IN_VEHICLE enter → trip started from voice intent")
+                    TripLog.i(TAG, "IN_VEHICLE enter → trip started from voice intent")
                 } else {
-                    Log.i(TAG, "IN_VEHICLE enter → start trip recording")
+                    TripLog.i(TAG, "IN_VEHICLE enter → start trip recording")
                     TripManager.startTrip(context, manual = false)
                 }
             }
             ActivityTransition.ACTIVITY_TRANSITION_EXIT -> {
-                Log.i(TAG, "IN_VEHICLE exit → graceful stop")
+                TripLog.i(TAG, "IN_VEHICLE exit → graceful stop")
                 TripManager.stopTrip(context, graceful = true)
             }
         }

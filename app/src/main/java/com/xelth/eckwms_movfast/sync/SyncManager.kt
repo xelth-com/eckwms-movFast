@@ -20,6 +20,13 @@ object SyncManager {
      * Schedule an immediate one-time sync
      */
     fun scheduleSync(context: Context) {
+        // WorkManager is main-process-only: it never initializes in the small
+        // :trips process (and getInstance there would throw). Callers in :trips
+        // upload directly; the periodic main-process sweep is their retry net.
+        if (!com.xelth.eckwms_movfast.utils.ProcessUtils.isMainProcess(context)) {
+            Log.w(TAG, "scheduleSync skipped (process ${com.xelth.eckwms_movfast.utils.ProcessUtils.processName()})")
+            return
+        }
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()

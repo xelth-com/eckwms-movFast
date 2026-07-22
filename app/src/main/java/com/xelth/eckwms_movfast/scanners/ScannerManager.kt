@@ -48,10 +48,11 @@ private const val RETURN_RETRY_MAX = 3
 /** Hardware scan-trigger keycodes (vendor config: left=140/F10, front=141/F11,
  *  right=142/F12; 138–139 included for other key layouts of the same family). */
 private val TRIGGER_KEYCODES = 138..142
-/** A `wakeup: anykeyWakeup` log line older than this cannot belong to THIS wake. */
-private const val WAKE_LOG_FRESHNESS_MS = 6_000L
-/** How long to wait for our activity to come up over the keyguard after a wake. */
-private const val WAKE_FOREGROUND_WAIT_MS = 3_000L
+/** Wake-acknowledge vibration: the wake key press is consumed by the system (no
+ *  KeyEvent, no vendor broadcast, no laser) — this pulse is the worker's only
+ *  feedback that the press DID something. Felt buzz + no laser = "device woke,
+ *  press again to scan"; laser = it scanned. */
+private const val WAKE_ACK_VIBRATE_MS = 80L
 
 /** Health of the hardware scan engine, surfaced for the UI + startScan self-heal. */
 enum class ScannerHealth { HEALTHY, RECOVERING, DOWN }
@@ -386,77 +387,33 @@ class ScannerManager private constructor(private val application: Application) {
 
     /** elapsedRealtime of the last SCREEN_ON. */
     @Volatile private var lastScreenOnTs = 0L
-    /** Wall-clock time of the last SCREEN_ON — needed to window the logcat read. */
-    @Volatile private var lastScreenOnWallClock = 0L
     /** elapsedRealtime of the last hardware trigger press (KeyEvent or vendor broadcast). */
     @Volatile private var lastTriggerTs = 0L
     /** elapsedRealtime of the last successful decode (set in the scan callback). */
     @Volatile private var lastDecodeTs = 0L
 
     /**
-     * Record a device wake (SCREEN_ON), then find out WHO woke the device. The key
-     * press that wakes from sleep is consumed entirely by the system — no KeyEvent,
-     * no vendor broadcast, to anyone — but PowerManager logs
-     * `wakeup: ----deal anykeyWakeup keyCode = <n>` for key wakes (and nothing for
-     * power button / charger / gestures, verified on device). With READ_LOGS
-     * granted we read that line: if a scan-trigger key woke the device, the user
-     * asked for a scan — fire it. Without the grant (logcat then only returns our
-     * own lines) or with the setting off this degrades to just stamping the wake.
+     * Record a device wake (SCREEN_ON) and acknowledge it with a short vibration.
+     * The key press that wakes from sleep is consumed entirely by the system — no
+     * KeyEvent, no vendor broadcast, no laser — so waking and scanning are two
+     * separate presses by design: press 1 wakes (felt as this buzz, no laser),
+     * press 2 scans. The former one-press-from-sleep read the wake keycode from
+     * the system log, but READ_LOGS meant the recurring "Geräteprotokolle"
+     * consent dialog on every fresh grant state — dropped 2026-07-21 (owner call:
+     * "просто упростим").
      */
     fun onScreenOn() {
-        val wakeTs = SystemClock.elapsedRealtime()
-        val wakeWallClock = System.currentTimeMillis()
-        lastScreenOnTs = wakeTs
-        lastScreenOnWallClock = wakeWallClock
-        if (SettingsManager.getAutoScanOnWake()) {
-            watchdogScope.launch { scanIfWokenByTriggerKey(wakeTs, wakeWallClock) }
-        }
-    }
-
-    /**
-     * One-press-scan-from-sleep: if the fresh `wakeup` log line says a scan-trigger
-     * key woke the device, wait for our activity to come up over the keyguard
-     * (setShowWhenLocked) and treat the wake press as a real trigger press.
-     */
-    private suspend fun scanIfWokenByTriggerKey(wakeTs: Long, wakeWallClock: Long) {
-        val keyCode = readWakeKeyFromLog(wakeWallClock) ?: return
-        if (keyCode !in TRIGGER_KEYCODES) {
-            Log.d(TAG, "wake key $keyCode is not a scan trigger — no wake scan")
-            return
-        }
-        var waited = 0L
-        while (!appInForeground && waited < WAKE_FOREGROUND_WAIT_MS) {
-            delay(150); waited += 150
-        }
-        if (!appInForeground) {
-            Log.d(TAG, "wake scan skipped: activity did not reach foreground")
-            return
-        }
-        // A double-press wake may already have been served by the second press.
-        if (lastDecodeTs >= wakeTs) return
-        Log.d(TAG, "device woken by scan key $keyCode → one-press wake scan")
-        withContext(Dispatchers.Main) { onScanTriggerPressed("wake", keyCode) }
-    }
-
-    /**
-     * Read the keycode that woke the device from the system log (`wakeup` tag,
-     * PowerManager's anykey-wakeup handler). Requires READ_LOGS — a development
-     * permission granted per device over adb; without it logcat only returns our
-     * own process' lines and this returns null (feature silently off).
-     */
-    private fun readWakeKeyFromLog(wakeWallClock: Long): Int? {
-        return try {
-            val since = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
-                .format(java.util.Date(wakeWallClock - WAKE_LOG_FRESHNESS_MS))
-            // -t '<time>' implies -d (dump and exit); -s silences all but the tag.
-            val proc = Runtime.getRuntime().exec(arrayOf("logcat", "-t", since, "-s", "wakeup:V"))
-            val out = proc.inputStream.bufferedReader().use { it.readText() }
-            proc.waitFor()
-            Regex("anykeyWakeup keyCode = (\\d+)").findAll(out).lastOrNull()
-                ?.groupValues?.get(1)?.toIntOrNull()
-        } catch (e: Throwable) {
-            Log.w(TAG, "wake-key log read failed: ${e.message}")
-            null
+        lastScreenOnTs = SystemClock.elapsedRealtime()
+        try {
+            application.getSystemService(android.os.VibratorManager::class.java)
+                ?.defaultVibrator
+                ?.vibrate(
+                    android.os.VibrationEffect.createOneShot(
+                        WAKE_ACK_VIBRATE_MS, android.os.VibrationEffect.DEFAULT_AMPLITUDE
+                    )
+                )
+        } catch (e: Exception) {
+            Log.w(TAG, "wake-ack vibration failed: ${e.message}")
         }
     }
 
@@ -487,9 +444,8 @@ class ScannerManager private constructor(private val application: Application) {
      *
      * Normally just [startScan]; switches to the assisted path (resume the engine,
      * wait for the camera, then scan) when the engine is suspended — a stranded
-     * vendor suspend or a fresh wake where the trigger press itself woke the device
-     * and the engine hasn't re-acquired the camera yet. That is the
-     * one-press-from-sleep fix.
+     * vendor suspend, or the SECOND press right after a wake (press 1 only woke
+     * the device; the engine may not have re-acquired the camera yet).
      */
     fun onScanTriggerPressed(source: String, keyCode: Int) {
         val now = SystemClock.elapsedRealtime()
