@@ -3089,20 +3089,79 @@ class MainScreenViewModel : ViewModel() {
             onHapticError?.invoke()
         }
 
-        var photoCount = 0
-        receivingData.forEach { (key, value) ->
-            if (value is Bitmap) {
-                try {
-                    onRepairPhotoUpload?.invoke("RECEIVING:$key", value)
-                    photoCount++
-                    addLog("Uploaded photo: $key")
-                } catch (e: Exception) {
-                    addLog("Photo upload error: ${e.message}")
-                    onHapticError?.invoke()
+        // ── Hand the received device over to Repair ──────────────────────
+        // A received device goes straight into a repair slot: bind it (the
+        // device_bound event auto-creates the REP order server-side), attach
+        // the receiving photos, and make the LAST photo — the unpacked
+        // device, not the box — the slot's main/background shot.
+        val deviceBarcode = (receivingData["device_barcode"] as? String)?.takeIf { it.isNotBlank() }
+        val photos = receivingData.entries
+            .filter { it.value is Bitmap }
+            .map { it.key to (it.value as Bitmap) }   // insertion order = step order
+
+        var repairSlotIndex: Int? = null
+        if (deviceBarcode != null) {
+            // Merge persisted bindings first — persistSlots() writes only the
+            // in-memory state, so binding while repair mode was never entered
+            // this session would otherwise wipe the saved slots.
+            (onLoadRepairSlots?.invoke() ?: emptyList()).forEach { (idx, bc) ->
+                if (idx in slots.indices && !slots[idx].isBound) {
+                    slots[idx].barcode = bc
+                    slots[idx].isBound = true
+                    if (slots[idx].history.isEmpty()) slots[idx].history.add("Restored from DB")
                 }
             }
+            val slot = slots.find { it.barcode == deviceBarcode } ?: slots.find { !it.isBound }
+            if (slot == null) {
+                addLog("⚠️ No free repair slot for $deviceBarcode")
+                onHapticError?.invoke()
+            } else {
+                slot.barcode = deviceBarcode
+                slot.isBound = true
+                val client = receivingData["client_name"] as? String ?: ""
+                slot.history.add("Received${if (client.isNotEmpty()) " from $client" else ""}: ${deviceBarcode.takeLast(8)}")
+                // Attach copies to the slot (the upload below recycles the
+                // originals); the LAST photo becomes the background.
+                var lastCopy: Bitmap? = null
+                photos.forEach { (_, bmp) ->
+                    val copy = bmp.copy(bmp.config ?: Bitmap.Config.ARGB_8888, false)
+                    if (slot.allPhotos.size < 20) slot.allPhotos.add(copy)
+                    val uuid = onSavePhoto?.invoke(slot.index, copy)
+                    uuid?.let { slot.photoUuids.add(it) }
+                    lastCopy = copy
+                }
+                lastCopy?.let {
+                    slot.photo = it
+                    onSaveRepairPhoto?.invoke(slot.index, it)  // legacy slot_N.webp for restore
+                }
+                persistSlots()
+                viewModelScope.launch { onBindSlotPhotos?.invoke(slot.index, deviceBarcode) }
+                onRepairEventSend?.invoke(deviceBarcode, "device_bound",
+                    "{\"slot\": ${slot.index}, \"source\": \"receiving\"}")
+                repairSlotIndex = slot.index
+                addLog("→ Repair: slot #${slot.index + 1} ← $deviceBarcode (main = last photo)")
+            }
+        } else if (photos.isNotEmpty()) {
+            addLog("ℹ️ No device scan in Contents — device NOT handed to Repair")
         }
-        addLog("=== DONE ($photoCount photos) ===")
+
+        // Upload photos. With a serial known they attach to the DEVICE (like
+        // repair photos) — last-taken first, so the device shot is also the
+        // earliest attachment server-side; without a serial the legacy
+        // RECEIVING:<key> context is kept.
+        var photoCount = 0
+        val uploadOrder = if (deviceBarcode != null) photos.asReversed() else photos
+        uploadOrder.forEach { (key, value) ->
+            try {
+                onRepairPhotoUpload?.invoke(deviceBarcode ?: "RECEIVING:$key", value)
+                photoCount++
+                addLog("Uploaded photo: $key" + (deviceBarcode?.let { " → ${it.takeLast(8)}" } ?: ""))
+            } catch (e: Exception) {
+                addLog("Photo upload error: ${e.message}")
+                onHapticError?.invoke()
+            }
+        }
+        addLog("=== DONE ($photoCount photos${repairSlotIndex?.let { ", repair slot #${it + 1}" } ?: ""}) ===")
         _receivingStatus.value = "✓ Saved! Exiting..."
 
         viewModelScope.launch {
