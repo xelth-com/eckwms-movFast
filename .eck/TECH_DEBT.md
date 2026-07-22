@@ -1,5 +1,30 @@
 # Tech Debt
 
+## Process split (`:trips`) — accepted risks (2026-07-20)
+
+The trip stack (FGS + auto-detect receivers + Room invalidation hub) runs in the
+small `:trips` process (see JOURNAL 2026-07-20). Known accepted risks:
+
+- **EncryptedSharedPreferences from two processes.** Both processes open the
+  same Keystore-backed sec file; the only :trips-side write is `saveAuthToken`
+  (relay re-auth). A concurrent sec write from both processes could last-writer-
+  wins a token or, in a pathological race, corrupt the keyset (androidx
+  security-crypto is documented single-process). Rare in practice — the main
+  process is idle/killed while driving. If tokens ever start vanishing after
+  drives, split the device JWT into its own file first.
+- **Stale plain-prefs READS in `:trips`.** SharedPreferences caches per-process:
+  the long-lived :trips process sees consent/auto-detect/server-URL values as of
+  its process start. Toggling recording consent OFF in the UI mid-drive is still
+  honored on the next service command (fresh process or same snapshot — consent
+  was read at trip start anyway). A stale `getTripAutoDetect()==true` in
+  BootReceiver can re-arm detection the user just disabled — self-heals when
+  :trips restarts. If this bites, move those flags to files like the trip intent.
+- **`:trips` must NEVER write plain prefs** — a write flushes the whole stale
+  in-process map over newer main-process settings (pairing!). Guards in place:
+  trip intent → own file (`files/trip_intent.json`), `saveTripAutoDetect`
+  write-if-changed. Any NEW SettingsManager write reachable from the trip stack
+  must follow one of those two patterns.
+
 ## Trips — open field-test issues (2026-07-06)
 
 - **2 h auto-trip with ZERO points (14:36–16:45 Walldorf→Würzburg leg).** The trip row

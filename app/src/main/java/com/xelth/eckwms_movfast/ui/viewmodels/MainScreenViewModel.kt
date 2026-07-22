@@ -601,7 +601,6 @@ class MainScreenViewModel : ViewModel() {
         val armedIntent = if (tripActive) null
             else com.xelth.eckwms_movfast.trips.TripManager.peekTripIntent()
         val buttons = listOf(
-            MainMenuButton("settings", "⚙️\nSettings", "#9013FE", "navigate_settings", PRIORITIES.DEFAULT),
             MainMenuButton("repair", "🔧\nRepair", "#E91E63", "navigate_repair", PRIORITIES.DEFAULT),
             MainMenuButton("receiving", "📦\nReceiving", "#FF9800", "navigate_receiving", PRIORITIES.DEFAULT),
             MainMenuButton("device_check", "✅\nCheck", "#4CAF50", "navigate_device_check", PRIORITIES.DEFAULT),
@@ -635,9 +634,11 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(scanAction = "capture_barcode", photoAction = "capture_photo")
+        placeSystemButtons(scanAction = "capture_barcode")
         gridManager.placeItems(contentItems, priority = PRIORITIES.SCAN_BUTTON)
-        _exitButton.postValue(null)
+        // Root grid keeps the red ✕ too: short press is a no-op (nowhere to go
+        // back to), long press minimizes the app — same gesture at every depth.
+        _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
         updateRenderCells()
     }
 
@@ -649,20 +650,23 @@ class MainScreenViewModel : ViewModel() {
     }
 
     /**
-     * Voice Commands P0 — pin the 3 always-present "system" buttons at FIXED hex
+     * Voice Commands P0 — pin the always-present "system" buttons at FIXED hex
      * positions in EVERY mode. Hex geometry (asymmetrical): even rows have FULL
      * slots at cols 1/3/5, odd rows at cols 0/2/4.
-     *   • Scan  → (row 0, col 5)  top-right corner.
-     *   • Photo → (row 0, col 3)  immediately left of Scan.
-     *   • 🎤    → (row 1, col 4)  full hex, far-right of the 2nd row (under Scan) —
-     *                             GLOBAL push-to-talk, action "voice_command".
-     * Scan/Photo carry the CURRENT mode's actions; only their POSITION is fixed.
+     *   • Scan  → (row 0, col 5)  top-right corner. Since the Scan/Photo merge the
+     *             camera screen it opens carries photo + OCR flags, so no separate
+     *             Photo hex is pinned by default (photoAction = null). Trip field
+     *             menus still pass a photoAction — there the hex is a context
+     *             trigger (fuel receipt / odometer OCR), not a plain Photo button.
+     *   • 🎤    → rendered natively by SelectionAreaSheet as the HALF_RIGHT slot
+     *             at row 3 (right edge, under the ✕) — GLOBAL push-to-talk.
+     * Scan carries the CURRENT mode's action; only its POSITION is fixed.
      * Call AFTER clearAndReset() and BEFORE placeItems(): SYSTEM_FIXED priority
      * reserves the slots so the mode's content flows around them.
      */
     private fun placeSystemButtons(
         scanAction: String = "act_scan",
-        photoAction: String? = "act_photo",
+        photoAction: String? = null,
         scanLabel: String = "🔲\nScan",
         scanColor: String = "#00BCD4",
         photoLabel: String = "📷\nPhoto",
@@ -677,9 +681,6 @@ class MainScreenViewModel : ViewModel() {
                 mapOf("type" to "button", "label" to photoLabel, "color" to photoColor, "action" to photoAction),
                 PRIORITIES.SYSTEM_FIXED, "photo"))
         }
-        sys.add(SystemElement(1, 4,
-            mapOf("type" to "button", "label" to "🎤\nAudio", "color" to "#455A64", "action" to "voice_command"),
-            PRIORITIES.SYSTEM_FIXED, "voice"))
         gridManager.placeSystemElements(sys, _isLeftHanded.value ?: false)
     }
 
@@ -1008,7 +1009,7 @@ class MainScreenViewModel : ViewModel() {
         // 3. Photo & Scan are now pinned via placeSystemButtons (fixed positions).
 
         gridManager.clearAndReset()
-        placeSystemButtons(scanAction = "capture_barcode", photoAction = "capture_photo")
+        placeSystemButtons(scanAction = "capture_barcode")
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
 
         // 4. X button — native half-slot
@@ -1079,6 +1080,10 @@ class MainScreenViewModel : ViewModel() {
         if (action == "act_noop" || action == "act_smart_info") {
             return "handled"
         }
+        // Root grid ✕ short press: already at the root, nowhere to step back to.
+        if (action == "act_exit") {
+            return "handled"
+        }
 
         if (action == "navigate_repair") {
             enterRepairMode()
@@ -1126,23 +1131,14 @@ class MainScreenViewModel : ViewModel() {
             return "handled"
         }
         return when (action) {
-            // Long-press the red ✕ = jump straight to the root (main menu),
-            // bypassing the short-press step-back behaviour.
-            "act_exit" -> {
-                when {
-                    _isTripMode.value == true -> exitTripMode()
-                    _isRepairMode.value == true -> exitRepairMode()
-                    _isReceivingMode.value == true -> exitReceivingMode()
-                    _isInventoryMode.value == true -> exitInventoryMode()
-                    _isDeviceCheckMode.value == true -> exitDeviceCheckMode()
-                    _isRestockMode.value == true -> exitRestockMode()
-                    _isNetworkMode.value == true -> exitNetworkMode()
-                    else -> {}
-                }
-                "handled"
-            }
+            // Long-press the red ✕ half-slot (SelectionAreaSheet dispatches
+            // act_minimize_app for it regardless of the short-press action) =
+            // minimize the app from ANY menu depth, keeping mode/state intact.
+            "act_minimize_app", "act_exit" -> "minimize_app"
             "act_photo" -> "capture_photo_continuous"
-            "act_scan" -> "capture_barcode_continuous"
+            // Long-press the merged Scan button = straight into PHOTO: the combined
+            // camera opens with the barcode analyzer OFF (torch on), blue flag ready.
+            "act_scan", "capture_barcode" -> "capture_photo_direct"
             // 🚗 long-press = trip mode with the LAST TRIPS listed in the
             // console (offline view straight from Room — no server needed).
             "navigate_trips" -> {
@@ -1562,7 +1558,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoColor = photoColor, photoLabel = "📷\nPHOTO", scanLabel = "🔲\nSCAN")
+        placeSystemButtons(scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -2346,6 +2342,15 @@ class MainScreenViewModel : ViewModel() {
                             val key = iter.next()
                             map[key] = obj.get(key)
                         }
+                        // The Rust server answers in snake_case; every consumer
+                        // in this app still reads the Go-era camelCase names.
+                        // Alias centrally here instead of touching all readers.
+                        obj.optString("tracking_number").takeIf { it.isNotEmpty() }
+                            ?.let { map["trackingNumber"] = it }
+                        obj.optString("raw_response").takeIf { it.isNotEmpty() }
+                            ?.let { map["rawResponse"] = it }
+                        obj.optString("updated_at").takeIf { it.isNotEmpty() }
+                            ?.let { map["lastActivityAt"] = it }
                         list.add(map)
                     }
 
@@ -2371,22 +2376,97 @@ class MainScreenViewModel : ViewModel() {
         }
     }
 
+    // id → score from the last postal scan's fuzzy match; drives the picker
+    // sort order and the "best candidate" highlight.
+    private var fuzzyScores: Map<String, Int> = emptyMap()
+
+    /** OCR-tolerant normalization: uppercase + the classic digit confusions
+     *  (O→0, I/L→1, S→5, B→8). Applied to BOTH sides of every comparison, so
+     *  words stay comparable ("S+T FITNESS" and its OCR twin normalize alike). */
+    private fun ocrNorm(s: String): String = buildString(s.length) {
+        for (c in s.uppercase()) append(
+            when (c) { 'O' -> '0'; 'I' -> '1'; 'L' -> '1'; 'S' -> '5'; 'B' -> '8'; else -> c }
+        )
+    }
+
+    private val tokenSplit = Regex("[^A-Za-z0-9]+")
+
+    /** Score one shipment against the scanned-label tokens: long token inside the
+     *  tracking/order id = 5, a 5-digit zip token = 3, any other field token = 1. */
+    private fun scoreShipment(tokens: List<String>, s: Map<String, Any?>): Int {
+        val fields = StringBuilder()
+        val raw = s["rawResponse"] as? String
+        if (raw != null) try {
+            val j = JSONObject(raw)
+            for (k in listOf("recipient_name", "recipient_street", "recipient_zip",
+                             "recipient_city", "pickup_name", "pickup_street",
+                             "pickup_zip", "pickup_city", "reference", "description")) {
+                fields.append(' ').append(j.optString(k, ""))
+            }
+        } catch (_: Exception) {}
+        val hayTokens = tokenSplit.split(ocrNorm(fields.toString()))
+            .filter { it.length >= 3 }.toSet()
+        val trackingHay = ocrNorm(
+            (s["trackingNumber"] as? String ?: "") + " " + (s["id"]?.toString() ?: "")
+        )
+        var score = 0
+        for (t in tokens) {
+            when {
+                t.length >= 6 && trackingHay.contains(t) -> score += 5
+                hayTokens.contains(t) ->
+                    score += if (t.length == 5 && t.all { it.isDigit() }) 3 else 1
+            }
+        }
+        return score
+    }
+
     private fun tryAutoMatchShipment(barcode: String) {
+        fuzzyScores = emptyMap()
         if (cachedShipments.isEmpty()) {
             addLog("Cannot auto-match: no shipments loaded yet")
             return
         }
 
+        // 1. Exact tracking hit (a real barcode scan).
         val match = cachedShipments.find {
             (it["trackingNumber"] as? String) == barcode
         }
-
         if (match != null) {
             val track = match["trackingNumber"] as? String ?: "?"
             addLog("Auto-match: barcode $barcode -> shipment #${match["id"]} ($track)")
             populateClientData(match)
-        } else {
+            return
+        }
+
+        // 2. Fuzzy: OCR'd label text (or an unknown barcode) scored against every
+        //    shipment's fields. Confident single winner → auto-select; otherwise
+        //    the scores just rank the picker.
+        val tokens = tokenSplit.split(ocrNorm(barcode)).filter { it.length >= 3 }.distinct()
+        if (tokens.isEmpty()) {
             addLog("No auto-match for $barcode in ${cachedShipments.size} shipments")
+            return
+        }
+        val scores = mutableMapOf<String, Int>()
+        for (s in cachedShipments) {
+            val id = (s["id"] as? Number)?.toString() ?: s["id"]?.toString() ?: continue
+            val sc = scoreShipment(tokens, s)
+            if (sc > 0) scores[id] = sc
+        }
+        fuzzyScores = scores
+        val best = scores.maxByOrNull { it.value }
+        if (best == null) {
+            addLog("No auto-match for ${barcode.take(40)} in ${cachedShipments.size} shipments")
+            return
+        }
+        val second = scores.values.sortedDescending().getOrNull(1) ?: 0
+        val bestShipment = cachedShipments.find {
+            ((it["id"] as? Number)?.toString() ?: it["id"]?.toString()) == best.key
+        }
+        if (best.value >= 6 && best.value >= second + 3 && bestShipment != null) {
+            addLog("Fuzzy match (${best.value} pts): -> #${best.key} (${bestShipment["trackingNumber"]})")
+            populateClientData(bestShipment)
+        } else {
+            addLog("Fuzzy candidates: best #${best.key} (${best.value} pts, next $second) — list sorted by match")
         }
     }
 
@@ -2631,6 +2711,7 @@ class MainScreenViewModel : ViewModel() {
             var clientAddr = ""
             var productType = ""
             var receivedBy = ""
+            var reference = ""
 
             val rawStr = s["rawResponse"] as? String
             if (rawStr != null) {
@@ -2653,13 +2734,25 @@ class MainScreenViewModel : ViewModel() {
                     val dCity = raw.optString("delivery_city", raw.optString("recipient_city", ""))
                     receiverAddr = listOf(dStreet, "$dZip $dCity".trim()).filter { it.isNotEmpty() }.joinToString(", ")
 
-                    // Smart client detection via Levenshtein
+                    // Smart client detection via Levenshtein. Whichever end IS
+                    // our company (tiny edit distance to the warehouse name) is
+                    // pure noise for the worker — hide it and show only the
+                    // counterparty. If NEITHER end is us (stray parcel, or a
+                    // deployment at a company with different flows) show BOTH.
                     val pickupIsUs = looksLikeOurCompany(senderName)
                     val deliveryIsUs = looksLikeOurCompany(receiverName)
                     when {
-                        pickupIsUs && !deliveryIsUs -> { clientName = receiverName; clientAddr = receiverAddr }
-                        deliveryIsUs && !pickupIsUs -> { clientName = senderName; clientAddr = senderAddr }
-                        else -> { clientName = senderName.ifEmpty { receiverName }; clientAddr = if (senderName.isNotEmpty()) senderAddr else receiverAddr }
+                        pickupIsUs && deliveryIsUs -> { clientName = "— intern —"; clientAddr = "" }
+                        pickupIsUs -> { clientName = receiverName; clientAddr = receiverAddr }
+                        deliveryIsUs -> { clientName = senderName; clientAddr = senderAddr }
+                        senderName.isEmpty() -> { clientName = receiverName; clientAddr = receiverAddr }
+                        receiverName.isEmpty() -> { clientName = senderName; clientAddr = senderAddr }
+                        else -> {
+                            // Both ends known, neither is us — show the pair.
+                            clientName = "$senderName → $receiverName"
+                            clientAddr = listOf(senderAddr, receiverAddr)
+                                .filter { it.isNotEmpty() }.joinToString(" → ")
+                        }
                     }
 
                     // Product type: OPAL=product_type, DHL=product
@@ -2669,10 +2762,18 @@ class MainScreenViewModel : ViewModel() {
                     // Who received it
                     receivedBy = raw.optString("receiver", "")
                     if (receivedBy.isEmpty()) receivedBy = raw.optString("delivered_to_name", "")
+
+                    reference = raw.optString("reference", "")
                 } catch (_: Exception) {}
             }
+            // No counterparty in the data (DHL inbound — the carrier reveals no
+            // sender). Show the reference as the next-best hint. NEVER our own
+            // company name: that tells the worker nothing.
             if (senderName.isEmpty()) senderName = "Unknown"
-            if (clientName.isEmpty()) clientName = senderName
+            if (clientName.isEmpty()) {
+                clientName = if (reference.isNotEmpty()) "Ref: $reference" else "— Kunde? —"
+                clientAddr = ""
+            }
 
             // Date from lastActivityAt or createdAt
             var dateStr = ""
@@ -2686,15 +2787,18 @@ class MainScreenViewModel : ViewModel() {
                 }
             }
 
-            val isMatched = scannedBarcode != null && track == scannedBarcode
+            val bestFuzzyId = fuzzyScores.maxByOrNull { it.value }?.key
+            val isMatched = (scannedBarcode != null && track == scannedBarcode) ||
+                (id == bestFuzzyId && (fuzzyScores[id] ?: 0) >= 3)
 
             ShipmentDisplayItem(id, track, senderName, senderAddr, receiverName, receiverAddr, clientName, clientAddr, productType, receivedBy, status, dateStr, isMatched)
-        }
+        }.sortedByDescending { fuzzyScores[it.id] ?: 0 } // fuzzy candidates first, stable otherwise
     }
 
     fun exitReceivingMode() {
         _isReceivingMode.value = false
         currentStepIndex = 0
+        fuzzyScores = emptyMap()
         receivingData.clear()
         contentsToggles.clear()
         contentsBarcodes.clear()
@@ -3127,11 +3231,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(
-            photoAction = if (isContentsStep) "act_noop" else "act_photo",
-            photoColor = if (isContentsStep) "#263238" else "#9C27B0",
-            photoLabel = "\uD83D\uDCF7\nPHOTO", scanLabel = "\uD83D\uDD0D\nSCAN",
-        )
+        placeSystemButtons(scanLabel = "\uD83D\uDD0D\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT — native half-slot (dimmed during contents step)
@@ -3473,7 +3573,7 @@ class MainScreenViewModel : ViewModel() {
         }
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoLabel = "📷\nPHOTO", scanLabel = "🔲\nSCAN")
+        placeSystemButtons(scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         // EXIT button — native half-slot
@@ -4333,7 +4433,7 @@ class MainScreenViewModel : ViewModel() {
         uiItems.add(mapOf("type" to "button", "label" to "🔢\nNUM", "color" to numColor, "action" to "act_numpad", "enabled" to numEnabled))
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoColor = photoColor, photoLabel = photoLabel, scanLabel = "🔲\nSCAN")
+        placeSystemButtons(scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
@@ -4465,7 +4565,7 @@ class MainScreenViewModel : ViewModel() {
         // Scan + 🎤 are pinned via placeSystemButtons. Restock has no Photo action.
 
         gridManager.clearAndReset()
-        placeSystemButtons(photoAction = null, scanLabel = "🔲\nSCAN")
+        placeSystemButtons(scanLabel = "🔲\nSCAN")
         gridManager.placeItems(uiItems, priority = 100)
 
         _exitButton.postValue(HalfButtonState("X", "#F44336", "act_exit"))
@@ -4497,7 +4597,7 @@ class MainScreenViewModel : ViewModel() {
         gridManager.clearAndReset()
         // Pin the scan button (kept as the usual 🔲 square) to the pairing-QR scan; no
         // photo button in this mode.
-        placeSystemButtons(scanAction = "net_scan_qr", photoAction = null)
+        placeSystemButtons(scanAction = "net_scan_qr")
         gridManager.placeItems(uiItems, priority = PRIORITIES.SCAN_BUTTON)
         _exitButton.postValue(HalfButtonState("✕", "#F44336", "act_exit"))
         updateRenderCells()

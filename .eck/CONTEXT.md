@@ -10,6 +10,14 @@ Android warehouse management PDA app with barcode scanning, repair mode, CRM int
 - **Camera:** CameraX (ImageCapture + ML Kit barcode detection)
 - **Network:** Retrofit/OkHttp → eckwmsgo server
 - **Scanner:** XCScannerWrapper (hardware PDA scanner SDK) + camera fallback
+- **Two processes (since 2026-07-20):** the trip recording stack
+  (TripRecordingService + auto-detect receivers + Room invalidation hub) runs
+  in the small `:trips` process so it survives the memory pressure that kills
+  the heavy UI process mid-drive. `EckwmsApp.onCreate` gates init by process
+  (`ProcessUtils`); `:trips` must never write plain SharedPreferences (see
+  TECH_DEBT "Process split"); cross-process state rides Room (WAL +
+  multi-instance invalidation), the heartbeat file and `files/trip_intent.json`.
+  Per-process post-mortem log: `files/trip_logs/` (TripLog + ApplicationExitInfo).
 
 ## Image Format Convention
 **All image processing uses WebP lossy.** No PNG, no JPEG anywhere in the pipeline.

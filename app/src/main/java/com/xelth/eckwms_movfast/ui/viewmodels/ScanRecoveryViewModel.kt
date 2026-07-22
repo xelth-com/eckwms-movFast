@@ -174,18 +174,22 @@ class ScanRecoveryViewModel private constructor(application: Application) : Andr
 
     // --- REPAIR MODE BRIDGE ---
     // Temporary storage for photo captured during Repair Mode workflow
-    private val _repairPhotoBitmap = MutableLiveData<Bitmap?>(null)
-    val repairPhotoBitmap: LiveData<Bitmap?> = _repairPhotoBitmap
+    // Photo hand-off camera → workflow. A QUEUE, not a single LiveData slot:
+    // the combined camera's photo-series mode posts several bitmaps while
+    // MainScreen is off-composition, and a LiveData<Bitmap> would coalesce
+    // them down to the last frame. The version counter is only a wake-up
+    // signal for the MainScreen drain loop.
+    private val workflowPhotoQueue = java.util.concurrent.ConcurrentLinkedQueue<Bitmap>()
+    private val photoQueueCounter = java.util.concurrent.atomic.AtomicInteger(0)
+    private val _photoQueueVersion = MutableLiveData(0)
+    val photoQueueVersion: LiveData<Int> = _photoQueueVersion
 
     fun setRepairPhotoBitmap(bitmap: Bitmap) {
-        _repairPhotoBitmap.postValue(bitmap)
+        workflowPhotoQueue.add(bitmap)
+        _photoQueueVersion.postValue(photoQueueCounter.incrementAndGet())
     }
 
-    fun consumeRepairPhotoBitmap(): Bitmap? {
-        val bmp = _repairPhotoBitmap.value
-        _repairPhotoBitmap.postValue(null)
-        return bmp
-    }
+    fun consumeRepairPhotoBitmap(): Bitmap? = workflowPhotoQueue.poll()
 
     /** Route a camera-scanned barcode through the same path as hardware scanner */
     fun onCameraBarcode(barcode: String) {

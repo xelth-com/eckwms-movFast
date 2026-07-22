@@ -444,6 +444,22 @@ fun MainScreen(
             )
         )
     }
+    // While a trip is RECORDING the ticket rows declare the NEXT destination
+    // instead of starting a trip: at a checkpoint stop it arms the next leg
+    // (survives a trip close), mid-drive it retargets the running trip.
+    val tripDeclareNext: (String?, String?, String) -> Unit = { ref, label, src ->
+        tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val mode = com.xelth.eckwms_movfast.trips.TripManager.declareNextDestination(
+                context, label.orEmpty(), ref?.takeIf { it.isNotBlank() }, src
+            )
+            mainViewModel.addLog(
+                if (mode == com.xelth.eckwms_movfast.trips.TripManager.NextDest.MERGED_LIVE)
+                    "🚗 Ziel übernommen: „${label.orEmpty()}\" (laufende Fahrt)"
+                else
+                    "🎯 Nächstes Ziel: „${label.orEmpty()}\" — gilt ab Weiterfahrt (2 h)"
+            )
+        }
+    }
     // Hex start (no destination): business ARMS an intent (starts on movement,
     // like the spoken declaration); private starts immediately (records no
     // positions anyway). A free-text Purpose typed on the Purpose field
@@ -666,6 +682,8 @@ fun MainScreen(
                     context, mainViewModel.pendingTripPurposeText()
                 )
                 android.widget.Toast.makeText(context, "📍 Checkpoint saved", android.widget.Toast.LENGTH_SHORT).show()
+                // Owner wish 2026-07-20: the natural moment to name the next leg.
+                mainViewModel.addLog("📍 Checkpoint — nächstes Ziel? Ticket antippen oder 🎤 ansagen")
             }
             // 🧾 Expense (fuel/parking/toll/receipt): open the expense HEX
             // sub-menu, prefilling the odometer estimate.
@@ -909,20 +927,22 @@ fun MainScreen(
         }
     }
 
-    // Bridge: forward repair photo from ScanRecoveryViewModel to MainScreenViewModel
-    val repairPhoto by viewModel.repairPhotoBitmap.observeAsState(null)
-    LaunchedEffect(repairPhoto, isRepairMode, isReceivingMode, isDeviceCheckMode, isInventoryMode) {
-        if (repairPhoto != null) {
+    // Bridge: drain the camera→workflow photo queue into MainScreenViewModel.
+    // A loop, not a single take — a photo SERIES from the combined camera lands
+    // as several queued bitmaps that all arrive while this screen was hidden.
+    val photoQueueVersion by viewModel.photoQueueVersion.observeAsState(0)
+    LaunchedEffect(photoQueueVersion, isRepairMode, isReceivingMode, isDeviceCheckMode, isInventoryMode) {
+        while (true) {
+            val photo = viewModel.consumeRepairPhotoBitmap() ?: break
             if (isInventoryMode) {
-                mainViewModel.onInventoryPhotoCaptured(repairPhoto!!)
+                mainViewModel.onInventoryPhotoCaptured(photo)
             } else if (isReceivingMode) {
-                mainViewModel.onReceivingPhotoCaptured(repairPhoto!!)
+                mainViewModel.onReceivingPhotoCaptured(photo)
             } else if (isDeviceCheckMode) {
-                mainViewModel.onDeviceCheckPhotoCaptured(repairPhoto!!)
+                mainViewModel.onDeviceCheckPhotoCaptured(photo)
             } else if (isRepairMode) {
-                mainViewModel.onRepairPhotoCaptured(repairPhoto!!)
+                mainViewModel.onRepairPhotoCaptured(photo)
             }
-            viewModel.consumeRepairPhotoBitmap()
         }
     }
 
@@ -1285,8 +1305,12 @@ fun MainScreen(
                                             dest.address?.takeIf { it.isNotBlank() },
                                             dest.city?.takeIf { it.isNotBlank() }
                                         ).joinToString(" · "),
-                                        trailing = "🚗",
-                                        onClick = { tripStart(dest.purposeRef, dest.label, "planned") }
+                                        trailing = if (tripActive != null) "→" else "🚗",
+                                        onClick = {
+                                            if (tripActive != null)
+                                                tripDeclareNext(dest.purposeRef, dest.label, "planned")
+                                            else tripStart(dest.purposeRef, dest.label, "planned")
+                                        }
                                     )
                                 },
                                 modifier = Modifier
@@ -1368,11 +1392,26 @@ fun MainScreen(
                         val result = mainViewModel.onButtonLongClick(action)
                         when (result) {
                             "handled" -> { /* Already handled by ViewModel (e.g. user button) */ }
+                            // Long-press red ✕: background the app like a Home
+                            // press — task stays alive, state untouched.
+                            "minimize_app" -> {
+                                var c: android.content.Context = context
+                                while (c is android.content.ContextWrapper) {
+                                    if (c is android.app.Activity) break
+                                    c = c.baseContext
+                                }
+                                (c as? android.app.Activity)?.moveTaskToBack(true)
+                            }
                             "capture_photo_continuous" -> {
                                 navController.navigate("cameraScanScreen?scan_mode=workflow_capture_continuous")
                             }
                             "capture_barcode_continuous" -> {
                                 navController.navigate("cameraScanScreen?scan_mode=barcode_continuous")
+                            }
+                            // Long-press on the merged Scan button: combined camera,
+                            // photo-first (analyzer off, torch on).
+                            "capture_photo_direct" -> {
+                                navController.navigate("cameraScanScreen?scan_mode=photo_direct")
                             }
                             // 🚗 long-press → the last 20 trips as console rows
                             // (local Room data — works with no server at all).
@@ -1486,19 +1525,21 @@ fun MainScreen(
                                 if (intentPhrase != null) {
                                     tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                                         // A trip is ALREADY recording → the spoken destination
-                                        // belongs to IT: merge now (editable until trip end)
-                                        // instead of arming an intent for a future drive.
+                                        // is the NEXT leg: at a checkpoint stop it is armed
+                                        // (survives a trip close), mid-drive it merges onto
+                                        // the running trip (editable until trip end).
                                         val open = com.xelth.eckwms_movfast.trips.TripManager
                                             .reconcileOpenTrip(context)
                                         if (open != null) {
-                                            com.xelth.eckwms_movfast.trips.TripManager.startTrip(
-                                                context, manual = true,
-                                                purpose = "business",
-                                                purposeLabel = intentPhrase.destination,
-                                                purposeSource = "voice"
-                                            )
+                                            val mode = com.xelth.eckwms_movfast.trips.TripManager
+                                                .declareNextDestination(
+                                                    context, intentPhrase.destination, null, "voice"
+                                                )
                                             mainViewModel.logVoiceInfo(
-                                                "🚗 Ziel übernommen: „${intentPhrase.destination}\" (laufende Fahrt)"
+                                                if (mode == com.xelth.eckwms_movfast.trips.TripManager.NextDest.MERGED_LIVE)
+                                                    "🚗 Ziel übernommen: „${intentPhrase.destination}\" (laufende Fahrt)"
+                                                else
+                                                    "🎯 Nächstes Ziel: „${intentPhrase.destination}\" — gilt ab Weiterfahrt"
                                             )
                                             return@launch
                                         }
@@ -1760,16 +1801,20 @@ fun MainScreen(
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         items(shipments) { item ->
+                            // OPAL reports raw German statuses ("Zugestellt");
+                            // fold them into the same buckets as the English ones.
+                            val statusNorm = item.status.lowercase()
+                            val isDelivered = statusNorm == "delivered" || statusNorm.contains("zugestellt")
                             val bgColor = when {
                                 item.isMatched -> Color(0xFF1B5E20) // dark green for auto-match
-                                item.status == "delivered" || item.status == "cancelled" -> Color(0xFF212121)
+                                isDelivered || item.status == "cancelled" -> Color(0xFF212121)
                                 else -> Color(0xFF2E2E2E)
                             }
-                            val statusIcon = when (item.status) {
-                                "delivered" -> "✅"
-                                "cancelled" -> "❌"
-                                "error" -> "⚠️"
-                                "shipped" -> "\uD83D\uDE9A"
+                            val statusIcon = when {
+                                isDelivered -> "✅"
+                                item.status == "cancelled" -> "❌"
+                                item.status == "error" -> "⚠️"
+                                item.status == "shipped" || statusNorm.contains("transport") -> "\uD83D\uDE9A"
                                 else -> "\uD83D\uDCE6"
                             }
 
@@ -2074,6 +2119,10 @@ fun MainScreen(
 
     // PIN Input Dialog
     if (showPinDialog) {
+        // PIN length varies per user (admins may exceed the usual 6) — the server
+        // is the only real validator, the UI just needs a sane min/max.
+        val minPinLength = 4
+        val maxPinLength = 12
         var pinValue by remember { mutableStateOf("") }
         var pinError by remember { mutableStateOf(false) }
         AlertDialog(
@@ -2086,7 +2135,7 @@ fun MainScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     // PIN display (dots)
                     Text(
-                        text = "●".repeat(pinValue.length) + "○".repeat((4 - pinValue.length).coerceAtLeast(0)),
+                        text = "●".repeat(pinValue.length) + "○".repeat((6 - pinValue.length).coerceAtLeast(0)),
                         style = MaterialTheme.typography.headlineMedium,
                         color = Color.White,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -2112,8 +2161,8 @@ fun MainScreen(
                                         pinError = false
                                         when (digit) {
                                             "⌫" -> if (pinValue.isNotEmpty()) pinValue = pinValue.dropLast(1)
-                                            "✓" -> if (pinValue.length == 4) mainViewModel.onPinSubmitted(pinValue)
-                                            else -> if (pinValue.length < 4) pinValue += digit
+                                            "✓" -> if (pinValue.length >= minPinLength) mainViewModel.onPinSubmitted(pinValue)
+                                            else -> if (pinValue.length < maxPinLength) pinValue += digit
                                         }
                                     },
                                     modifier = Modifier.size(64.dp)

@@ -57,6 +57,11 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import androidx.camera.core.Camera
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import com.xelth.eckwms_movfast.utils.BitmapCache
 import com.xelth.eckwms_movfast.scanners.XCScannerWrapper
 import com.xelth.eckwms_movfast.ui.screens.pos.components.HexagonalButton
@@ -73,7 +78,8 @@ private const val TAG = "CameraScanScreen"
 @Composable
 fun CameraScanScreen(
     navController: NavController,
-    scanMode: String = "barcode"
+    scanMode: String = "barcode",
+    onPhotoCaptured: ((Bitmap) -> Unit)? = null
 ) {
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
 
@@ -95,11 +101,17 @@ fun CameraScanScreen(
         when (scanMode) {
             "barcode" -> {
                 Log.d(TAG, "Using BarcodeScanPreviewScreen for barcode mode")
-                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode)
+                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode, onPhotoCaptured = onPhotoCaptured)
             }
             "barcode_continuous" -> {
                 Log.d(TAG, "Using BarcodeScanPreviewScreen for continuous barcode mode")
-                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode, continuous = true)
+                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode, continuous = true, onPhotoCaptured = onPhotoCaptured)
+            }
+            "photo_direct" -> {
+                // Long-press entry: same combined screen, but the barcode analyzer
+                // starts OFF — ready for an immediate photo.
+                Log.d(TAG, "Using BarcodeScanPreviewScreen in photo-first mode")
+                BarcodeScanPreviewScreen(navController = navController, scanMode = scanMode, startWithScanOff = true, onPhotoCaptured = onPhotoCaptured)
             }
             "pairing" -> {
                 Log.d(TAG, "Using BarcodeScanPreviewScreen for pairing mode")
@@ -144,17 +156,38 @@ fun CameraPermissionScreen(onRequestPermission: () -> Unit) {
 fun BarcodeScanPreviewScreen(
     navController: NavController,
     scanMode: String = "barcode",
-    continuous: Boolean = false
+    continuous: Boolean = false,
+    startWithScanOff: Boolean = false,
+    onPhotoCaptured: ((Bitmap) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var scanCount by remember { mutableStateOf(0) }
     var lastBarcode by remember { mutableStateOf("") }
     // Cooldown to avoid scanning same barcode repeatedly
     var lastScanTime by remember { mutableStateOf(0L) }
 
-    Log.d(TAG, "BarcodeScanPreviewScreen: Setting up camera for mode: $scanMode, continuous: $continuous")
+    // Combined Scan+Photo screen: the analyzer can be paused (flag / photo-first
+    // long-press entry), and an ImageCapture use case rides along for the photo
+    // and OCR flags.
+    var scanEnabled by remember { mutableStateOf(!startWithScanOff) }
+    var torchOn by remember { mutableStateOf(false) }
+    var cameraRef by remember { mutableStateOf<Camera?>(null) }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var isCapturing by remember { mutableStateOf(false) }
+    var flashMsg by remember { mutableStateOf<String?>(null) }
+    // Photo series: entered by long-pressing the photo flag. The screen stays
+    // open, every press adds a shot, ✕ ends the series.
+    var seriesMode by remember { mutableStateOf(false) }
+    var photoCount by remember { mutableStateOf(0) }
+
+    LaunchedEffect(flashMsg) {
+        if (flashMsg != null) { delay(2500); flashMsg = null }
+    }
+
+    Log.d(TAG, "BarcodeScanPreviewScreen: Setting up camera for mode: $scanMode, continuous: $continuous, photoFirst: $startWithScanOff")
 
     // Suspend hardware scanner to release camera resource
     DisposableEffect(Unit) {
@@ -184,7 +217,7 @@ fun BarcodeScanPreviewScreen(
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
                             .also {
-                                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcode, type ->
+                                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer({ scanEnabled && !isCapturing }) { barcode, type ->
                                     val now = System.currentTimeMillis()
                                     if (continuous) {
                                         // Continuous mode: send barcode but keep scanning
@@ -216,15 +249,29 @@ fun BarcodeScanPreviewScreen(
                                 })
                             }
 
+                        val captureUseCase = ImageCapture.Builder()
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                            .build()
+                        imageCapture = captureUseCase
+
                         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             cameraSelector,
                             preview,
-                            imageAnalyzer
+                            imageAnalyzer,
+                            captureUseCase
                         )
+                        cameraRef = camera
+                        // Torch auto-on: settings-controlled (default ON — dark
+                        // shelves), and always on for the photo-first entry.
+                        val torchAuto = com.xelth.eckwms_movfast.utils.SettingsManager.getCameraTorchAuto()
+                        if ((startWithScanOff || torchAuto) && camera.cameraInfo.hasFlashUnit()) {
+                            camera.cameraControl.enableTorch(true)
+                            torchOn = true
+                        }
                         Log.d(TAG, "BarcodeScanPreviewScreen: Camera bound successfully")
                     } catch (exc: Exception) {
                         Log.e(TAG, "Use case binding failed", exc)
@@ -236,7 +283,7 @@ fun BarcodeScanPreviewScreen(
         )
 
         // QR + barcode overlay — semi-transparent scan target
-        Canvas(modifier = Modifier.fillMaxSize().alpha(0.12f)) {
+        Canvas(modifier = Modifier.fillMaxSize().alpha(if (scanEnabled) 0.12f else 0.03f)) {
             val cx = size.width / 2
             val cy = size.height / 2
             val s = 280f // QR box size (2x)
@@ -280,6 +327,187 @@ fun BarcodeScanPreviewScreen(
                     .padding(16.dp)
                     .padding(top = 32.dp)
             )
+        }
+
+        // Photo series counter
+        if (seriesMode && photoCount > 0) {
+            Text(
+                text = "📷 Serie: $photoCount",
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+                    .padding(top = 32.dp)
+            )
+        }
+
+        // Transient status line (OCR result / capture errors)
+        flashMsg?.let {
+            Text(
+                text = it,
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 48.dp)
+            )
+        }
+
+        if (isCapturing) {
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color = Color.White
+            )
+        }
+
+        // Shared capture path for the photo and OCR flags: take a still,
+        // rotation-correct it, hand the bitmap to the caller on the main thread.
+        val doCapture: ((Bitmap) -> Unit) -> Unit = { onBitmap ->
+            val capture = imageCapture
+            if (!isCapturing && capture != null) {
+                isCapturing = true
+                capture.takePicture(
+                    cameraExecutor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(image: ImageProxy) {
+                            try {
+                                val rawBitmap = imageProxyToBitmap(image)
+                                val rotation = image.imageInfo.rotationDegrees
+                                val bitmap = if (rotation != 0) {
+                                    val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                                    Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true).also {
+                                        if (it !== rawBitmap) rawBitmap.recycle()
+                                    }
+                                } else rawBitmap
+                                mainHandler.post { onBitmap(bitmap) }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing captured image", e)
+                                mainHandler.post { isCapturing = false; flashMsg = "Capture failed" }
+                            } finally {
+                                image.close()
+                            }
+                        }
+
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(TAG, "Image capture failed", exception)
+                            mainHandler.post { isCapturing = false; flashMsg = "Capture failed" }
+                        }
+                    }
+                )
+            }
+        }
+
+        // Right-edge flag column: photo, OCR, scan-pause/torch. Hidden in
+        // pairing mode: that screen must only ever deliver the pairing QR.
+        // Shifted one slot BELOW center: the thumb rests there — photo (most
+        // used) gets that spot, OCR below it, torch/pause lowest (rarest).
+        if (scanMode != "pairing") {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .offset(y = 90.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Blue flag: short press = ONE photo and back out of the camera.
+                // Long press = start a photo SERIES (takes the first shot right
+                // away, analyzer off); every further press adds a shot, exit via ✕.
+                val deliverPhoto: (Bitmap) -> Unit = { bitmap ->
+                    if (onPhotoCaptured != null) {
+                        onPhotoCaptured(bitmap)
+                    } else {
+                        // Legacy path for callers that didn't wire the queue.
+                        BitmapCache.setCapturedImage(bitmap)
+                        navController.previousBackStackEntry?.savedStateHandle?.set(
+                            "captured_workflow_image",
+                            true
+                        )
+                    }
+                }
+                HexagonalButton(
+                    modifier = Modifier
+                        .width(70.dp)
+                        .height(80.dp)
+                        .alpha(0.6f),
+                    label = "📷",
+                    colorHex = if (seriesMode) "#FF9800" else "#00BCD4",
+                    side = HexagonSide.RIGHT,
+                    onClick = {
+                        doCapture { bitmap ->
+                            deliverPhoto(bitmap)
+                            if (seriesMode) {
+                                photoCount++
+                                isCapturing = false
+                            } else {
+                                navController.popBackStack()
+                            }
+                        }
+                    },
+                    onLongClick = {
+                        if (!seriesMode) {
+                            seriesMode = true
+                            scanEnabled = false
+                        }
+                        doCapture { bitmap ->
+                            deliverPhoto(bitmap)
+                            photoCount++
+                            isCapturing = false
+                        }
+                    }
+                )
+                // OCR flag: a photo is taken, but what enters the workflow is the
+                // recognized text (delivered through the barcode channel, type OCR).
+                HexagonalButton(
+                    modifier = Modifier
+                        .width(70.dp)
+                        .height(80.dp)
+                        .alpha(0.6f),
+                    label = "OCR",
+                    colorHex = "#00BCD4",
+                    side = HexagonSide.RIGHT,
+                    onClick = {
+                        doCapture { bitmap ->
+                            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                                .process(InputImage.fromBitmap(bitmap, 0))
+                                .addOnSuccessListener { visionText ->
+                                    val text = visionText.text.trim()
+                                    if (text.isEmpty()) {
+                                        flashMsg = "OCR: kein Text erkannt"
+                                        isCapturing = false
+                                    } else {
+                                        Log.d(TAG, "OCR recognized ${text.length} chars")
+                                        navController.previousBackStackEntry?.savedStateHandle?.set(
+                                            "scanned_barcode_data",
+                                            mapOf("barcode" to text, "type" to "OCR", "scanMode" to scanMode)
+                                        )
+                                        navController.popBackStack()
+                                    }
+                                }
+                                .addOnFailureListener { e ->
+                                    Log.e(TAG, "OCR failed", e)
+                                    flashMsg = "OCR failed"
+                                    isCapturing = false
+                                }
+                        }
+                    }
+                )
+                // Scan toggle flag: short press pauses/resumes the barcode
+                // analyzer, long press toggles the torch.
+                HexagonalButton(
+                    modifier = Modifier
+                        .width(70.dp)
+                        .height(80.dp)
+                        .alpha(0.6f),
+                    label = if (scanEnabled) "⏸" else "▶",
+                    colorHex = if (scanEnabled) "#455A64" else "#FF9800",
+                    side = HexagonSide.RIGHT,
+                    onClick = { scanEnabled = !scanEnabled },
+                    onLongClick = {
+                        torchOn = !torchOn
+                        cameraRef?.cameraControl?.enableTorch(torchOn)
+                    }
+                )
+            }
         }
 
         // Cancel half-hex — bottom-right bookmark
@@ -495,6 +723,9 @@ private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
  * BarcodeAnalyzer processes camera frames with ML Kit
  */
 private class BarcodeAnalyzer(
+    // Gate checked per frame — lets the combined screen pause scanning (flag
+    // toggle / photo-first entry) without unbinding the use case.
+    private val isEnabled: () -> Boolean = { true },
     private val onBarcodeDetected: (barcode: String, type: String) -> Unit
 ) : ImageAnalysis.Analyzer {
 
@@ -507,7 +738,7 @@ private class BarcodeAnalyzer(
 
     @androidx.camera.core.ExperimentalGetImage
     override fun analyze(imageProxy: ImageProxy) {
-        if (isProcessing) {
+        if (!isEnabled() || isProcessing) {
             imageProxy.close()
             return
         }

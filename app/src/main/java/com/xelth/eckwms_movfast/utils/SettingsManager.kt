@@ -110,6 +110,11 @@ object SettingsManager {
     fun saveImageQuality(quality: Int) = prefs.edit().putInt(KEY_QUALITY, quality).apply()
     fun getImageQuality(): Int = prefs.getInt(KEY_QUALITY, 75)
 
+    // Combined camera screen: turn the torch on automatically when the screen
+    // opens (warehouse shelves are dark; default ON).
+    fun saveCameraTorchAuto(on: Boolean) = prefs.edit().putBoolean("camera_torch_auto", on).apply()
+    fun getCameraTorchAuto(): Boolean = prefs.getBoolean("camera_torch_auto", true)
+
     // Critical: Use commit() for immediate disk persistence
     // Ensure URL doesn't end with slash to allow clean concatenation
     fun saveServerUrl(url: String): Boolean {
@@ -265,16 +270,20 @@ object SettingsManager {
     // /§26 BDSG/Betriebsrat — see PRIVACY_BY_DESIGN.md; fine for the owner's own
     // use and the standalone free app where the user records their own trips.)
     private const val KEY_TRIP_AUTO_DETECT = "trip_auto_detect"
-    fun saveTripAutoDetect(enabled: Boolean) { prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit() }
+    fun saveTripAutoDetect(enabled: Boolean) {
+        // Write-if-changed. enableAutoDetect() re-arms from the :trips process,
+        // whose plain-prefs snapshot may be stale — SharedPreferences flushes the
+        // WHOLE in-memory map on any write, so an unnecessary commit from there
+        // would roll back newer main-process settings (pairing URLs etc.).
+        if (getTripAutoDetect() == enabled) return
+        prefs.edit().putBoolean(KEY_TRIP_AUTO_DETECT, enabled).commit()
+    }
     fun getTripAutoDetect(): Boolean = prefs.getBoolean(KEY_TRIP_AUTO_DETECT, true)
 
     // One-press-from-sleep: auto-fire a scan when our app comes to the foreground
     // shortly after the device woke (the scan trigger doubles as a wake key on this
     // PDA, so the first press is otherwise "spent" waking). ON by default; users who
     // find the camera firing on wake distracting can turn it off.
-    private const val KEY_AUTO_SCAN_ON_WAKE = "scanner_auto_scan_on_wake"
-    fun saveAutoScanOnWake(enabled: Boolean) { prefs.edit().putBoolean(KEY_AUTO_SCAN_ON_WAKE, enabled).commit() }
-    fun getAutoScanOnWake(): Boolean = prefs.getBoolean(KEY_AUTO_SCAN_ON_WAKE, true)
 
     // DSGVO consent (Einwilligung): revocable at any time via the switch. ON by
     // default per the owner decision above; no recording happens while false.
@@ -285,12 +294,37 @@ object SettingsManager {
     // Pending voice trip intent (JSON blob managed by TripManager): armed by a
     // spoken declaration, consumed by the next IN_VEHICLE transition. Survives
     // process death by design.
+    //
+    // Stored in its OWN file, not SharedPreferences: it is armed in the main
+    // (UI) process but consumed by the auto-detect receiver in the `:trips`
+    // process, and SharedPreferences caches per-process — the receiver would
+    // miss intents armed after its process started, and a clear() from :trips
+    // would flush a stale full-file snapshot over newer main-process settings.
+    // Atomic tmp+rename writes; an EMPTY file is the cleared tombstone (so the
+    // legacy prefs value can't resurrect once consumed).
     private const val KEY_TRIP_INTENT = "trip_pending_intent"
+    private fun tripIntentFile() = java.io.File(appContext.filesDir, "trip_intent.json")
     fun saveTripIntentJson(json: String?) {
-        if (json == null) prefs.edit().remove(KEY_TRIP_INTENT).commit()
-        else prefs.edit().putString(KEY_TRIP_INTENT, json).commit()
+        try {
+            val f = tripIntentFile()
+            val tmp = java.io.File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(json ?: "")
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                tmp.renameTo(f)
+            }
+        } catch (e: Exception) {
+            Log.w("SettingsManager", "trip intent save failed: ${e.message}")
+        }
     }
-    fun getTripIntentJson(): String? = prefs.getString(KEY_TRIP_INTENT, null)
+    fun getTripIntentJson(): String? = try {
+        val f = tripIntentFile()
+        if (f.exists()) f.readText().takeIf { it.isNotBlank() }
+        // Pre-split intents still sit in prefs — readable until first save/clear.
+        else prefs.getString(KEY_TRIP_INTENT, null)
+    } catch (e: Exception) {
+        null
+    }
 
     // Separate, ADDITIONAL opt-in: share the live position of a business trip to
     // the dashboard map in near-real-time (a moving car marker with the plate).

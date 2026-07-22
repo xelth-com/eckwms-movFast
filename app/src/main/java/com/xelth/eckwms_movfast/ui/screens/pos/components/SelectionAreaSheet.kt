@@ -145,7 +145,41 @@ fun SelectionAreaSheet(
                         enabled = exitButton.enabled,
                         side = buttonSide,
                         onClick = { onButtonClick(exitButton.action) },
-                        onLongClick = { onButtonLongClick(exitButton.action) }
+                        // Long press on the ✕ half-slot ALWAYS minimizes the app,
+                        // regardless of the mode-specific short-press action.
+                        onLongClick = { onButtonLongClick("act_minimize_app") }
+                    )
+                    return@forEach
+                }
+
+                // SETTINGS: HALF_LEFT at row=4 — third left half-button (under
+                // network + user). Icon only, gear.
+                if (slotType == SlotType.HALF_LEFT && row == 4) {
+                    HexagonalButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        label = "⚙️",
+                        colorHex = "#9013FE",
+                        side = buttonSide,
+                        onClick = { onButtonClick("navigate_settings") }
+                    )
+                    return@forEach
+                }
+
+                // MIC push-to-talk: HALF_RIGHT at row=3 — right edge, directly
+                // under the ✕. Icon only (no text); hold = talk, release = stop.
+                if (slotType == SlotType.HALF_RIGHT && row == 3) {
+                    HexagonalButton(
+                        modifier = Modifier
+                            .size(width = buttonWidth, height = cellHeight)
+                            .offset(x = offsetX, y = offsetY),
+                        label = "🎤",
+                        colorHex = "#455A64",
+                        side = buttonSide,
+                        onClick = {},
+                        onPress = onMicPress,
+                        onRelease = onMicRelease
                     )
                     return@forEach
                 }

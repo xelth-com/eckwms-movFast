@@ -2,6 +2,252 @@
 
 ---
 
+## 2026-07-21 — Red ✕: long-press now MINIMIZES the app (moveTaskToBack); ✕ added to the root grid
+
+Owner ask: "короткое нажатие просто назад по меню, длинное свернуть приложение
+не важно где оно находится в меню". Implemented and verified on the Ranger2.
+
+- **Long-press on the red ✕ half-slot = minimize** (`moveTaskToBack(true)`) from
+  ANY menu depth — behaves like a Home press: task backgrounds alive, the
+  current mode/state is kept intact for the return. The gesture is dispatched
+  as a fixed `"act_minimize_app"` straight from the ✕ half-slot in
+  `SelectionAreaSheet.kt`, deliberately IGNORING the slot's mode-specific
+  short-press action — so it works identically whether the slot currently
+  carries `act_exit`, `act_smart_cancel` (smart-context X) or the dimmed
+  `act_noop` state on the receiving Contents step.
+- Flow: SelectionAreaSheet → `MainScreenViewModel.onButtonLongClick`
+  (`"act_minimize_app"`/`"act_exit"` → returns `"minimize_app"`) → MainScreen's
+  long-click result handler unwraps `LocalContext` to the Activity and calls
+  `moveTaskToBack(true)`. Short press keeps the old step-back semantics.
+- **Root grid now shows the ✕ too** (it used to be null there — nothing to
+  minimize with at the very place you'd most want it). Short press at root is
+  an explicit no-op in `onButtonClick` (nowhere to step back to).
+- **REPLACED behaviour**: long-press ✕ used to mean "jump straight to the root
+  from a deep sub-menu" (exit*Mode() switch). That's gone per the owner's spec;
+  if the root-jump is ever missed, it needs a new gesture (double-tap?).
+- Verified live over adb (`input swipe x y x y 900` = long press): launcher
+  becomes the resumed activity, app PID unchanged; reopening lands back in
+  Receiving mode on the same step; short press then exits to root normally.
+
+---
+
+## 2026-07-21 — Two-press wake-then-scan; READ_LOGS (and its consent dialog) dropped
+
+The one-press-scan-from-sleep read the wake keycode from the system log, which
+needed READ_LOGS — and Android 13+ kept popping the "Geräteprotokolle einmalig
+erlauben?" consent whenever the adb grant wasn't in effect (fresh installs
+reset app-ops state often enough that the dialog haunted the worker). Owner
+call: "просто упростим" — the feature is gone, replaced by an explicit
+two-press contract:
+
+- **Press 1 (device asleep)**: wakes the device. The wake key press is consumed
+  entirely by the system (no KeyEvent, no vendor broadcast — verified on device
+  earlier), so the laser physically cannot fire; our SCREEN_ON receiver now
+  vibrates a short **80 ms ack** (`ScannerManager.onScreenOn`). Worker contract:
+  **buzz without laser = "проснулся, жми ещё раз"; laser = сосканировало.**
+- **Press 2**: normal scan; right after a wake it takes the existing assisted
+  resume-then-scan path (engine may still be re-acquiring the camera).
+- Removed: `readWakeKeyFromLog`/`scanIfWokenByTriggerKey` (ScannerManager),
+  READ_LOGS from the manifest (system forgets the permission entirely — the
+  dialog can never appear again), the `scanner_auto_scan_on_wake` setting +
+  its ScannerSettingsScreen toggle. The non-secure-keyguard bypass in
+  MainActivity (setShowWhenLocked/setTurnScreenOn/requestDismissKeyguard) is
+  now UNCONDITIONAL — after press 1 the worker lands straight in the app.
+- Smoke-tested on the Ranger2 over adb (KEYCODE_SLEEP/WAKEUP): SCREEN_ON →
+  "stamp wake + vibrate ack", no errors; package no longer lists READ_LOGS.
+
+---
+
+## 2026-07-20 — Trip stack split into the small `:trips` process (OOM survival)
+
+Owner driving to Castrop with Google Maps + music loading the phone; the ask:
+"пусть запись выживает под нагрузкой — раздели приложение, оставь маленькую
+прогу-лог". Server-side check first: trip 94dd8bac uploading checkpoints every
+~5 min over the relay all drive — the recorder holds as long as its process
+lives; the risk is lmkd culling the 300+ MB monolith.
+
+### The split
+- `AndroidManifest.xml`: `TripRecordingService`, `VehicleTransitionReceiver`,
+  `BootReceiver` → `android:process=":trips"`. Auto-detected drives now spin up
+  ONLY the ~30 MB process; the fat UI process (Compose/camera/scanner SDK/WS)
+  is free to die under memory pressure without touching the recording.
+- `EckwmsApp.onCreate` gates by process (`ProcessUtils`): :trips gets
+  SettingsManager + CryptoManager + TripLog only — no scanner binder, no
+  watchdog, no HybridMessageSender, no WorkManager, no mic/light sensors.
+- Room: WAL + `enableMultiInstanceInvalidation()`;
+  `androidx.room.MultiInstanceInvalidationService` pinned to `:trips` in the
+  manifest — binding the hub must never resurrect the heavy process (it spawns
+  the small one instead, which also pre-warms the recorder).
+- Cross-process liveness: the service refreshes `files/trip_service_heartbeat`
+  every 60 s (atomic tmp+rename; runs for PRIVATE trips too — they have no
+  points, the old in-memory guard was the only thing saving them from the
+  30-min stale-close, and it doesn't cross processes).
+  `TripManager.isServiceRecording()` = static (same process) OR fresh (<5 min)
+  heartbeat; used by `reconcileOpenTrip` and the odometer-checkpoint routing.
+- UI bridge: `TripManager.startUiBridge()` (main process) mirrors the Room
+  open-trip row into the existing `activeTrip` LiveData via
+  `TripDao.observeOpenTrip()` — UI code untouched, updates arrive through
+  cross-process invalidation.
+- `queueTripSync` in :trips uploads DIRECTLY (same HTTP→relay path as
+  checkpoints, `markSynced` only for ended trips); WorkManager stays
+  main-process-only (`SyncManager.scheduleSync` guard). The periodic
+  main-process SyncWorker sweep remains the retry net.
+- Trip intent moved out of SharedPreferences into `files/trip_intent.json`
+  (atomic write, empty file = cleared tombstone, legacy prefs fallback):
+  prefs are per-process-cached, so the :trips receiver would miss intents
+  armed in the UI after its process started — and any :trips prefs WRITE
+  would flush a stale full-file snapshot over newer main-process settings.
+  Same reason `saveTripAutoDetect` became write-if-changed.
+- `buildUploadJson` driver id falls back to the persisted
+  `SettingsManager.getCurrentUserId()` (UserManager is empty in :trips).
+
+### The little log program (TripLog)
+Per-process rotating file log `files/trip_logs/{main,trips}.log` (512 KB ×2,
+every entry also goes to logcat). On process start it dumps the LAST DEATH
+REASONS from `ApplicationExitInfo` (LOW_MEMORY/CRASH/ANR/FREEZER…), an
+uncaught-exception handler writes crashes before the process dies, and
+`onTrimMemory` levels are logged as pressure breadcrumbs. Post-drive:
+`adb exec-out run-as com.xelth.eckwms_movfast cat files/trip_logs/trips.log`
+answers "who killed the recorder and why" without any live logcat.
+
+### Diagnostics recipe: watching a live drive with the phone on the road
+No adb, phone on LTE, laptop off the office LAN — two working windows in:
+1. **Master journal via the xelth ops channel**: `ssh xelth` →
+   `/tmp/ops_dispatch.sh journal '{"service":"9eck-wms","since":"3 hours ago","grep":"trip"}'`
+   → per-checkpoint `trip_upload … ok` lines. Flaky by design: the dispatch
+   envelope rides the relay and the master polls at 15 s idle cadence — one
+   attempt died with `envelope timestamp out of window (delta=82s)` (delivery
+   latency > anti-replay window, NOT clock skew; retry usually lands). That
+   window/latency mismatch is a server-side (9eck.com xelixir router) debt.
+2. **Local dev node's mesh copy** (much cheaper): trips now ride entity
+   mesh-sync, so the laptop node has the open trip row within ~5 min. Poll
+   `POST 127.0.0.1:3210/X/ops/surrealql_read` (token from `9eck.com\.env`) for
+   `point_count`/`updated_at` — a gap in point growth while driving = recorder
+   died. SurrealDB quirk (bites every time): ORDER BY fields must appear in the
+   SELECT projection.
+Today's drive (Castrop, Maps+music load): checkpoints every ~5 min from 11:23
+local, zero gaps, ~5 points/min through at least 322 points — the monolith held
+this time; the split removes the luck factor.
+
+### Status
+Built OK (free+paid debug), merged manifest verified (all four components in
+`:trips`). Installed on the Ranger2 the same evening — see post-mortem below.
+Accepted risks documented in TECH_DEBT ("Process split").
+
+### Post-mortem of the Castrop drive: the killer wasn't lmkd
+Owner parked in Castrop ~13:00 local, tapped an odometer checkpoint hoping to
+resume later; the app "заснуло за пару часов и отвалилось". Server showed the
+trip healthy until **15:12 local, then silence**. With the phone back on USB,
+`dumpsys activity exit-info` told the real story:
+
+- **All drive long the monolith was being killed every ~30 min** ("cached
+  idle & background restricted", RSS up to 241 MB — 8 kills 11:25→14:49).
+  START_STICKY + `resumeAfterRestart` resurrected the recorder every time;
+  points/checkpoints show no gaps. The machinery worked hard, not the luck.
+- Root: the app had **`RUN_ANY_IN_BACKGROUND: ignore`** (Battery →
+  "Restricted"), despite being on the Doze whitelist. On this MTK build that
+  also invites DuraSpeed (vendor app killer, integrated in system_server).
+- **The fatal blow was a FORCE STOP at 15:13:49** — `am_kill … stop … due to
+  from pid 1353` (system_server internal, "USER REQUESTED"/FORCE_STOP; same
+  signature the evening before at 18:53, so it's an automatic policy, not a
+  human). Force stop cancels sticky restarts and receivers — the app stayed
+  dead until manually opened ~16:48, which stale-closed and uploaded the trip
+  (ended 1133 points). The return leg was never recorded — points that were
+  never collected can't be recovered.
+
+Device fixes applied over adb (survive reinstall, not factory reset):
+- `cmd appops set com.xelth.eckwms_movfast RUN_ANY_IN_BACKGROUND allow`
+- `settings put global setting.duraspeed.enabled 0` (dedicated PDA — the
+  memory "optimizer" only kills our recorder)
+- Split APK (paid-debug) installed 17:09; both processes verified live, and
+  `files/trip_logs/main.log` already dumps the exit-info history above —
+  TripLog's first real catch. NOTE: the `:trips` split does NOT protect
+  against force stop (it kills all processes of the package and blocks
+  restart) — the appops/DuraSpeed fixes above are what closes that hole; if
+  a future drive dies again with zero TripLog breadcrumbs, check
+  `RUN_ANY_IN_BACKGROUND` first (something may re-restrict it).
+
+### Next destination at a checkpoint (same evening, "давай")
+Owner wish implemented: while a trip is RECORDING, naming a destination means
+"the NEXT leg goes there" — ticket-row tap (trailing `→` instead of `🚗`) or
+the spoken "я поехал в X", both через `TripManager.declareNextDestination()`:
+
+- **At a checkpoint stop** (tentative end armed = odometer photographed):
+  labeled checkpoint `→ <Ziel>` on the open trip + ARMED TripIntent presetting
+  THIS stop's odometer reading (photo/manual, not the stale last-trip estimate)
+  and the trip's vehicle. The declaration survives both futures: continuation
+  consumes the intent on IN_VEHICLE ENTER and merges the purpose onto the SAME
+  trip (multi-stop); a stale-/tentative-end close hands it to the NEXT trip
+  with the true pre-drive declaration moment (GoBD).
+- **Mid-drive** (no stop reading): merges onto the running trip immediately
+  (the long-standing voice semantics — an ENTER transition never comes while
+  already driving) + labeled checkpoint.
+- **Service fix that makes continuation work**: `ACTION_START` on an open trip
+  merged a declared purpose ONLY for `manual=true` — the auto-detector
+  consuming an armed intent (manual=false) CLEARED the intent and silently
+  dropped its purpose. Now it merges when `manual || purpose_source != null`
+  (only declaration paths set purpose_source); start-field presets still apply
+  to manual starts only (a continuing trip keeps its own start odometer).
+- Console prompts "📍 Checkpoint — nächstes Ziel? Ticket antippen oder 🎤
+  ansagen" after the checkpoint hex.
+Installed on the Ranger2 (same evening, smoke-tested: both processes up, no
+crash). Field verification = next multi-stop drive.
+
+### Checkpoint = declared stop → stationary auto-close (live-fixed during the drive)
+Field observation (gym stop, Köln): Activity Recognition EXIT never fires with
+the phone indoors → no graceful stop, the trip idles open for 80+ min (same as
+Castrop yesterday). The 3-min graceful close only ever ran on AR's word. Fix
+(installed mid-drive before the Kriftel stop): **the driver's 📍 checkpoint IS
+the stop declaration** — `recordManualCheckpoint` arms a stationary watch
+(`CHECKPOINT_STATIONARY_CLOSE_MS` = 10 min, `CHECKPOINT_MOVE_RADIUS_M` = 300 m).
+Movement is a CONSENSUS, not a single fix (owner correction mid-drive: "ни одна
+точка — неправильно, среднестатистическое из окна"): disarm needs
+**3 of the last 5** gated fused fixes (accuracy ≤ 100 m, ~30 s cadence ≈
+1.5–2.5 min sustained) beyond the radius; the close timer counter-checks the
+same window and refuses to finalize if ≥2 recent fixes are already beyond
+(late departure race). ACTION_START also disarms. Not armed for private trips
+(no fused fixes → can't distinguish "drove away") or positionless checkpoints.
+Watch is in-memory only (v1): process death between checkpoint and close =
+trip stays open, old behavior. No jam false-positives by construction — the
+stop is declared by a human, not inferred.
+
+### Lesson: `adb install -r` does NOT sticky-restart the recorder
+After today's second install DURING an active recording, the `:trips` process
+came back in 7 s — but only via the Room-invalidation binding; the FGS stayed
+dead (recording silently stopped, heartbeat going stale). Sticky restart
+revives after OOM kills (8/8 yesterday), NOT after a package-update kill.
+**After any install over a live trip, poke the resume explicitly:**
+`adb shell run-as com.xelth.eckwms_movfast am start-foreground-service --user 0
+-n com.xelth.eckwms_movfast/.trips.TripRecordingService`
+(plain `am` fails: service not exported; `run-as` needs the explicit
+`--user 0`). Null-action start routes to `resumeAfterRestart()` — logged as
+"Resumed open trip … after sticky restart". Lost today: ~2 min of parked points.
+
+### Evening drive verdict (first full drive on the split)
+Trip 9bdc1306: 17:53–23:30 local, **1561 points, zero gaps**, gym +
+Kriftel stops inside one multi-stop trip, ended by the driver's odometer
+entry (208 864 km). The `:trips` recorder survived the whole evening
+including two live APK updates mid-trip (resume poked per the lesson above).
+Final direct upload from :trips failed once (`ok=false` 23:31:42 — WiFi
+handover at home, master unreachable, relay hiccup) and the main-process
+SyncWorker sweep delivered it 64 s later — the retry net working as designed.
+NOT yet exercised in the field: 📍 checkpoint stop-watch + next-destination
+declare (owner didn't press 📍 after the consensus build went on).
+
+### Follow-ups
+- [ ] Field-verify the split on the next loaded drive (Maps + music): expect
+      `main.log` deaths with `trips.log` clean and no point gaps.
+- [ ] Field-verify next-destination declare→continue and declare→stale-close
+      hand-off on a real multi-stop drive.
+- [ ] Kriftel test pending: checkpoint → 10-min stationary auto-close →
+      next drive auto-starts a NEW trip (consuming a declared next destination
+      if one was named).
+- [ ] v2 idea: re-arm the checkpoint stop watch in `resumeAfterRestart` from
+      the last manual point (<10 min old, no movement since) so a process
+      death can't cancel a pending auto-close.
+
+---
+
 
 
 

@@ -55,19 +55,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // One-press-from-sleep. On this PDA the scan trigger also wakes the device, so
-        // the first press is otherwise "spent" clearing the keyguard. The screen lock
-        // here is NON-secure (swipe, password quality 0) — showing over it and
-        // dismissing it bypasses no password — so we land straight on the app after a
-        // wake and onResume can auto-fire a scan. Opt-out via the same setting.
+        // Two-press wake-then-scan (2026-07-21): press 1 wakes the device (short
+        // vibration acks it, no laser — the wake key is consumed by the system),
+        // press 2 scans. Showing over the NON-secure keyguard (swipe, password
+        // quality 0 — bypasses no password) lands the worker straight in the app
+        // after the wake so press 2 scans immediately, no swiping.
         // NOTE: a SECURE PIN/pattern can never be bypassed by an app; requestDismissKeyguard
         // would just surface the unlock prompt. Nothing here weakens a real lock.
-        if (SettingsManager.getAutoScanOnWake()) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-            (getSystemService(android.app.KeyguardManager::class.java))
-                ?.requestDismissKeyguard(this, null)
-        }
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        (getSystemService(android.app.KeyguardManager::class.java))
+            ?.requestDismissKeyguard(this, null)
 
         // Hide gesture indicator bar — maximize usable screen area
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -333,7 +331,11 @@ class MainActivity : ComponentActivity() {
 
                         CameraScanScreen(
                             navController = navController,
-                            scanMode = scanMode
+                            scanMode = scanMode,
+                            // Direct per-shot hand-off into the workflow photo
+                            // queue — survives photo series (savedStateHandle
+                            // would only deliver the last frame).
+                            onPhotoCaptured = { bmp -> viewModel.setRepairPhotoBitmap(bmp) }
                         )
                     }
 
