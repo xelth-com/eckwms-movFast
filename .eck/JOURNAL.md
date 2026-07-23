@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-07-23 (2) — Declarations are facts: manual close priority, stop-history retro edit, late start
+
+Owner clarification after the gap bridge landed: automatics (auto start/stop/
+pause, stale close) are ASSIST tools; what the driver DECLARES is the record.
+"Я поездку открыл вручную — я её вручную и закрываю. Если я нажал на чекпойнт —
+значит я туда в это время приехал; что половины логов нет — не важно." Only the
+physically absurd (≈500 km/h) is refused — and then the driver resolves it, the
+app never silently discards a declaration. Implemented (`38f4939`):
+
+- **Manual trips are never auto-closed** — the stale reconciler keeps them open
+  (morning-after flow: open trip → stop history → "вот эта остановка была
+  концом"). Auto-detected trips keep the stale close.
+- **Bridge cap 160→300 km/h** avg; past it we don't draw — driver resolves.
+- **Declared events always land**: 📍/🧾 write straight to Room at a fresh fix
+  when the recorder is dead (before: dead service silently dropped them).
+- **Stop history** (long-press ⏹): declared points + detected stationary
+  clusters (≤150 m for ≥5 min) + recording gaps (≥10 min) as console rows →
+  "Fahrt hier beenden" (retro close AT that stop, estimated end odometer up to
+  it; endTrip/closeStale guard on status='recording' against the finalize race)
+  / "Checkpoint hier setzen" (retro checkpoint). `detectStopsFromPoints` pure +
+  unit-tested.
+- **Late start** ("Fahrt nachtragen"): no open trip + moved ≥2 km since the
+  last parking (≤6 h) → top console row starts a BACKDATED trip at the last
+  parking (startedAt there, its end odometer as estimated start reading, anchor
+  point at the parking → the smoother spans the unrecorded leg).
+- Roadmap (not built): full post-hoc trip reconstruction "из истории" needs a
+  passive breadcrumb source (DSGVO design first); voice-driven retro edit.
+
+---
+
 ## 2026-07-23 — Battery-death gap bridge + the day the master 403'd every device
 
 Field case: trip started in Eschborn, battery died mid-drive, phone powered on
