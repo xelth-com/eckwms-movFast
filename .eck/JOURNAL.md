@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-07-23 — Battery-death gap bridge + the day the master 403'd every device
+
+Field case: trip started in Eschborn, battery died mid-drive, phone powered on
+in Speyer — reconcileOpenTrip amputated the trip at the last pre-death fix and
+the day showed a 111-km odometer hole between two truncated trips. Two fixes:
+
+- **App (`133ab40`)**: before the stale close, `reconcileOpenTrip` takes a fresh
+  fix; a gap ≤6 h / ≥2 km / ≤160 km/h average is BELIEVED — a `kind='bridge'`
+  point is written at the power-on position and the trip STAYS OPEN (service
+  resume continues it; a parked phone converges to a stale close at the bridged
+  position within 30 min). Bridge points survive the DSGVO prune; the smoothed/
+  matched layers span the gap, so the dashboard draws the plausible route.
+  Stale closes now also estimate the end odometer (start + smoothed km,
+  `estimated`) instead of losing the reading. Pure decision = `bridgeableGap`,
+  unit-tested incl. the field case.
+- **Server (9eck.com `f536115`+`2d863d4`)**: today's trips never reached the
+  master at all — the FIRST 3.2.1-based wms binary deployed to the master
+  (10:25Z, the attachments-fix deploy) broke `resolve_device`: the SurrealDB
+  3.2.x typed `take::<Option<DeviceRecord>>` fails on live rows (`_vclock`/`id`
+  extras, absent options, explicit NULLs) and `.ok()` read as "no such device"
+  → every PDA got 403 "Device not registered", trip_uploads piled up on the
+  relay all day. Fix: untyped `Vec<serde_json::Value>` + serde conversion
+  (`devices_from_rows`), tombstones filtered in code (a `deleted_at = NULL`
+  poison row also defeats `IS NONE` in WHERE). Applied to resolve_device,
+  register_device lookups and update_device_status; deployed to the master,
+  both trips synced within seconds. ⚠ ~13 more `.take(0).ok()` swallow sites
+  in wms remain unaudited for the same failure mode.
+
+---
+
 ## 2026-07-21 — Red ✕: long-press now MINIMIZES the app (moveTaskToBack); ✕ added to the root grid
 
 Owner ask: "короткое нажатие просто назад по меню, длинное свернуть приложение
