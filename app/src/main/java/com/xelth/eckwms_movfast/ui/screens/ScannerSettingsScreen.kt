@@ -102,7 +102,8 @@ fun ScannerSettingsScreen(
     onNavigateBack: () -> Unit,
     onOpenImageViewer: () -> Unit,
     onNavigateToCamera: (String) -> Unit = {},
-    onNavigateToDatabase: () -> Unit = {}
+    onNavigateToDatabase: () -> Unit = {},
+    onNavigateToUserPhotos: () -> Unit = {}
 ) {
     // Наблюдаем за последним отсканированным штрих-кодом
     val latestScanResult by scannerManager.scanResult.observeAsState()
@@ -317,6 +318,37 @@ fun ScannerSettingsScreen(
 
             // 6. Image Settings Section
             ImageSettingsSection(viewModel = viewModel)
+
+            // Unbound (user-parked) photos — review / delete / redirect
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF4A148C).copy(alpha = 0.12f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Meine Fotos (unzugeordnet)",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Fotos ohne Auftrag/Seriennummer — beim Benutzer geparkt, " +
+                            "nach 1 Woche automatisch gelöscht. Hier ansehen, löschen oder umleiten.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(
+                        onClick = onNavigateToUserPhotos,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Fotos ansehen")
+                    }
+                }
+            }
 
             // Offline Database Card
             Card(

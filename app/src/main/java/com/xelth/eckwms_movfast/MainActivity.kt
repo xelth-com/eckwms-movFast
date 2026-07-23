@@ -268,7 +268,16 @@ class MainActivity : ComponentActivity() {
                             },
                             onNavigateToDatabase = {
                                 navController.navigate("databaseViewer")
+                            },
+                            onNavigateToUserPhotos = {
+                                navController.navigate("userPhotos")
                             }
+                        )
+                    }
+
+                    composable("userPhotos") {
+                        com.xelth.eckwms_movfast.ui.screens.UserPhotosScreen(
+                            onBack = { navController.popBackStack() }
                         )
                     }
 

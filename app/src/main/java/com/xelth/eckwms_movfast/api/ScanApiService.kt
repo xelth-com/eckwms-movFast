@@ -673,6 +673,13 @@ class ScanApiService(private val context: Context) {
                 writer.append("$orderId\r\n")
             }
 
+            // Logged-in user — server parks an unattachable upload on them (temp, 1w)
+            currentUserId().takeIf { it.isNotEmpty() }?.let {
+                writer.append("--$boundary\r\n")
+                writer.append("Content-Disposition: form-data; name=\"userId\"\r\n\r\n")
+                writer.append("$it\r\n")
+            }
+
             // Stream file directly
             writer.append("--$boundary\r\n")
             writer.append("Content-Disposition: form-data; name=\"image\"; filename=\"${file.name}\"\r\n")
@@ -831,6 +838,13 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    /** Server user-record id of the logged-in PDA user, or "". Every upload
+     *  carries it so an upload that resolves to no order/entity gets parked on
+     *  the user server-side (label `temp`, one-week TTL) instead of landing as
+     *  an orphan nobody can find. */
+    private fun currentUserId(): String =
+        com.xelth.eckwms_movfast.ui.viewmodels.UserManager.currentUser.value?.id ?: ""
+
     /** Byte-level relay upload — shared by [uploadImage] (pre-compressed bitmap
      *  bytes) and [uploadImageFile] (e.g. queued receipt photos). imageId must be
      *  the ContentHash UUID of `bytes` — the master verifies the CAS claim. */
@@ -845,6 +859,7 @@ class ScanApiService(private val context: Context) {
             put("scan_mode", scanMode)
             barcodeData?.let { put("barcode_data", it) }
             orderId?.let { put("order_id", it) }
+            currentUserId().takeIf { it.isNotEmpty() }?.let { put("user_id", it) }
             put("file_name", "$imageId.webp")
             put("mime_type", "image/webp")
             put("image_b64", b64)
@@ -914,6 +929,13 @@ class ScanApiService(private val context: Context) {
             orderId?.let {
                 writer.append("--$boundary").append("\r\n")
                 writer.append("Content-Disposition: form-data; name=\"orderId\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Logged-in user — server parks an unattachable upload on them (temp, 1w)
+            currentUserId().takeIf { it.isNotEmpty() }?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"userId\"").append("\r\n")
                 writer.append("\r\n").append(it).append("\r\n").flush()
             }
 
@@ -1607,6 +1629,97 @@ class ScanApiService(private val context: Context) {
         }
     }
 
+    // ─── User-parked (temp) photos — Einstellungen review screen ─────────────
+
+    /** List attachments of an entity. For the "unbound photos" screen:
+     *  entityType="user", entityId=<user record id> → the user's temp parks. */
+    suspend fun listAttachments(entityType: String, entityId: String): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val url = URL("$serverUrl/api/files/attachments?entity_type=$entityType&entity_id=$entityId")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 20000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            val code = connection.responseCode
+            if (code == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                return@withContext ScanResult.Success("attachments", "OK", response)
+            }
+            return@withContext ScanResult.Error("HTTP $code")
+        } catch (e: Exception) {
+            return@withContext ScanResult.Error(e.message ?: "listAttachments error")
+        }
+    }
+
+    /** Fetch file bytes (thumbnail-fast: the server serves the inline avatar
+     *  when it has one) for a CAS uuid. Null on any failure. */
+    suspend fun fetchFileBytes(casUuid: String): ByteArray? = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val connection = URL("$serverUrl/api/files/$casUuid").openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                return@withContext connection.inputStream.use { it.readBytes() }
+            }
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchFileBytes($casUuid) failed: ${e.message}")
+            null
+        }
+    }
+
+    /** Delete a user-parked temp photo for good (server refuses if the file
+     *  meanwhile got a real attachment). */
+    suspend fun deleteTempPhoto(casUuid: String): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val connection = URL("$serverUrl/api/files/temp/$casUuid").openConnection() as HttpURLConnection
+            connection.requestMethod = "DELETE"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 20000
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            val code = connection.responseCode
+            if (code in 200..299) return@withContext ScanResult.Success("delete", "Deleted", "{}")
+            val err = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+            return@withContext ScanResult.Error(err)
+        } catch (e: Exception) {
+            return@withContext ScanResult.Error(e.message ?: "delete error")
+        }
+    }
+
+    /** Redirect a user-parked temp photo onto the open repair order of the
+     *  given serial. Server clears the temp TTL on success. */
+    suspend fun redirectTempPhoto(casUuid: String, barcode: String): ScanResult = withContext(Dispatchers.IO) {
+        val serverUrl = com.xelth.eckwms_movfast.utils.SettingsManager.getServerUrl().removeSuffix("/")
+        try {
+            val connection = URL("$serverUrl/api/files/redirect").openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 20000
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer " + com.xelth.eckwms_movfast.utils.SettingsManager.getAuthToken())
+            connection.doOutput = true
+            connection.outputStream.use {
+                it.write(JSONObject().put("file_id", casUuid).put("barcode", barcode).toString().toByteArray())
+            }
+            val code = connection.responseCode
+            if (code in 200..299) {
+                val response = connection.inputStream.bufferedReader().use { r -> r.readText() }
+                return@withContext ScanResult.Success("redirect", "Redirected", response)
+            }
+            val err = connection.errorStream?.bufferedReader()?.use { r -> r.readText() } ?: "HTTP $code"
+            return@withContext ScanResult.Error(err)
+        } catch (e: Exception) {
+            return@withContext ScanResult.Error(e.message ?: "redirect error")
+        }
+    }
+
     /**
      * Internal helper for uploadImage with explicit token (used for retry)
      * @param imageId Required client-generated unique ID for deduplication
@@ -1675,6 +1788,13 @@ class ScanApiService(private val context: Context) {
             orderId?.let {
                 writer.append("--$boundary").append("\r\n")
                 writer.append("Content-Disposition: form-data; name=\"orderId\"").append("\r\n")
+                writer.append("\r\n").append(it).append("\r\n").flush()
+            }
+
+            // Logged-in user — server parks an unattachable upload on them (temp, 1w)
+            currentUserId().takeIf { it.isNotEmpty() }?.let {
+                writer.append("--$boundary").append("\r\n")
+                writer.append("Content-Disposition: form-data; name=\"userId\"").append("\r\n")
                 writer.append("\r\n").append(it).append("\r\n").flush()
             }
 
