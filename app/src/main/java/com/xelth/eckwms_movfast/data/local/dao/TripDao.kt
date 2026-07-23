@@ -65,6 +65,14 @@ interface TripDao {
     @Query("SELECT MAX(ts) FROM trip_points WHERE tripId = :tripId")
     suspend fun lastPointTs(tripId: String): Long?
 
+    // Newest point that carries coordinates — the anchor for the battery-death
+    // gap bridge (cell-only points have no local lat/lng and can't anchor).
+    @Query(
+        "SELECT * FROM trip_points WHERE tripId = :tripId AND lat IS NOT NULL " +
+        "AND lng IS NOT NULL ORDER BY ts DESC LIMIT 1"
+    )
+    suspend fun lastLocatedPoint(tripId: String): TripPointEntity?
+
     @Query("UPDATE trips SET endedAt = :endedAt, status = :status WHERE id = :id")
     suspend fun endTrip(id: String, endedAt: Long, status: String = TripEntity.STATUS_ENDED)
 

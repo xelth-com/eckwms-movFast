@@ -50,6 +50,19 @@ object TripManager {
     // the intent silently expires (console note at the next voice/trip touch).
     private const val TRIP_INTENT_TTL_MS = 2 * 3_600_000L
 
+    // ── Battery-death gap bridge (owner rule, Eschborn→Speyer 2026-07-23) ────
+    // The recorder died mid-drive (battery) and the phone came back somewhere
+    // else. If the displacement since the last recorded fix was PHYSICALLY
+    // POSSIBLE in the elapsed time, believe it: drop a bridge point at the
+    // power-on position and keep the trip open instead of amputating it at the
+    // last pre-death fix. Bounds: below MIN km it's the same parking lot (the
+    // plain stale close is right); above the gap window it's no longer one
+    // continuous journey (the 44e9ee52 phantom-glue protection); above MAX
+    // average speed a car can't have done it — refuse and close honestly.
+    private const val BRIDGE_MAX_GAP_MS = 6 * 3_600_000L
+    private const val BRIDGE_MIN_KM = 2.0
+    private const val BRIDGE_MAX_AVG_KMH = 160.0
+
     // Trip the recording service is ACTIVELY recording right now (in-memory,
     // same process). reconcileOpenTrip never closes this one — a live trip can
     // legitimately go long without points (no-signal stretch, Privatfahrt).
@@ -134,7 +147,12 @@ object TripManager {
      *  an honest note, and queued for upload. Without this, the next start would
      *  glue a new drive onto a days-old phantom (the 44e9ee52 case). An ARMED
      *  tentative end (odometer photographed at a stop) replaces the 30-min stale
-     *  rule with the 6 h grace: expired → close AT THE PHOTO with that reading. */
+     *  rule with the 6 h grace: expired → close AT THE PHOTO with that reading.
+     *
+     *  Battery-death exception: before amputating a stale trip, check whether the
+     *  CURRENT position is a plausible continuation of the drive (see
+     *  [bridgeableGap]) — then a bridge point is recorded and the trip stays
+     *  open, so the drive that outlived the phone keeps its second half. */
     suspend fun reconcileOpenTrip(context: Context): TripEntity? {
         val db = AppDatabase.getInstance(context)
         val open = db.tripDao().getOpenTrip() ?: return null
@@ -149,7 +167,21 @@ object TripManager {
         }
         val lastPointTs = db.tripDao().lastPointTs(open.id)
         if (!openTripIsStale(open.startedAt, lastPointTs, System.currentTimeMillis())) return open
+        if (open.purpose != "private") {
+            tryBridgeGap(context, open, lastPointTs)?.let { return it }
+        }
         val endedAt = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
+        // Stop without any odometer signal: close the reading gap with the
+        // least-action track estimate, honestly marked "estimated" — same rule
+        // as finalizeAndStop (spec .eck/TRACK_ESTIMATION.md, trigger 3). Until
+        // now auto-closed trips lost their end reading entirely (94dd8bac).
+        if (open.startOdometerKm != null && open.endOdometerKm == null) {
+            smoothedTrack(context, open.id)?.let { s ->
+                val estEnd = Math.round((open.startOdometerKm + s.distanceKm) * 10.0) / 10.0
+                db.tripDao().setEndOdometer(open.id, estEnd, "estimated", null)
+                TripLog.i(TAG, "end odometer estimated for stale trip ${open.id}: $estEnd km")
+            }
+        }
         db.tripDao().closeStale(
             open.id, endedAt,
             "auto-closed: recording was interrupted; ended at last recorded activity " +
@@ -158,6 +190,86 @@ object TripManager {
         queueTripSync(context, open.id)
         TripLog.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
         return null
+    }
+
+    // VisibleForTesting: pure decision — is the displacement between the last
+    // recorded activity and a fresh fix a believable continuation of the drive?
+    internal fun bridgeableGap(lastActivityTs: Long, fixTs: Long, distKm: Double): Boolean {
+        val dtMs = fixTs - lastActivityTs
+        if (dtMs <= 0 || dtMs > BRIDGE_MAX_GAP_MS) return false
+        if (distKm < BRIDGE_MIN_KM) return false
+        return distKm / (dtMs / 3_600_000.0) <= BRIDGE_MAX_AVG_KMH
+    }
+
+    /** Try to bridge a stale open trip to the phone's CURRENT position. Returns
+     *  the refreshed (still-open) trip when the bridge was recorded, null when
+     *  the plain stale close should proceed. Needs a located anchor point, the
+     *  location permission and a fix NEWER than the last recorded activity —
+     *  anything missing or implausible falls back to the honest amputation. */
+    private suspend fun tryBridgeGap(
+        context: Context,
+        open: TripEntity,
+        lastPointTs: Long?
+    ): TripEntity? {
+        val db = AppDatabase.getInstance(context)
+        val anchor = db.tripDao().lastLocatedPoint(open.id) ?: return null
+        val anchorLat = anchor.lat ?: return null
+        val anchorLng = anchor.lng ?: return null
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return null
+        val fix = try {
+            val client = com.google.android.gms.location.LocationServices
+                .getFusedLocationProviderClient(context)
+            val cts = com.google.android.gms.tasks.CancellationTokenSource()
+            try {
+                com.google.android.gms.tasks.Tasks.await(
+                    client.getCurrentLocation(
+                        com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                        cts.token
+                    ),
+                    20, java.util.concurrent.TimeUnit.SECONDS
+                )
+            } catch (e: Exception) {
+                cts.cancel()
+                com.google.android.gms.tasks.Tasks.await(client.lastLocation)
+            }
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        val lastActivity = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
+        // A cached fix from BEFORE the gap carries no new information — without
+        // fresh evidence of where the phone woke up, amputate as before.
+        if (fix.time <= lastActivity) return null
+        val distKm = haversineKm(anchorLat, anchorLng, fix.latitude, fix.longitude)
+        if (!bridgeableGap(lastActivity, fix.time, distKm)) {
+            TripLog.i(
+                TAG,
+                "gap not bridgeable for trip ${open.id}: ${Math.round(distKm * 10.0) / 10.0} km in " +
+                    "${(fix.time - lastActivity) / 60000} min — closing stale"
+            )
+            return null
+        }
+        db.tripDao().insertPoint(
+            com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+                tripId = open.id,
+                seq = db.tripDao().pointCount(open.id) + 1,
+                ts = fix.time,
+                source = "fused",
+                lat = fix.latitude,
+                lng = fix.longitude,
+                accuracyM = fix.accuracy.toDouble(),
+                kind = "bridge",
+                label = "recording interrupted; plausible movement of " +
+                    "${Math.round(distKm * 10.0) / 10.0} km bridged at power-on"
+            )
+        )
+        TripLog.w(
+            TAG,
+            "bridged trip ${open.id}: ${Math.round(distKm * 10.0) / 10.0} km gap over " +
+                "${(fix.time - lastActivity) / 60000} min — trip stays open"
+        )
+        return db.tripDao().getTrip(open.id)
     }
 
     // ── Odometer-photo stop signal (tentative end) ───────────────────────────

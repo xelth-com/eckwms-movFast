@@ -135,4 +135,45 @@ class TripManagerTest {
         assertFalse(TripManager.armedEndExpired(now - 6 * h, now))
         assertTrue(TripManager.armedEndExpired(now - 6 * h - 1, now))
     }
+
+    // ── bridgeableGap (battery-death gap bridge, Eschborn→Speyer 2026-07-23) ──
+
+    private val h = 3_600_000L
+
+    @Test
+    fun `the Eschborn field case bridges - 90 km appearing after 100 min is a drive`() {
+        val died = 1_000_000_000_000L
+        assertTrue(TripManager.bridgeableGap(died, died + 100 * min, 90.0))
+    }
+
+    @Test
+    fun `same parking lot does not bridge`() {
+        // Phone rebooted where it died — the plain stale close is correct.
+        val died = 1_000_000_000_000L
+        assertFalse(TripManager.bridgeableGap(died, died + 45 * min, 0.3))
+        assertFalse(TripManager.bridgeableGap(died, died + 45 * min, 1.9))
+    }
+
+    @Test
+    fun `impossible speed does not bridge`() {
+        // 300 km in one hour — no car did that; close honestly instead of lying.
+        val died = 1_000_000_000_000L
+        assertFalse(TripManager.bridgeableGap(died, died + 1 * h, 300.0))
+        // Same displacement over 2.5 h is plausible again (120 km/h avg).
+        assertTrue(TripManager.bridgeableGap(died, died + 150 * min, 300.0))
+    }
+
+    @Test
+    fun `gap longer than six hours is not one continuous journey`() {
+        val died = 1_000_000_000_000L
+        assertFalse(TripManager.bridgeableGap(died, died + 6 * h + 1, 50.0))
+        assertTrue(TripManager.bridgeableGap(died, died + 6 * h, 50.0))
+    }
+
+    @Test
+    fun `fix from before the gap carries no information`() {
+        val died = 1_000_000_000_000L
+        assertFalse(TripManager.bridgeableGap(died, died, 50.0))
+        assertFalse(TripManager.bridgeableGap(died, died - 10 * min, 50.0))
+    }
 }
