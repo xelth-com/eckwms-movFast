@@ -78,6 +78,26 @@ class ScannerManager private constructor(private val application: Application) {
     // Флаг для отслеживания состояния инициализации
     private var isInitialized = false
 
+    /** True only on real MovFast PDA hardware — i.e. the vendor scan-engine
+     *  package is actually installed. A bare Android phone/tablet (used for
+     *  dev/testing, no laser/imager) will never have it; on such a device the
+     *  hardware path must not even attempt to init/bind/watchdog — there is
+     *  nothing there to recover, and the endless soft-reinit → rate-limited
+     *  hard-restart loop just burns battery and spams the log forever. The
+     *  camera-based ML Kit scan (CameraScanScreen) is the only scan path then. */
+    val hasHardwareScanner: Boolean by lazy {
+        val present = try {
+            application.packageManager.getPackageInfo(SCANNER_PKG, 0)
+            true
+        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+            false
+        }
+        if (!present) {
+            Log.i(TAG, "$SCANNER_PKG not installed — not PDA hardware, hardware scanner disabled (camera-only scanning)")
+        }
+        present
+    }
+
     // Обработчик главного потока
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -116,6 +136,8 @@ class ScannerManager private constructor(private val application: Application) {
             Log.d(TAG, "[$timestamp] Scanner already initialized")
             return
         }
+
+        if (!hasHardwareScanner) return
 
         Log.d(TAG, "[$timestamp] ⭐ Initializing scanner at application level...")
 
@@ -369,6 +391,7 @@ class ScannerManager private constructor(private val application: Application) {
 
     /** Start the periodic health probe. Idempotent. */
     fun startWatchdog() {
+        if (!hasHardwareScanner) return
         if (watchdogJob?.isActive == true) return
         Log.d(TAG, "▶ scanner watchdog started (probe every ${WATCHDOG_INTERVAL_MS}ms)")
         watchdogJob = watchdogScope.launch {
