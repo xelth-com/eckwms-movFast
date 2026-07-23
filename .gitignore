@@ -43,3 +43,6 @@ snapshots/
 # scratch / debug pulls
 tmp_*
 *.db
+
+# Rust embedded-DB spike build artifacts
+rust/wmsdb/target/

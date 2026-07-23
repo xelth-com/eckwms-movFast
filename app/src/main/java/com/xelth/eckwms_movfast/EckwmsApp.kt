@@ -59,6 +59,13 @@ class EckwmsApp : Application() {
         HybridMessageSender.init(this)
         Log.d(TAG, "HybridMessageSender initialized")
 
+        // Embedded SurrealDB spike (main process ONLY — SurrealKV is
+        // single-writer; :trips already returned above). Off the main thread:
+        // first open replays the KV log.
+        Thread {
+            com.xelth.eckwms_movfast.data.surreal.WmsDb.smokeTest(this)
+        }.apply { name = "wmsdb-smoke"; start() }
+
         // Инициализация ScannerManager
         scannerManager = ScannerManager.getInstance(this)
         scannerManager.initialize()
