@@ -1149,6 +1149,9 @@ class MainScreenViewModel : ViewModel() {
             }
             // 🧾 long-press = the last logged expenses in the trip console.
             "trip_fuel" -> "trip_expense_history"
+            // ⏹ long-press = the open trip's STOP HISTORY (retro edit: "эта
+            // остановка была концом поездки" / "поставь там чекпойнт").
+            "trip_stop" -> "trip_stops"
             else -> onButtonClick(action) // fallback to normal click
         }
     }

@@ -57,11 +57,23 @@ object TripManager {
     // power-on position and keep the trip open instead of amputating it at the
     // last pre-death fix. Bounds: below MIN km it's the same parking lot (the
     // plain stale close is right); above the gap window it's no longer one
-    // continuous journey (the 44e9ee52 phantom-glue protection); above MAX
-    // average speed a car can't have done it — refuse and close honestly.
+    // continuous journey (the 44e9ee52 phantom-glue protection). The speed cap
+    // is deliberately generous (owner: only refuse the ABSURD, "нужно 500км/ч
+    // чтобы успеть" — everything else just extends the line); past it we don't
+    // draw, the driver resolves via the stop history / odometer instead.
     private const val BRIDGE_MAX_GAP_MS = 6 * 3_600_000L
     private const val BRIDGE_MIN_KM = 2.0
-    private const val BRIDGE_MAX_AVG_KMH = 160.0
+    private const val BRIDGE_MAX_AVG_KMH = 300.0
+
+    // ── Stop detection (retro edit: "эта остановка была концом поездки") ─────
+    // Stationary cluster: consecutive located fixes within STOP_RADIUS_M of the
+    // cluster anchor for ≥ STOP_MIN_MS. A recording gap ≥ STOP_GAP_MS between
+    // consecutive fixes is ALSO a stop at the earlier fix (parked in a garage /
+    // recorder dead — either way the car demonstrably sat there).
+    private const val STOP_RADIUS_M = 150.0
+    private const val STOP_MIN_MS = 5 * 60_000L
+    private const val STOP_GAP_MS = 10 * 60_000L
+    private const val STOP_LIST_MAX = 15
 
     // Trip the recording service is ACTIVELY recording right now (in-memory,
     // same process). reconcileOpenTrip never closes this one — a live trip can
@@ -170,6 +182,20 @@ object TripManager {
         if (open.purpose != "private") {
             tryBridgeGap(context, open, lastPointTs)?.let { return it }
         }
+        // Owner rule (2026-07-23): "я поездку открыл вручную — я её вручную и
+        // закрываю, это имеет приоритет." Auto-close is an ASSIST and may only
+        // clean up after the auto-detector; a manually started trip stays open
+        // — however stale — until the driver ends it (stop hex, odometer photo,
+        // or the stop-history retro close). Tentative end above still applies:
+        // that IS a driver declaration.
+        if (open.manualStart) {
+            TripLog.i(
+                TAG,
+                "stale MANUAL trip ${open.id} kept open (driver closes manual trips; " +
+                    "use stop history to end it retroactively)"
+            )
+            return open
+        }
         val endedAt = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
         // Stop without any odometer signal: close the reading gap with the
         // least-action track estimate, honestly marked "estimated" — same rule
@@ -190,6 +216,34 @@ object TripManager {
         queueTripSync(context, open.id)
         TripLog.w(TAG, "Closed stale open trip ${open.id} at $endedAt (started ${open.startedAt})")
         return null
+    }
+
+    /** One fresh fix, blocking (IO dispatcher only): getCurrentLocation with a
+     *  20 s budget, cached lastLocation as the fallback. Null without the
+     *  location permission / Play Services / any fix. */
+    private suspend fun currentFix(context: Context): android.location.Location? {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return null
+        return try {
+            val client = com.google.android.gms.location.LocationServices
+                .getFusedLocationProviderClient(context)
+            val cts = com.google.android.gms.tasks.CancellationTokenSource()
+            try {
+                com.google.android.gms.tasks.Tasks.await(
+                    client.getCurrentLocation(
+                        com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                        cts.token
+                    ),
+                    20, java.util.concurrent.TimeUnit.SECONDS
+                )
+            } catch (e: Exception) {
+                cts.cancel()
+                com.google.android.gms.tasks.Tasks.await(client.lastLocation)
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // VisibleForTesting: pure decision — is the displacement between the last
@@ -215,28 +269,7 @@ object TripManager {
         val anchor = db.tripDao().lastLocatedPoint(open.id) ?: return null
         val anchorLat = anchor.lat ?: return null
         val anchorLng = anchor.lng ?: return null
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
-        ) return null
-        val fix = try {
-            val client = com.google.android.gms.location.LocationServices
-                .getFusedLocationProviderClient(context)
-            val cts = com.google.android.gms.tasks.CancellationTokenSource()
-            try {
-                com.google.android.gms.tasks.Tasks.await(
-                    client.getCurrentLocation(
-                        com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                        cts.token
-                    ),
-                    20, java.util.concurrent.TimeUnit.SECONDS
-                )
-            } catch (e: Exception) {
-                cts.cancel()
-                com.google.android.gms.tasks.Tasks.await(client.lastLocation)
-            }
-        } catch (e: Exception) {
-            null
-        } ?: return null
+        val fix = currentFix(context) ?: return null
         val lastActivity = maxOf(open.startedAt, lastPointTs ?: open.startedAt)
         // A cached fix from BEFORE the gap carries no new information — without
         // fresh evidence of where the phone woke up, amputate as before.
@@ -525,7 +558,13 @@ object TripManager {
         startOdometerSource: String? = null,
         startOdometerPhotoId: String? = null,
         plate: String? = null,
-        platePhotoId: String? = null
+        platePhotoId: String? = null,
+        // Backdated start ("Fahrt nachtragen"): the drive really began at the
+        // last parking — startedAt is set THERE and an anchor point at the
+        // parking position starts the line (see lateStartCandidate).
+        backdateTs: Long? = null,
+        backdateLat: Double? = null,
+        backdateLng: Double? = null
     ) {
         if (!com.xelth.eckwms_movfast.utils.SettingsManager.getTripConsent()) {
             Log.w(TAG, "startTrip blocked: no recording consent")
@@ -546,6 +585,9 @@ object TripManager {
             putExtra(TripRecordingService.EXTRA_START_ODO_PHOTO, startOdometerPhotoId)
             putExtra(TripRecordingService.EXTRA_PLATE, plate)
             putExtra(TripRecordingService.EXTRA_PLATE_PHOTO, platePhotoId)
+            backdateTs?.let { putExtra(TripRecordingService.EXTRA_BACKDATE_TS, it) }
+            backdateLat?.let { putExtra(TripRecordingService.EXTRA_BACKDATE_LAT, it) }
+            backdateLng?.let { putExtra(TripRecordingService.EXTRA_BACKDATE_LNG, it) }
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -590,18 +632,214 @@ object TripManager {
         }
     }
 
-    /** Drop a checkpoint (a stop within a multi-stop trip) on the OPEN trip: the
-     *  service records the current position as a `manual` point and uploads it now.
-     *  No-op if no trip is recording (the service logs it). */
-    fun checkpointNow(context: Context, label: String? = null) {
-        val intent = Intent(context, TripRecordingService::class.java).apply {
-            action = TripRecordingService.ACTION_CHECKPOINT
-            if (!label.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_LABEL, label)
+    // ── Retro edit: stop history on the open trip (owner design 2026-07-23) ──
+    // "Я завтра глянул на телефон, там открыта поездка — я посмотрел историю
+    // остановок и сказал: вот эта остановка была концом поездки. Или: на этой
+    // остановке поставь чекпойнт." Declarations are FACTS; the automatic track
+    // is the assist that surfaces candidates.
+
+    data class TripStop(
+        val ts: Long,            // stop begin
+        val endTs: Long,         // stop end (== ts for declared point events)
+        val lat: Double?,
+        val lng: Double?,
+        val label: String?,      // declared label / event kind
+        val declared: Boolean    // driver-declared point vs detected cluster
+    )
+
+    /** Stop candidates of a trip, newest first: driver-declared points (they are
+     *  facts) + stationary clusters and recording gaps detected in the located
+     *  track, detected ones suppressed when a declared point already covers the
+     *  same dwell. Pure — unit-testable without Room. */
+    internal fun detectStopsFromPoints(
+        points: List<com.xelth.eckwms_movfast.data.local.entity.TripPointEntity>
+    ): List<TripStop> {
+        val byTs = points.sortedBy { it.ts }
+        val declared = byTs.filter { it.kind != "auto" }.map { p ->
+            TripStop(p.ts, p.ts, p.lat, p.lng, p.label ?: p.kind, declared = true)
         }
-        try {
-            context.startService(intent)
-        } catch (e: Exception) {
-            Log.w(TAG, "checkpointNow: service not running (${e.message})")
+        val located = byTs.filter { it.kind == "auto" && it.lat != null && it.lng != null }
+        val detected = ArrayList<TripStop>()
+        // Stationary clusters (dwell within STOP_RADIUS_M for ≥ STOP_MIN_MS).
+        var anchor: com.xelth.eckwms_movfast.data.local.entity.TripPointEntity? = null
+        var clusterEnd = 0L
+        fun flush() {
+            val a = anchor ?: return
+            if (clusterEnd - a.ts >= STOP_MIN_MS) {
+                detected.add(TripStop(a.ts, clusterEnd, a.lat, a.lng, null, declared = false))
+            }
+            anchor = null
+        }
+        for (p in located) {
+            val a = anchor
+            if (a == null) {
+                anchor = p; clusterEnd = p.ts
+            } else if (haversineKm(a.lat!!, a.lng!!, p.lat!!, p.lng!!) * 1000.0 <= STOP_RADIUS_M) {
+                clusterEnd = p.ts
+            } else {
+                flush()
+                anchor = p; clusterEnd = p.ts
+            }
+        }
+        flush()
+        // Recording gaps: the car demonstrably sat (or the recorder died) at the
+        // earlier fix — both are stop candidates for the driver.
+        for (i in 1 until located.size) {
+            val a = located[i - 1]
+            val b = located[i]
+            if (b.ts - a.ts >= STOP_GAP_MS &&
+                detected.none { it.ts <= a.ts && a.ts <= it.endTs }
+            ) {
+                detected.add(TripStop(a.ts, b.ts, a.lat, a.lng, null, declared = false))
+            }
+        }
+        // Declared wins over a detected cluster covering the same dwell.
+        val kept = detected.filter { d ->
+            declared.none { it.ts in (d.ts - STOP_MIN_MS)..(d.endTs + STOP_MIN_MS) }
+        }
+        return (declared + kept).sortedByDescending { it.ts }.take(STOP_LIST_MAX)
+    }
+
+    suspend fun detectStops(context: Context, tripId: String): List<TripStop> =
+        detectStopsFromPoints(AppDatabase.getInstance(context).tripDao().getPoints(tripId))
+
+    /** Smoothed track truncated at a timestamp — the km basis for a retroactive
+     *  "the trip ended at THAT stop" close. Uncached (one-shot). */
+    private suspend fun smoothedTrackUpTo(
+        context: Context,
+        tripId: String,
+        untilTs: Long
+    ): TrackEstimator.Result? {
+        val db = AppDatabase.getInstance(context)
+        return TrackEstimator.smooth(locatedObservations(db, tripId).filter { it.ts <= untilTs })
+    }
+
+    /** Driver declares: the trip ended at this stop. Closes AT that moment with
+     *  an estimated end odometer over the track up to it (photo/manual readings
+     *  keep overriding). Idempotent via closeStale's recording-only guard. */
+    suspend fun closeTripAtStop(context: Context, tripId: String, endTs: Long): Boolean {
+        val db = AppDatabase.getInstance(context)
+        val trip = db.tripDao().getTrip(tripId) ?: return false
+        if (trip.status != TripEntity.STATUS_RECORDING) return false
+        if (trip.startOdometerKm != null && trip.endOdometerKm == null) {
+            smoothedTrackUpTo(context, tripId, endTs)?.let { s ->
+                val estEnd = Math.round((trip.startOdometerKm + s.distanceKm) * 10.0) / 10.0
+                db.tripDao().setEndOdometer(tripId, estEnd, "estimated", null)
+            }
+        }
+        db.tripDao().closeStale(
+            tripId, endTs,
+            "ended by driver at stop " + java.time.Instant.ofEpochMilli(endTs).toString() +
+                " (retro close from stop history)"
+        )
+        // Tear down a still-live recorder; its finalize no-ops on the already-
+        // ended row (endTrip guards on status) and must not stomp our endedAt.
+        if (isServiceRecording(context, tripId)) stopTrip(context, graceful = false)
+        publishActiveTrip(null)
+        queueTripSync(context, tripId)
+        TripLog.i(TAG, "trip $tripId retro-closed by driver at $endTs")
+        return true
+    }
+
+    /** Driver declares: I did something at this stop — record a checkpoint
+     *  THERE AND THEN (kind='manual', historical ts). */
+    suspend fun addRetroCheckpoint(
+        context: Context,
+        tripId: String,
+        stop: TripStop,
+        label: String? = null
+    ) {
+        val db = AppDatabase.getInstance(context)
+        db.tripDao().insertPoint(
+            com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+                tripId = tripId,
+                seq = db.tripDao().pointCount(tripId) + 1,
+                ts = stop.ts,
+                source = "manual",
+                lat = stop.lat,
+                lng = stop.lng,
+                kind = "manual",
+                label = label?.takeIf { it.isNotBlank() } ?: "nachgetragen"
+            )
+        )
+        queueTripSync(context, tripId)
+        TripLog.i(TAG, "retro checkpoint on trip $tripId at ${stop.ts}")
+    }
+
+    // ── Late start: "уехал и у клиента заметил, что не стартанул поездку" ────
+
+    data class LateStart(
+        val startTs: Long,       // end of the last trip = when this drive could have begun
+        val odoKm: Double?,      // its end odometer — the seed start reading
+        val lat: Double?,        // last parking position (start anchor point)
+        val lng: Double?,
+        val distKm: Double?      // displacement parking → current fix, if known
+    )
+
+    /** Candidate for a backdated start: no open trip, the last trip ended within
+     *  the bridge window, and the phone has demonstrably MOVED since that
+     *  parking. The UI offers it as "Fahrt nachtragen: seit HH:MM". */
+    suspend fun lateStartCandidate(context: Context): LateStart? {
+        val db = AppDatabase.getInstance(context)
+        if (db.tripDao().getOpenTrip() != null) return null
+        val last = db.tripDao().lastEndedTrip() ?: return null
+        val endedAt = last.endedAt ?: return null
+        val now = System.currentTimeMillis()
+        if (now - endedAt > BRIDGE_MAX_GAP_MS) return null
+        val lastLoc = db.tripDao().lastLocatedPoint(last.id)
+        val fix = currentFix(context)
+        val dist = if (lastLoc?.lat != null && fix != null)
+            haversineKm(lastLoc.lat!!, lastLoc.lng!!, fix.latitude, fix.longitude)
+        else null
+        // With both positions known, require actual displacement; with either
+        // side unknown (private last trip / no fix) still offer — the driver
+        // knows better than we do.
+        if (dist != null && dist < BRIDGE_MIN_KM) return null
+        return LateStart(endedAt, last.endOdometerKm, lastLoc?.lat, lastLoc?.lng, dist)
+    }
+
+    /** Drop a checkpoint (a stop within a multi-stop trip) on the OPEN trip.
+     *  The driver pressing 📍 means "I AM HERE NOW" — a fact that must land
+     *  even when the recorder is dead (battery death, OOM): with no live
+     *  service the point is written straight to Room at a fresh fix and the
+     *  trip syncs; the recorder path stays the fast lane. */
+    fun checkpointNow(context: Context, label: String? = null) {
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val open = reconcileOpenTrip(appContext)
+                if (open != null && !isServiceRecording(appContext, open.id)) {
+                    val db = AppDatabase.getInstance(appContext)
+                    val fix = currentFix(appContext)
+                    db.tripDao().insertPoint(
+                        com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+                            tripId = open.id,
+                            seq = db.tripDao().pointCount(open.id) + 1,
+                            ts = System.currentTimeMillis(),
+                            source = if (fix != null) "fused" else "manual",
+                            lat = fix?.latitude,
+                            lng = fix?.longitude,
+                            accuracyM = fix?.accuracy?.toDouble(),
+                            kind = "manual",
+                            label = label?.takeIf { it.isNotBlank() }
+                        )
+                    )
+                    queueTripSync(appContext, open.id)
+                    TripLog.i(TAG, "checkpoint recorded directly on trip ${open.id} (recorder dead, pos=${fix != null})")
+                    return@launch
+                }
+                val intent = Intent(appContext, TripRecordingService::class.java).apply {
+                    action = TripRecordingService.ACTION_CHECKPOINT
+                    if (!label.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_LABEL, label)
+                }
+                try {
+                    appContext.startService(intent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "checkpointNow: service not running (${e.message})")
+                }
+            } catch (e: Exception) {
+                TripLog.e(TAG, "checkpointNow failed: ${e.message}", e)
+            }
         }
     }
 
@@ -672,17 +910,49 @@ object TripManager {
         source: String,
         photoId: String?
     ) {
-        val intent = Intent(context, TripRecordingService::class.java).apply {
-            action = TripRecordingService.ACTION_FUEL
-            putExtra(TripRecordingService.EXTRA_EXPENSE_TYPE, type)
-            odometerKm?.let { putExtra(TripRecordingService.EXTRA_ODO_KM, it) }
-            putExtra(TripRecordingService.EXTRA_ODO_SOURCE, source)
-            if (!photoId.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_PHOTO_ID, photoId)
-        }
-        try {
-            context.startService(intent)
-        } catch (e: Exception) {
-            Log.w(TAG, "logExpense: service not running (${e.message})")
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // A tax document (Tankbeleg/Parkschein/Maut) must land even with
+                // a dead recorder — same direct-write fallback as checkpointNow.
+                val open = reconcileOpenTrip(appContext)
+                if (open != null && !isServiceRecording(appContext, open.id)) {
+                    val db = AppDatabase.getInstance(appContext)
+                    val fix = currentFix(appContext)
+                    db.tripDao().insertPoint(
+                        com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+                            tripId = open.id,
+                            seq = db.tripDao().pointCount(open.id) + 1,
+                            ts = System.currentTimeMillis(),
+                            source = if (fix != null) "fused" else "manual",
+                            lat = fix?.latitude,
+                            lng = fix?.longitude,
+                            accuracyM = fix?.accuracy?.toDouble(),
+                            kind = type,
+                            label = source,
+                            odometerKm = odometerKm,
+                            photoId = photoId
+                        )
+                    )
+                    queueTripSync(appContext, open.id)
+                    TripLog.i(TAG, "$type expense recorded directly on trip ${open.id} (recorder dead)")
+                    return@launch
+                }
+                val intent = Intent(appContext, TripRecordingService::class.java).apply {
+                    action = TripRecordingService.ACTION_FUEL
+                    putExtra(TripRecordingService.EXTRA_EXPENSE_TYPE, type)
+                    odometerKm?.let { putExtra(TripRecordingService.EXTRA_ODO_KM, it) }
+                    putExtra(TripRecordingService.EXTRA_ODO_SOURCE, source)
+                    if (!photoId.isNullOrBlank()) putExtra(TripRecordingService.EXTRA_PHOTO_ID, photoId)
+                }
+                try {
+                    appContext.startService(intent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "logExpense: service not running (${e.message})")
+                }
+            } catch (e: Exception) {
+                TripLog.e(TAG, "logExpense failed: ${e.message}", e)
+            }
         }
     }
 

@@ -73,14 +73,21 @@ interface TripDao {
     )
     suspend fun lastLocatedPoint(tripId: String): TripPointEntity?
 
-    @Query("UPDATE trips SET endedAt = :endedAt, status = :status WHERE id = :id")
+    // Only a RECORDING trip can be ended — a retro close from the stop history
+    // may have already ended it at a driver-chosen moment, and a service
+    // finalize racing in afterwards must not stomp that endedAt.
+    @Query(
+        "UPDATE trips SET endedAt = :endedAt, status = :status " +
+        "WHERE id = :id AND status = 'recording'"
+    )
     suspend fun endTrip(id: String, endedAt: Long, status: String = TripEntity.STATUS_ENDED)
 
     // Orphaned open trip (process died, stop never delivered): close it at its
     // last real activity, keeping any existing note (COALESCE = never overwrite).
+    // Recording-only guard for the same retro-close race as endTrip.
     @Query(
         "UPDATE trips SET endedAt = :endedAt, status = 'ended', " +
-        "note = COALESCE(note, :note) WHERE id = :id"
+        "note = COALESCE(note, :note) WHERE id = :id AND status = 'recording'"
     )
     suspend fun closeStale(id: String, endedAt: Long, note: String)
 

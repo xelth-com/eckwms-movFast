@@ -92,6 +92,12 @@ class TripRecordingService : Service() {
         const val EXTRA_START_ODO_PHOTO = "start_odo_photo"
         const val EXTRA_PLATE = "plate"
         const val EXTRA_PLATE_PHOTO = "plate_photo"
+        // Backdated start ("Fahrt nachtragen"): the drive began at the last
+        // parking — startedAt lands THERE, an anchor point at the parking
+        // position opens the line, the smoother spans parking → first live fix.
+        const val EXTRA_BACKDATE_TS = "backdate_ts"
+        const val EXTRA_BACKDATE_LAT = "backdate_lat"
+        const val EXTRA_BACKDATE_LNG = "backdate_lng"
 
         private const val TAG = "TripRecordingService"
         private const val CHANNEL_ID = "trip_recording"
@@ -199,7 +205,10 @@ class TripRecordingService : Service() {
                         intent.getStringExtra(EXTRA_PURPOSE_LABEL),
                         intent.getStringExtra(EXTRA_PURPOSE_SOURCE),
                         startOdoKm, startOdoSource, startOdoPhoto, plate, platePhoto,
-                        intent.getLongExtra(EXTRA_PURPOSE_DECLARED_AT, 0L).takeIf { it > 0 }
+                        intent.getLongExtra(EXTRA_PURPOSE_DECLARED_AT, 0L).takeIf { it > 0 },
+                        intent.getLongExtra(EXTRA_BACKDATE_TS, 0L).takeIf { it > 0 },
+                        intent.getDoubleExtra(EXTRA_BACKDATE_LAT, Double.NaN).takeIf { !it.isNaN() },
+                        intent.getDoubleExtra(EXTRA_BACKDATE_LNG, Double.NaN).takeIf { !it.isNaN() }
                     )
                 } else {
                     // Driving (re)started on the open trip — a pending
@@ -368,7 +377,10 @@ class TripRecordingService : Service() {
         startOdoPhoto: String? = null,
         plate: String? = null,
         platePhoto: String? = null,
-        purposeDeclaredAt: Long? = null
+        purposeDeclaredAt: Long? = null,
+        backdateTs: Long? = null,
+        backdateLat: Double? = null,
+        backdateLng: Double? = null
     ) {
         val isPrivate = purpose == "private"
         startForegroundWithNotification(isPrivate)
@@ -382,7 +394,8 @@ class TripRecordingService : Service() {
             val now = System.currentTimeMillis()
             var trip = existing ?: TripEntity(
                 id = TripManager.newTripId(),
-                startedAt = now,
+                // Backdated start: the drive really began at the last parking.
+                startedAt = backdateTs ?: now,
                 manualStart = manual,
                 purpose = purpose,
                 // private trips carry no destination; declared_at = the moment
@@ -392,7 +405,26 @@ class TripRecordingService : Service() {
                 purposeLabel = if (isPrivate) null else purposeLabel,
                 purposeDeclaredAt = if (isPrivate) null else (purposeDeclaredAt ?: now),
                 purposeSource = if (isPrivate) null else purposeSource
-            ).also { db.tripDao().upsertTrip(it) }
+            ).also {
+                db.tripDao().upsertTrip(it)
+                // Anchor the line at the parking position so the smoother spans
+                // parking → first live fix (the un-recorded first leg).
+                if (backdateTs != null && backdateLat != null && backdateLng != null && !isPrivate) {
+                    db.tripDao().insertPoint(
+                        TripPointEntity(
+                            tripId = it.id,
+                            seq = 1,
+                            ts = backdateTs,
+                            source = "manual",
+                            lat = backdateLat,
+                            lng = backdateLng,
+                            kind = "bridge",
+                            label = "nachgetragener Start (letzte Parkposition)"
+                        )
+                    )
+                    TripLog.i(TAG, "backdated start for trip ${it.id} at $backdateTs ($backdateLat,$backdateLng)")
+                }
+            }
 
             if (existing != null) {
                 // Driving resumed on a reused open trip — a pending odometer-photo

@@ -181,15 +181,26 @@ fun MainScreen(
     val density = LocalDensity.current
     val context = LocalContext.current
 
+    // Late-start candidate ("уехал и заметил, что не стартанул") — offered as
+    // the top console row when NO trip is open but the phone moved since the
+    // last parking; tap = backdated start from that parking (time + odometer).
+    var tripLateStart by remember { mutableStateOf<com.xelth.eckwms_movfast.trips.TripManager.LateStart?>(null) }
+
     // Trip mode: refresh active trip on enter + auto-detect permission launcher.
     // reconcileOpenTrip also closes an orphaned open trip (stale phantom) at its
     // last activity so the console offers a clean start, not a ghost recording.
     LaunchedEffect(isTripMode) {
         if (isTripMode) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(
-                    com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
-                )
+                val open = com.xelth.eckwms_movfast.trips.TripManager.reconcileOpenTrip(context)
+                com.xelth.eckwms_movfast.trips.TripManager.publishActiveTrip(open)
+                // No open trip but the phone moved since the last parking →
+                // offer the backdated start ("Fahrt nachtragen") console row.
+                tripLateStart = if (open == null) {
+                    try {
+                        com.xelth.eckwms_movfast.trips.TripManager.lateStartCandidate(context)
+                    } catch (e: Exception) { null }
+                } else null
             }
         }
     }
@@ -239,6 +250,87 @@ fun MainScreen(
     // Room): 🚗 = last trips, 🧾 = last expenses. Any destination load (city
     // tap / search) or leaving trip mode swaps the ticket list back in.
     var tripHistoryRows by remember { mutableStateOf<List<ConsoleRow>?>(null) }
+    // Stop-history overlay trigger (long-press ⏹): each bump (re)loads the open
+    // trip's stops into tripHistoryRows. Owner rule: declarations are facts,
+    // the auto track only surfaces candidates — tap a stop → end the trip
+    // there retroactively, or drop a checkpoint there.
+    var tripStopsRequest by remember { mutableStateOf(0) }
+    fun tripStopActionRows(
+        tripId: String,
+        s: com.xelth.eckwms_movfast.trips.TripManager.TripStop
+    ): List<ConsoleRow> {
+        val df = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.GERMANY)
+        return listOf(
+            ConsoleRow(
+                id = "stop_end_${s.ts}",
+                primary = "⏹ Fahrt hier beenden",
+                secondary = "Ende = ${df.format(java.util.Date(s.ts))}" +
+                    (s.label?.let { " · $it" } ?: ""),
+                onClick = {
+                    tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        val ok = com.xelth.eckwms_movfast.trips.TripManager
+                            .closeTripAtStop(context, tripId, s.ts)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            tripHistoryRows = null
+                            mainViewModel.addLog(
+                                if (ok) "⏹ Fahrt nachträglich beendet am ${df.format(java.util.Date(s.ts))}"
+                                else "⚠ Fahrt war nicht mehr offen"
+                            )
+                            mainViewModel.refreshTripGrid()
+                        }
+                    }
+                }
+            ),
+            ConsoleRow(
+                id = "stop_cp_${s.ts}",
+                primary = "📍 Checkpoint hier setzen",
+                secondary = df.format(java.util.Date(s.ts)),
+                onClick = {
+                    tripScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        com.xelth.eckwms_movfast.trips.TripManager
+                            .addRetroCheckpoint(context, tripId, s)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            mainViewModel.addLog("📍 Checkpoint nachgetragen (${df.format(java.util.Date(s.ts))})")
+                            tripStopsRequest++
+                        }
+                    }
+                }
+            ),
+            ConsoleRow(id = "stop_back", primary = "← Stopps", onClick = { tripStopsRequest++ })
+        )
+    }
+    LaunchedEffect(tripStopsRequest) {
+        if (tripStopsRequest == 0) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val tm = com.xelth.eckwms_movfast.trips.TripManager
+            val open = tm.reconcileOpenTrip(context)
+            if (open == null) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    mainViewModel.addLog("🅿 Keine offene Fahrt — Stopps gibt es nur auf einer offenen Fahrt")
+                }
+                return@withContext
+            }
+            val stops = tm.detectStops(context, open.id)
+            val df = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.GERMANY)
+            val rows = stops.map { s ->
+                val dwellMin = (s.endTs - s.ts) / 60_000
+                ConsoleRow(
+                    id = "stop_${s.ts}",
+                    primary = "🅿 " + df.format(java.util.Date(s.ts)) +
+                        (if (dwellMin > 0) " · $dwellMin min" else ""),
+                    secondary = s.label ?: s.lat?.let {
+                        String.format(java.util.Locale.US, "%.4f, %.4f", it, s.lng)
+                    },
+                    trailing = if (s.declared) "📍" else null,
+                    onClick = { tripHistoryRows = tripStopActionRows(open.id, s) }
+                )
+            }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (rows.isEmpty()) mainViewModel.addLog("🅿 Keine Stopps erkannt")
+                else tripHistoryRows = rows
+            }
+        }
+    }
     var tripQuery by remember { mutableStateOf("") }
     var tripListening by remember { mutableStateOf(false) }
     val speech = remember { com.xelth.eckwms_movfast.utils.SpeechToText(context) }
@@ -1308,9 +1400,41 @@ fun MainScreen(
                         // populate it. Status/input/mic intentionally removed.
                         Column(modifier = Modifier.fillMaxSize()) {
                             ConsoleList(
-                                // History overlay (long-press 🚗/🧾) wins over
+                                // History overlay (long-press 🚗/🧾/⏹) wins over
                                 // the destination/ticket list while it's shown.
-                                rows = tripHistoryRows ?: tripDestinations.map { dest ->
+                                // With no open trip a late-start candidate rides
+                                // on top: "Fahrt nachtragen" = backdated start
+                                // from the last parking (time + odometer seed).
+                                rows = tripHistoryRows ?: (
+                                    (tripLateStart?.takeIf { tripActive == null }?.let { ls ->
+                                        val lf = java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMANY)
+                                        listOf(
+                                            ConsoleRow(
+                                                id = "late_start",
+                                                primary = "▶ Fahrt nachtragen · seit ${lf.format(java.util.Date(ls.startTs))}",
+                                                secondary = listOfNotNull(
+                                                    "ab letzter Parkposition",
+                                                    ls.distKm?.let { "~${it.toInt()} km bisher" },
+                                                    ls.odoKm?.let { "Odometer ${it.toInt()}" }
+                                                ).joinToString(" · "),
+                                                trailing = "🕐",
+                                                onClick = {
+                                                    com.xelth.eckwms_movfast.trips.TripManager.startTrip(
+                                                        context, manual = true, purpose = "business",
+                                                        startOdometerKm = ls.odoKm,
+                                                        startOdometerSource = ls.odoKm?.let { "estimated" },
+                                                        backdateTs = ls.startTs,
+                                                        backdateLat = ls.lat,
+                                                        backdateLng = ls.lng
+                                                    )
+                                                    tripLateStart = null
+                                                    mainViewModel.addLog(
+                                                        "▶ Fahrt nachgetragen ab ${lf.format(java.util.Date(ls.startTs))}"
+                                                    )
+                                                }
+                                            )
+                                        )
+                                    } ?: emptyList()) + tripDestinations.map { dest ->
                                     ConsoleRow(
                                         id = dest.purposeRef,
                                         primary = dest.label,
@@ -1325,7 +1449,7 @@ fun MainScreen(
                                             else tripStart(dest.purposeRef, dest.label, "planned")
                                         }
                                     )
-                                },
+                                }),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(1f)
@@ -1426,6 +1550,9 @@ fun MainScreen(
                             "capture_photo_direct" -> {
                                 navController.navigate("cameraScanScreen?scan_mode=photo_direct")
                             }
+                            // ⏹ long-press → stop history of the OPEN trip
+                            // (retro close / retro checkpoint, owner design).
+                            "trip_stops" -> tripStopsRequest++
                             // 🚗 long-press → the last 20 trips as console rows
                             // (local Room data — works with no server at all).
                             "trip_history" -> tripScope.launch {

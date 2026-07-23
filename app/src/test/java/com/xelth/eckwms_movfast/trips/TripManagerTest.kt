@@ -155,12 +155,15 @@ class TripManagerTest {
     }
 
     @Test
-    fun `impossible speed does not bridge`() {
-        // 300 km in one hour — no car did that; close honestly instead of lying.
+    fun `absurd speed does not bridge - owner rule only refuses the impossible`() {
+        // 500 km in one hour — no car did that; don't draw, let the driver
+        // resolve it (stop history / odometer). 250 km/h avg still bridges:
+        // the cap only guards against the absurd, not against fast driving.
         val died = 1_000_000_000_000L
-        assertFalse(TripManager.bridgeableGap(died, died + 1 * h, 300.0))
-        // Same displacement over 2.5 h is plausible again (120 km/h avg).
-        assertTrue(TripManager.bridgeableGap(died, died + 150 * min, 300.0))
+        assertFalse(TripManager.bridgeableGap(died, died + 1 * h, 500.0))
+        assertTrue(TripManager.bridgeableGap(died, died + 1 * h, 250.0))
+        // The absurd displacement over 2 h is plausible again (250 km/h avg).
+        assertTrue(TripManager.bridgeableGap(died, died + 2 * h, 500.0))
     }
 
     @Test
@@ -175,5 +178,90 @@ class TripManagerTest {
         val died = 1_000_000_000_000L
         assertFalse(TripManager.bridgeableGap(died, died, 50.0))
         assertFalse(TripManager.bridgeableGap(died, died - 10 * min, 50.0))
+    }
+
+    // ── detectStopsFromPoints (stop history for the retro edit) ────────────────
+
+    private fun pt(
+        ts: Long,
+        lat: Double? = null,
+        lng: Double? = null,
+        kind: String = "auto",
+        label: String? = null
+    ) = com.xelth.eckwms_movfast.data.local.entity.TripPointEntity(
+        tripId = "t", seq = 0, ts = ts, source = "fused",
+        lat = lat, lng = lng, kind = kind, label = label
+    )
+
+    @Test
+    fun `declared points are always stops`() {
+        val t0 = 1_000_000_000_000L
+        val stops = TripManager.detectStopsFromPoints(
+            listOf(
+                pt(t0, 50.0, 8.0),
+                pt(t0 + 10 * min, 50.1, 8.1, kind = "manual", label = "Kunde X"),
+                pt(t0 + 20 * min, 50.2, 8.2, kind = "fuel")
+            )
+        )
+        assertEquals(2, stops.size)
+        assertTrue(stops.all { it.declared })
+        // Newest first
+        assertEquals("fuel", stops[0].label)
+        assertEquals("Kunde X", stops[1].label)
+    }
+
+    @Test
+    fun `stationary cluster of five minutes is a detected stop`() {
+        val t0 = 1_000_000_000_000L
+        // Drive, then sit at ~(50.1, 8.1) for 6 minutes (fixes 30 s apart,
+        // jitter well under 150 m), then drive on.
+        val points = mutableListOf(pt(t0, 50.0, 8.0))
+        for (i in 0..12) {
+            points.add(pt(t0 + 5 * min + i * 30_000L, 50.1 + i * 1e-5, 8.1))
+        }
+        points.add(pt(t0 + 20 * min, 50.2, 8.2))
+        val stops = TripManager.detectStopsFromPoints(points)
+        assertEquals(1, stops.size)
+        assertFalse(stops[0].declared)
+        assertEquals(t0 + 5 * min, stops[0].ts)
+    }
+
+    @Test
+    fun `continuous driving yields no stops`() {
+        val t0 = 1_000_000_000_000L
+        // A fix every 30 s, each ~700 m further — never inside the radius.
+        val points = (0..20).map { i -> pt(t0 + i * 30_000L, 50.0 + i * 0.01, 8.0) }
+        assertTrue(TripManager.detectStopsFromPoints(points).isEmpty())
+    }
+
+    @Test
+    fun `recording gap is a stop at the earlier fix`() {
+        val t0 = 1_000_000_000_000L
+        val stops = TripManager.detectStopsFromPoints(
+            listOf(
+                pt(t0, 50.0, 8.0),
+                pt(t0 + 1 * min, 50.01, 8.0),
+                // recorder dead / parked in a garage for 40 min
+                pt(t0 + 41 * min, 50.5, 8.3),
+                pt(t0 + 42 * min, 50.51, 8.3)
+            )
+        )
+        assertEquals(1, stops.size)
+        assertEquals(t0 + 1 * min, stops[0].ts)
+        assertEquals(t0 + 41 * min, stops[0].endTs)
+    }
+
+    @Test
+    fun `declared point suppresses the detected cluster around it`() {
+        val t0 = 1_000_000_000_000L
+        val points = mutableListOf<com.xelth.eckwms_movfast.data.local.entity.TripPointEntity>()
+        for (i in 0..12) {
+            points.add(pt(t0 + i * 30_000L, 50.1, 8.1))
+        }
+        points.add(pt(t0 + 3 * min, 50.1, 8.1, kind = "manual", label = "Checkpoint"))
+        val stops = TripManager.detectStopsFromPoints(points)
+        assertEquals(1, stops.size)
+        assertTrue(stops[0].declared)
+        assertEquals("Checkpoint", stops[0].label)
     }
 }
